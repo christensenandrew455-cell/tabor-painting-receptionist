@@ -10,16 +10,35 @@ app.use(express.json());
 
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const OWNER_EMAIL = process.env.OWNER_EMAIL;
 const FROM_EMAIL = process.env.FROM_EMAIL || 'AI Receptionist <onboarding@resend.dev>';
 
+// Do NOT create OpenAI/Resend clients at startup.
+// If a variable is missing, this lets the server still boot so we can debug Railway.
+function getOpenAIClient() {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is missing. Railway is not passing it to this running service.');
+  }
+
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+}
+
+function getResendClient() {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is missing. Railway is not passing it to this running service.');
+  }
+
+  return new Resend(process.env.RESEND_API_KEY);
+}
+
+function hasValue(value) {
+  return Boolean(value && String(value).trim().length > 0);
+}
+
 // This is a simple in-memory store. It is okay for testing.
-// Later, replace this with Google Sheets, Airtable, Supabase, or your OCM.
+// Later, replace this with Google Sheets, Airtable, Supabase, or your CRM.
 const calls = new Map();
 
 const businessProfile = {
@@ -125,6 +144,8 @@ Return ONLY valid JSON in this exact shape:
 }
 
 async function getAiResponse(callState, userText, callerNumber) {
+  const openai = getOpenAIClient();
+
   const messages = [
     { role: 'system', content: buildSystemPrompt() },
     ...callState.messages,
@@ -162,6 +183,7 @@ async function getAiResponse(callState, userText, callerNumber) {
 async function sendLeadEmail(callSid, callState) {
   if (!OWNER_EMAIL || callState.emailed) return;
 
+  const resend = getResendClient();
   const lead = callState.lead;
 
   await resend.emails.send({
@@ -178,7 +200,22 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     message: 'AI receptionist backend is running.',
-    twilioVoiceWebhook: `${PUBLIC_URL}/voice`
+    twilioVoiceWebhook: `${PUBLIC_URL}/voice`,
+    debugEnvUrl: `${PUBLIC_URL}/debug-env`
+  });
+});
+
+app.get('/debug-env', (req, res) => {
+  // This does NOT show your secret keys. It only says whether Railway can see them.
+  res.json({
+    OPENAI_API_KEY: hasValue(process.env.OPENAI_API_KEY),
+    RESEND_API_KEY: hasValue(process.env.RESEND_API_KEY),
+    OWNER_EMAIL: hasValue(process.env.OWNER_EMAIL),
+    PUBLIC_URL: hasValue(process.env.PUBLIC_URL),
+    BUSINESS_NAME: process.env.BUSINESS_NAME || businessProfile.name,
+    OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    nodeEnv: process.env.NODE_ENV || null,
+    port: PORT
   });
 });
 
@@ -250,4 +287,5 @@ app.post('/call-status', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`AI receptionist server running on port ${PORT}`);
   console.log(`Twilio voice webhook: ${PUBLIC_URL}/voice`);
+  console.log(`Debug env page: ${PUBLIC_URL}/debug-env`);
 });
