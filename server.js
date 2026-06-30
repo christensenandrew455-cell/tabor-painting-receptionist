@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import twilio from 'twilio';
 import OpenAI from 'openai';
 import { Resend } from 'resend';
 
@@ -8,20 +7,17 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// Twilio is only being used here to generate standard TwiML XML.
-// Google Voice cannot call this webhook directly. Use Google Voice call forwarding
-// to forward the Google Voice number into a webhook-capable phone provider.
-const VoiceResponse = twilio.twiml.VoiceResponse;
-
 const PORT = process.env.PORT || 3000;
-const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptionist-production.up.railway.app').replace(/\/$/, '');
 const OWNER_EMAIL = process.env.OWNER_EMAIL;
 const FROM_EMAIL = process.env.FROM_EMAIL || 'AI Receptionist <onboarding@resend.dev>';
-const PHONE_PROVIDER = process.env.PHONE_PROVIDER || 'Google Voice forwarding + webhook voice provider';
-const GOOGLE_VOICE_NUMBER = process.env.GOOGLE_VOICE_NUMBER || '';
+const PHONE_PROVIDER = process.env.PHONE_PROVIDER || 'Telnyx TeXML';
+const TELNYX_NUMBER = process.env.TELNYX_NUMBER || '';
+const TELNYX_VOICE_WEBHOOK_PATH = process.env.TELNYX_VOICE_WEBHOOK_PATH || '/voice';
+const TELNYX_SPEECH_WEBHOOK_PATH = process.env.TELNYX_SPEECH_WEBHOOK_PATH || '/handle-speech';
+const TELNYX_STATUS_WEBHOOK_PATH = process.env.TELNYX_STATUS_WEBHOOK_PATH || '/call-status';
+const TTS_VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
 
-// Do NOT create OpenAI/Resend clients at startup.
-// If a variable is missing, this lets the server still boot so we can debug Railway.
 function getOpenAIClient() {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is missing. Railway is not passing it to this running service.');
@@ -77,40 +73,38 @@ function getCall(callSid) {
   return calls.get(callSid);
 }
 
+function absoluteUrl(path) {
+  return `${PUBLIC_URL}${path}`;
+}
+
+function xmlEscape(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function sendTexml(res, body) {
+  res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<Response>${body}</Response>`);
+}
+
+function sayTag(message) {
+  return `<Say voice="${xmlEscape(TTS_VOICE)}" language="en-US">${xmlEscape(message)}</Say>`;
+}
+
 function sayAndGather(res, message) {
-  const twiml = new VoiceResponse();
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: '/handle-speech',
-    method: 'POST',
-    speechTimeout: 'auto',
-    timeout: 6
-  });
-
-  gather.say(
-    {
-      voice: 'Polly.Joanna-Neural',
-      language: 'en-US'
-    },
-    message
+  sendTexml(
+    res,
+    `<Gather input="speech" action="${xmlEscape(absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH))}" method="POST" speechTimeout="auto" timeout="6">${sayTag(
+      message
+    )}</Gather><Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH))}</Redirect>`
   );
-
-  twiml.redirect({ method: 'POST' }, '/voice');
-  res.type('text/xml').send(twiml.toString());
 }
 
 function endCall(res, message) {
-  const twiml = new VoiceResponse();
-  twiml.say(
-    {
-      voice: 'Polly.Joanna-Neural',
-      language: 'en-US'
-    },
-    message
-  );
-  twiml.hangup();
-  res.type('text/xml').send(twiml.toString());
+  sendTexml(res, `${sayTag(message)}<Hangup />`);
 }
 
 function buildSystemPrompt() {
@@ -201,29 +195,57 @@ async function sendLeadEmail(callSid, callState) {
   callState.emailed = true;
 }
 
+function getRequestValue(req, ...keys) {
+  for (const key of keys) {
+    if (req.body?.[key] !== undefined) return req.body[key];
+    if (req.query?.[key] !== undefined) return req.query[key];
+  }
+  return '';
+}
+
+function getCallSid(req) {
+  return (
+    getRequestValue(req, 'CallSid', 'call_sid', 'callSid', 'call_control_id', 'call_id') ||
+    `local-test-call-${Date.now()}`
+  );
+}
+
+function getCallerNumber(req) {
+  return getRequestValue(req, 'From', 'from', 'caller', 'caller_id_number', 'Caller') || '';
+}
+
+function getSpeech(req) {
+  return getRequestValue(req, 'SpeechResult', 'speech_result', 'speech', 'transcript') || '';
+}
+
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'AI receptionist backend is running.',
+    message: 'AI receptionist backend is running on Telnyx TeXML.',
     phoneProvider: PHONE_PROVIDER,
-    googleVoiceNumber: GOOGLE_VOICE_NUMBER || null,
-    voiceWebhook: `${PUBLIC_URL}/voice`,
-    callStatusWebhook: `${PUBLIC_URL}/call-status`,
-    googleVoiceSetupUrl: `${PUBLIC_URL}/google-voice`,
-    debugEnvUrl: `${PUBLIC_URL}/debug-env`
+    telnyxNumber: TELNYX_NUMBER || null,
+    telnyxSetupUrl: absoluteUrl('/telnyx'),
+    voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
+    speechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
+    callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH),
+    debugEnvUrl: absoluteUrl('/debug-env')
   });
 });
 
-app.get('/google-voice', (req, res) => {
+app.get('/telnyx', (req, res) => {
   res.json({
-    important: 'Google Voice does not provide an incoming-call webhook for this app to answer calls directly.',
-    howToUseGoogleVoice: [
-      'Keep your Google Voice number as the public business number.',
-      'In Google Voice, forward calls from that number to a webhook-capable phone provider number.',
-      'In that webhook-capable provider, point incoming calls to this Railway URL: ' + `${PUBLIC_URL}/voice`,
-      'Set the optional status callback to: ' + `${PUBLIC_URL}/call-status`
+    provider: 'Telnyx TeXML',
+    setup: [
+      'Buy or use a Telnyx phone number.',
+      'Create a Telnyx TeXML Application.',
+      `Set the TeXML Application voice webhook URL to ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)} with method POST.`,
+      `Set the optional status callback URL to ${absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH)} with method POST.`,
+      'Assign the Telnyx number to that TeXML Application.',
+      'Call the Telnyx number from another phone to test the receptionist.'
     ],
-    note: 'This app is ready for Google Voice as the front number, but Google Voice must forward calls to a provider that can hit the webhook.'
+    voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
+    speechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
+    callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH)
   });
 });
 
@@ -233,18 +255,19 @@ app.get('/debug-env', (req, res) => {
     OPENAI_API_KEY: hasValue(process.env.OPENAI_API_KEY),
     RESEND_API_KEY: hasValue(process.env.RESEND_API_KEY),
     OWNER_EMAIL: hasValue(process.env.OWNER_EMAIL),
-    PUBLIC_URL: hasValue(process.env.PUBLIC_URL),
+    PUBLIC_URL: PUBLIC_URL,
     BUSINESS_NAME: process.env.BUSINESS_NAME || businessProfile.name,
     PHONE_PROVIDER,
-    GOOGLE_VOICE_NUMBER: hasValue(process.env.GOOGLE_VOICE_NUMBER),
+    TELNYX_NUMBER: hasValue(process.env.TELNYX_NUMBER),
+    TTS_VOICE,
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     nodeEnv: process.env.NODE_ENV || null,
     port: PORT
   });
 });
 
-app.post('/voice', (req, res) => {
-  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id || 'local-test-call';
+app.all(TELNYX_VOICE_WEBHOOK_PATH, (req, res) => {
+  const callSid = getCallSid(req);
   const callState = getCall(callSid);
 
   if (callState.messages.length === 0) {
@@ -257,18 +280,18 @@ app.post('/voice', (req, res) => {
   return sayAndGather(res, 'Sorry, I did not catch that. Could you say that again?');
 });
 
-app.post('/handle-speech', async (req, res) => {
-  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id || 'local-test-call';
-  const callerNumber = req.body.From || req.body.from || req.body.caller || '';
-  const speech = req.body.SpeechResult || req.body.speech || req.body.transcript || '';
+app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
+  const callSid = getCallSid(req);
+  const callerNumber = getCallerNumber(req);
+  const speech = getSpeech(req);
   const callState = getCall(callSid);
 
-  if (!speech.trim()) {
+  if (!String(speech).trim()) {
     return sayAndGather(res, 'Sorry, I did not hear anything. How can I help you today?');
   }
 
   try {
-    const ai = await getAiResponse(callState, speech, callerNumber);
+    const ai = await getAiResponse(callState, String(speech), callerNumber);
 
     if (callState.lead.complete || ai.shouldEndCall) {
       await sendLeadEmail(callSid, callState);
@@ -289,12 +312,14 @@ app.post('/handle-speech', async (req, res) => {
   }
 });
 
-app.post('/call-status', async (req, res) => {
-  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id;
-  const callStatus = req.body.CallStatus || req.body.callStatus || req.body.status;
+app.all(TELNYX_STATUS_WEBHOOK_PATH, async (req, res) => {
+  const callSid = getCallSid(req);
+  const callStatus = String(
+    getRequestValue(req, 'CallStatus', 'call_status', 'callStatus', 'status', 'event_type') || ''
+  ).toLowerCase();
   const callState = calls.get(callSid);
 
-  if (callState && callStatus === 'completed') {
+  if (callState && ['completed', 'hangup', 'call.hangup', 'done'].includes(callStatus)) {
     try {
       await sendLeadEmail(callSid, callState);
     } catch (error) {
@@ -310,7 +335,7 @@ app.post('/call-status', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`AI receptionist server running on port ${PORT}`);
-  console.log(`Voice webhook: ${PUBLIC_URL}/voice`);
-  console.log(`Google Voice setup info: ${PUBLIC_URL}/google-voice`);
-  console.log(`Debug env page: ${PUBLIC_URL}/debug-env`);
+  console.log(`Telnyx voice webhook: ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)}`);
+  console.log(`Telnyx setup info: ${absoluteUrl('/telnyx')}`);
+  console.log(`Debug env page: ${absoluteUrl('/debug-env')}`);
 });
