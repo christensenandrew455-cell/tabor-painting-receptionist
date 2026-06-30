@@ -8,12 +8,17 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+// Twilio is only being used here to generate standard TwiML XML.
+// Google Voice cannot call this webhook directly. Use Google Voice call forwarding
+// to forward the Google Voice number into a webhook-capable phone provider.
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const OWNER_EMAIL = process.env.OWNER_EMAIL;
 const FROM_EMAIL = process.env.FROM_EMAIL || 'AI Receptionist <onboarding@resend.dev>';
+const PHONE_PROVIDER = process.env.PHONE_PROVIDER || 'Google Voice forwarding + webhook voice provider';
+const GOOGLE_VOICE_NUMBER = process.env.GOOGLE_VOICE_NUMBER || '';
 
 // Do NOT create OpenAI/Resend clients at startup.
 // If a variable is missing, this lets the server still boot so we can debug Railway.
@@ -151,7 +156,7 @@ async function getAiResponse(callState, userText, callerNumber) {
     ...callState.messages,
     {
       role: 'user',
-      content: `Caller phone number from Twilio: ${callerNumber || 'unknown'}\nCaller said: ${userText}`
+      content: `Caller phone number from ${PHONE_PROVIDER}: ${callerNumber || 'unknown'}\nCaller said: ${userText}`
     }
   ];
 
@@ -200,8 +205,25 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     message: 'AI receptionist backend is running.',
-    twilioVoiceWebhook: `${PUBLIC_URL}/voice`,
+    phoneProvider: PHONE_PROVIDER,
+    googleVoiceNumber: GOOGLE_VOICE_NUMBER || null,
+    voiceWebhook: `${PUBLIC_URL}/voice`,
+    callStatusWebhook: `${PUBLIC_URL}/call-status`,
+    googleVoiceSetupUrl: `${PUBLIC_URL}/google-voice`,
     debugEnvUrl: `${PUBLIC_URL}/debug-env`
+  });
+});
+
+app.get('/google-voice', (req, res) => {
+  res.json({
+    important: 'Google Voice does not provide an incoming-call webhook for this app to answer calls directly.',
+    howToUseGoogleVoice: [
+      'Keep your Google Voice number as the public business number.',
+      'In Google Voice, forward calls from that number to a webhook-capable phone provider number.',
+      'In that webhook-capable provider, point incoming calls to this Railway URL: ' + `${PUBLIC_URL}/voice`,
+      'Set the optional status callback to: ' + `${PUBLIC_URL}/call-status`
+    ],
+    note: 'This app is ready for Google Voice as the front number, but Google Voice must forward calls to a provider that can hit the webhook.'
   });
 });
 
@@ -213,6 +235,8 @@ app.get('/debug-env', (req, res) => {
     OWNER_EMAIL: hasValue(process.env.OWNER_EMAIL),
     PUBLIC_URL: hasValue(process.env.PUBLIC_URL),
     BUSINESS_NAME: process.env.BUSINESS_NAME || businessProfile.name,
+    PHONE_PROVIDER,
+    GOOGLE_VOICE_NUMBER: hasValue(process.env.GOOGLE_VOICE_NUMBER),
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     nodeEnv: process.env.NODE_ENV || null,
     port: PORT
@@ -220,7 +244,7 @@ app.get('/debug-env', (req, res) => {
 });
 
 app.post('/voice', (req, res) => {
-  const callSid = req.body.CallSid || 'local-test-call';
+  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id || 'local-test-call';
   const callState = getCall(callSid);
 
   if (callState.messages.length === 0) {
@@ -234,9 +258,9 @@ app.post('/voice', (req, res) => {
 });
 
 app.post('/handle-speech', async (req, res) => {
-  const callSid = req.body.CallSid || 'local-test-call';
-  const callerNumber = req.body.From || '';
-  const speech = req.body.SpeechResult || '';
+  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id || 'local-test-call';
+  const callerNumber = req.body.From || req.body.from || req.body.caller || '';
+  const speech = req.body.SpeechResult || req.body.speech || req.body.transcript || '';
   const callState = getCall(callSid);
 
   if (!speech.trim()) {
@@ -266,8 +290,8 @@ app.post('/handle-speech', async (req, res) => {
 });
 
 app.post('/call-status', async (req, res) => {
-  const callSid = req.body.CallSid;
-  const callStatus = req.body.CallStatus;
+  const callSid = req.body.CallSid || req.body.callSid || req.body.call_id;
+  const callStatus = req.body.CallStatus || req.body.callStatus || req.body.status;
   const callState = calls.get(callSid);
 
   if (callState && callStatus === 'completed') {
@@ -286,6 +310,7 @@ app.post('/call-status', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`AI receptionist server running on port ${PORT}`);
-  console.log(`Twilio voice webhook: ${PUBLIC_URL}/voice`);
+  console.log(`Voice webhook: ${PUBLIC_URL}/voice`);
+  console.log(`Google Voice setup info: ${PUBLIC_URL}/google-voice`);
   console.log(`Debug env page: ${PUBLIC_URL}/debug-env`);
 });
