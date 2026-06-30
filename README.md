@@ -2,16 +2,33 @@
 
 This is a basic AI receptionist backend using:
 
-- Twilio for the phone number and calls
+- Google Voice as the public business phone number
+- A webhook-capable voice provider to connect phone calls to this app
 - OpenAI for the AI brain
 - Resend for lead summary emails
 - Railway or Render for hosting
 
-This first version is intentionally simple. It uses Twilio speech gathering instead of full real-time audio streaming. That makes it easier to test and deploy.
+Important: Google Voice is simple for owning a business number, calls, voicemail, and texts. But Google Voice does not provide the kind of incoming-call webhook this app needs to answer a live call by itself.
+
+So the setup is:
+
+```text
+Customer calls Google Voice number
+        ↓
+Google Voice forwards the call
+        ↓
+Webhook-capable phone provider answers the call
+        ↓
+Provider sends the call to this Railway app at /voice
+        ↓
+AI receptionist talks to the caller and emails the lead
+```
+
+The backend still uses TwiML XML for the live call flow. That means the forwarding destination has to be a voice provider that can use TwiML-style webhooks or an equivalent adapter.
 
 ## What it does
 
-When someone calls your Twilio number, the app:
+When someone calls the connected business number, the app:
 
 1. Answers the phone
 2. Asks how it can help
@@ -67,6 +84,8 @@ Create a `.env` file locally or add these as Railway variables:
 ```text
 PORT=3000
 PUBLIC_URL=https://your-railway-app.up.railway.app
+PHONE_PROVIDER=Google Voice forwarding + webhook voice provider
+GOOGLE_VOICE_NUMBER=your_google_voice_number
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 RESEND_API_KEY=your_resend_api_key
@@ -92,11 +111,18 @@ Important: do not put your real `.env` file into GitHub.
 7. Copy your Railway public URL
 8. Set `PUBLIC_URL` to that Railway public URL
 
-## Connect Twilio
+## Google Voice setup
 
-In Twilio, go to your phone number settings.
+Google Voice can be used as the number customers call.
 
-For incoming calls, set:
+In Google Voice:
+
+1. Keep your Google Voice number as the business number
+2. Add a forwarding number
+3. Forward calls to the webhook-capable voice provider number
+4. Test by calling the Google Voice number from a different phone
+
+Then, in the webhook-capable voice provider, point incoming calls to:
 
 ```text
 Webhook URL: https://your-railway-app.up.railway.app/voice
@@ -110,15 +136,21 @@ Webhook URL: https://your-railway-app.up.railway.app/call-status
 Method: POST
 ```
 
-Then call your Twilio number.
+You can also open this route after deploy to see setup info:
+
+```text
+https://your-railway-app.up.railway.app/google-voice
+```
 
 ## Important note
 
-This is the basic version. Later upgrades can include:
+This repo is now set up for Google Voice as the front-facing number, but Google Voice alone cannot replace a live-call webhook provider. If you only use Google Voice by itself, calls can ring your browser/app/phone and go to voicemail, but this Node app cannot automatically answer the call.
+
+Later upgrades can include:
 
 - Google Sheets lead storage
 - A dashboard
 - Better voices
-- Full real-time voice using Twilio Media Streams
+- Full real-time voice
 - Client-specific business profiles
-- Your OCM system
+- Your CRM system
