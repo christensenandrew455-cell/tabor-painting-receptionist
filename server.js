@@ -97,7 +97,7 @@ function sayTag(message) {
 function sayAndGather(res, message) {
   sendTexml(
     res,
-    `<Gather input="speech" action="${xmlEscape(absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH))}" method="POST" speechTimeout="auto" timeout="6">${sayTag(
+    `<Gather input="speech" action="${xmlEscape(absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH))}" speechTimeout="auto" timeout="6">${sayTag(
       message
     )}</Gather><Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH))}</Redirect>`
   );
