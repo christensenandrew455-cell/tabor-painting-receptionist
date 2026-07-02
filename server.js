@@ -11,10 +11,10 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptionist-production.up.railway.app').replace(/\/$/, '');
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'Tabor Painting';
 
-// This server uses Telnyx TeXML <Gather>/<Say>. Telnyx handles the live speech-to-text
-// and voice playback. OpenAI is only used as a fallback when fast logic cannot classify
-// what the caller said, or when the caller asks a free-form question.
-const FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-nano';
+// Telnyx TeXML does the speech gathering and voice playback here.
+// OpenAI is only used when fast logic cannot handle the caller's answer.
+// Do not use a realtime audio model name here unless this app is rebuilt around the Realtime API.
+const FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
 const OWNER_EMAIL = process.env.OWNER_EMAIL || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'AI Receptionist <onboarding@resend.dev>';
@@ -24,7 +24,6 @@ const BUSINESS_HOURS = process.env.BUSINESS_HOURS || 'Monday through Friday, 8 A
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-
 const sessions = new Map();
 
 function esc(x = '') {
@@ -84,6 +83,7 @@ function normalize(text = '') {
 
 function freshState() {
   return {
+    greeted: false,
     step: 'yesNo',
     missed: 0,
     leadSent: false,
@@ -110,17 +110,32 @@ function state(callId) {
 
 function promptFor(step) {
   return {
-    yesNo: `Thanks for calling ${BUSINESS_NAME}. This is the AI receptionist. Are you calling to schedule an estimate? Please answer yes or no.`,
-    name: 'Perfect. Can I have your name? Please say just your name.',
+    yesNo: `Thank you for calling ${BUSINESS_NAME}. This is an AI receptionist. It may take a moment for me to respond after you finish speaking. Are you calling to schedule an estimate? Please answer yes or no.`,
+    name: 'Can I have your name, please?',
     service: 'What service do you need: interior painting, exterior painting, or staining?',
-    streetAddress: 'What is the street address for the estimate? Please say the number and street name.',
+    streetAddress: 'What is the street address for the estimate?',
     city: 'What city is that in?',
     preferredDay: 'What day works best for Jason to come take a look?',
     preferredTime: 'What time works best for the estimate?',
     notes: 'Briefly describe the room, wall, exterior area, or project that needs painting.',
     questions: 'Do you have any quick questions before I send this to Jason? Please answer yes or no.',
-    questionDetail: 'Go ahead and ask your question.'
-  }[step] || 'Perfect. Jason will follow up when he gets the chance to confirm the estimate. Thanks for calling. Goodbye.';
+    questionDetail: 'What can I help you with?'
+  }[step] || finalMessage();
+}
+
+function retryPromptFor(step) {
+  return {
+    yesNo: 'Are you calling to schedule an estimate? Please answer yes or no.',
+    name: 'Can I have your name, please?',
+    service: 'What service do you need: interior painting, exterior painting, or staining?',
+    streetAddress: 'What is the street address for the estimate?',
+    city: 'What city is that in?',
+    preferredDay: 'What day works best for Jason to come take a look?',
+    preferredTime: 'What time works best for the estimate?',
+    notes: 'Briefly describe the room, wall, exterior area, or project that needs painting.',
+    questions: 'Do you have any quick questions before I send this to Jason? Please answer yes or no.',
+    questionDetail: 'What can I help you with?'
+  }[step] || promptFor(step);
 }
 
 function nextStep(lead) {
@@ -135,19 +150,18 @@ function nextStep(lead) {
 }
 
 function timing(step, missed) {
-  // Let people actually finish talking. Short menu answers stay snappy; address/notes get longer.
   const base = {
-    yesNo: { timeout: 4, speechTimeout: 2 },
-    name: { timeout: 5, speechTimeout: 2 },
-    service: { timeout: 5, speechTimeout: 2 },
-    streetAddress: { timeout: 7, speechTimeout: 3 },
-    city: { timeout: 5, speechTimeout: 2 },
-    preferredDay: { timeout: 6, speechTimeout: 2 },
-    preferredTime: { timeout: 6, speechTimeout: 2 },
-    notes: { timeout: 8, speechTimeout: 4 },
-    questions: { timeout: 5, speechTimeout: 2 },
-    questionDetail: { timeout: 8, speechTimeout: 4 }
-  }[step] || { timeout: 6, speechTimeout: 2 };
+    yesNo: { timeout: 7, speechTimeout: 3 },
+    name: { timeout: 7, speechTimeout: 3 },
+    service: { timeout: 7, speechTimeout: 3 },
+    streetAddress: { timeout: 9, speechTimeout: 4 },
+    city: { timeout: 7, speechTimeout: 3 },
+    preferredDay: { timeout: 8, speechTimeout: 3 },
+    preferredTime: { timeout: 8, speechTimeout: 3 },
+    notes: { timeout: 10, speechTimeout: 5 },
+    questions: { timeout: 7, speechTimeout: 3 },
+    questionDetail: { timeout: 10, speechTimeout: 5 }
+  }[step] || { timeout: 7, speechTimeout: 3 };
 
   const bump = Math.min(Number(missed || 0), 2);
   return { timeout: String(base.timeout + bump), speechTimeout: String(base.speechTimeout + bump) };
@@ -162,7 +176,7 @@ function gather(text, s, step = s.step) {
 
 function detectYesNo(text) {
   const t = normalize(text);
-  const no = /\b(no|nope|nah|not right now|not today|don't|do not|just calling|wrong number)\b/.test(t);
+  const no = /\b(no|nope|nah|not right now|not today|don't|do not|not really|no thanks|wrong number)\b/.test(t);
   const yes = /\b(yes|yeah|yep|yup|sure|correct|that's right|that is right|i am|i do|please|schedule|estimate|appointment)\b/.test(t);
   if (yes && !no) return 'yes';
   if (no && !yes) return 'no';
@@ -200,13 +214,13 @@ function applyFastLogic(step, text, s) {
   if (step === 'yesNo') {
     const yn = detectYesNo(t);
     if (yn === 'yes') return { handled: true, reply: promptFor('name'), next: 'name' };
-    if (yn === 'no') return { handled: true, done: true, reply: `No problem. Thanks for calling ${BUSINESS_NAME}. Goodbye.` };
+    if (yn === 'no') return { handled: true, reply: 'No problem. What can I help you with?', next: 'questionDetail' };
     return { handled: false };
   }
 
   if (step === 'name') {
     const name = cleanShortAnswer(t);
-    if (name && name.split(' ').length <= 5 && !/\d/.test(name)) {
+    if (name && name.length >= 2 && name.length <= 60 && name.split(' ').length <= 5 && !/\d/.test(name)) {
       lead.name = name;
       const next = nextStep(lead);
       return { handled: true, reply: promptFor(next), next };
@@ -339,7 +353,7 @@ async function fallbackLogic(step, text, s) {
   }
 
   const extracted = await aiExtract(step, text, s);
-  if (!extracted) return { reply: `Sorry, I did not catch that. ${promptFor(step)}`, next: step };
+  if (!extracted) return { reply: retryPromptFor(step), next: step };
 
   if (extracted.isQuestion || extracted.question) {
     const q = extracted.question || text;
@@ -348,7 +362,7 @@ async function fallbackLogic(step, text, s) {
   }
 
   const value = String(extracted.value || extracted.service || '').trim();
-  if (!value) return { reply: `Sorry, I did not catch that. ${promptFor(step)}`, next: step };
+  if (!value) return { reply: retryPromptFor(step), next: step };
 
   if (step === 'name') s.lead.name = value;
   if (step === 'service') s.lead.service = extracted.service || value;
@@ -445,14 +459,15 @@ app.all('/voice', (req, res) => {
   const s = state(call);
   if (!s.lead.phone) s.lead.phone = callerPhone(req);
 
-  console.log(`[CALL ${call}] voice`, { step: s.step, missed: s.missed });
+  console.log(`[CALL ${call}] voice`, { step: s.step, missed: s.missed, greeted: s.greeted });
 
-  if (s.transcript.length === 0) {
+  if (!s.greeted) {
+    s.greeted = true;
     return xml(res, gather(promptFor('yesNo'), s, 'yesNo'));
   }
 
   s.missed += 1;
-  return xml(res, gather(`Sorry, I did not hear that clearly. I will give you a little more time. ${promptFor(s.step)}`, s, s.step));
+  return xml(res, gather(retryPromptFor(s.step), s, s.step));
 });
 
 app.all('/handle-speech', async (req, res) => {
@@ -461,11 +476,11 @@ app.all('/handle-speech', async (req, res) => {
   if (!s.lead.phone) s.lead.phone = callerPhone(req);
 
   const text = String(speech(req)).trim();
-  console.log(`[CALL ${call}] speech`, { text, step: s.step });
+  console.log(`[CALL ${call}] speech`, { text, step: s.step, missed: s.missed });
 
   if (!text) {
     s.missed += 1;
-    return xml(res, gather(`Sorry, I did not hear that clearly. I will give you a little more time. ${promptFor(s.step)}`, s, s.step));
+    return xml(res, gather(retryPromptFor(s.step), s, s.step));
   }
 
   s.missed = 0;
@@ -497,7 +512,7 @@ app.all('/handle-speech', async (req, res) => {
   } catch (e) {
     console.error(`[CALL ${call}] error`, e);
     s.missed += 1;
-    return xml(res, gather(`Sorry, I had a small issue. ${promptFor(s.step)}`, s, s.step));
+    return xml(res, gather(retryPromptFor(s.step), s, s.step));
   }
 });
 
