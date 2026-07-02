@@ -11,8 +11,6 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptioni
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'Tabor Painting';
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
-const DEFAULT_GATHER_TIMEOUT = process.env.GATHER_TIMEOUT || '4';
-const DEFAULT_SPEECH_TIMEOUT = process.env.GATHER_SPEECH_TIMEOUT || '1';
 
 const sessions = new Map();
 
@@ -28,26 +26,16 @@ function val(req, ...keys) {
   return '';
 }
 
-function callId(req) {
+function id(req) {
   return val(req, 'CallSid', 'callSid', 'call_id') || `local-${Date.now()}`;
-}
-
-function callerNumber(req) {
-  return val(req, 'From', 'from', 'caller', 'Caller') || '';
 }
 
 function speech(req) {
   return val(req, 'SpeechResult', 'speech_result', 'speech', 'transcript', 'SpeechTranscript') || '';
 }
 
-function todayText() {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }).format(new Date());
+function today() {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).format(new Date());
 }
 
 function say(text) {
@@ -58,31 +46,16 @@ function xml(res, body) {
   res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response>${body}</Response>`);
 }
 
-function newSession() {
-  return {
-    history: [],
-    missedCount: 0,
-    lastAskedField: '',
-    lead: {
-      name: '',
-      service: '',
-      streetAddress: '',
-      city: '',
-      zip: '',
-      preferredDay: '',
-      preferredTime: '',
-      notes: '',
-      complete: false
-    }
-  };
+function freshState() {
+  return { history: [], missed: 0, lastField: 'yesNo', lead: { name: '', service: '', streetAddress: '', city: '', preferredDay: '', preferredTime: '', notes: '', complete: false } };
 }
 
-function state(id) {
-  if (!sessions.has(id)) sessions.set(id, newSession());
-  return sessions.get(id);
+function state(callId) {
+  if (!sessions.has(callId)) sessions.set(callId, freshState());
+  return sessions.get(callId);
 }
 
-function missingField(lead) {
+function missing(lead) {
   if (!lead.name) return 'name';
   if (!lead.service) return 'service';
   if (!lead.streetAddress) return 'streetAddress';
@@ -93,8 +66,8 @@ function missingField(lead) {
   return '';
 }
 
-function fallbackQuestion(field) {
-  const questions = {
+function promptFor(field) {
+  return {
     yesNo: 'Are you calling to schedule an estimate? Please answer yes or no.',
     name: 'Can I have your name? Please say just your name.',
     service: 'What painting work do you need an estimate for?',
@@ -103,235 +76,104 @@ function fallbackQuestion(field) {
     preferredDay: 'What day works best for Jason to come take a look?',
     preferredTime: 'What time works best for the estimate? Please say just the time.',
     notes: 'Briefly describe the room or area that needs painting.'
-  };
-  return questions[field] || 'Perfect, I have the details. Jason will follow up to confirm the estimate appointment.';
+  }[field] || 'Perfect, Jason will follow up to confirm the estimate appointment.';
 }
 
-function timingForField(field, missedCount = 0) {
-  const base = {
-    yesNo: { timeout: 3, speechTimeout: 1 },
-    name: { timeout: 4, speechTimeout: 1 },
-    streetAddress: { timeout: 5, speechTimeout: 1 },
-    city: { timeout: 4, speechTimeout: 1 },
-    preferredTime: { timeout: 4, speechTimeout: 1 },
-    preferredDay: { timeout: 5, speechTimeout: 1 },
-    service: { timeout: 7, speechTimeout: 2 },
-    notes: { timeout: 9, speechTimeout: 2 }
-  }[field] || { timeout: Number(DEFAULT_GATHER_TIMEOUT), speechTimeout: Number(DEFAULT_SPEECH_TIMEOUT) };
-
-  const bump = Math.min(Number(missedCount || 0), 2);
-  return {
-    timeout: String(base.timeout + bump * 2),
-    speechTimeout: String(base.speechTimeout + bump)
-  };
+function detectField(text, s) {
+  const t = String(text).toLowerCase();
+  if (t.includes('yes or no') || t.includes('schedule an estimate')) return 'yesNo';
+  if (t.includes('your name')) return 'name';
+  if (t.includes('street address')) return 'streetAddress';
+  if (t.includes('what city')) return 'city';
+  if (t.includes('what day')) return 'preferredDay';
+  if (t.includes('what time')) return 'preferredTime';
+  if (t.includes('describe') || t.includes('room or area')) return 'notes';
+  if (t.includes('painting work') || t.includes('estimate for')) return 'service';
+  return missing(s.lead) || 'notes';
 }
 
-function detectAskedField(text, session) {
-  const lower = String(text || '').toLowerCase();
-  if (lower.includes('yes or no') || lower.includes('schedule an estimate')) return 'yesNo';
-  if (lower.includes('your name')) return 'name';
-  if (lower.includes('street address')) return 'streetAddress';
-  if (lower.includes('what city')) return 'city';
-  if (lower.includes('what day')) return 'preferredDay';
-  if (lower.includes('what time')) return 'preferredTime';
-  if (lower.includes('describe') || lower.includes('room or area')) return 'notes';
-  if (lower.includes('painting work') || lower.includes('estimate for')) return 'service';
-  return missingField(session.lead) || 'notes';
+function timing(field, missed) {
+  const speechTimeout = field === 'service' || field === 'notes' ? 2 : 1;
+  const bump = Math.min(Number(missed || 0), 2);
+  return { timeout: String(2 + bump), speechTimeout: String(speechTimeout + bump) };
 }
 
-function gather(text, session, fieldOverride = '') {
-  const field = fieldOverride || detectAskedField(text, session);
-  session.lastAskedField = field;
-  const timing = timingForField(field, session.missedCount);
-  console.log('[GATHER timing]', { field, missedCount: session.missedCount, ...timing, text });
-  return `<Gather input="speech" action="${esc(PUBLIC_URL + '/handle-speech')}" timeout="${esc(timing.timeout)}" speechTimeout="${esc(timing.speechTimeout)}">${say(text)}</Gather><Redirect method="POST">${esc(PUBLIC_URL + '/voice')}</Redirect>`;
+function gather(text, s, field = '') {
+  const f = field || detectField(text, s);
+  s.lastField = f;
+  const tm = timing(f, s.missed);
+  console.log('[GATHER timing]', { field: f, missed: s.missed, ...tm, text });
+  return `<Gather input="speech" action="${esc(PUBLIC_URL + '/handle-speech')}" timeout="${esc(tm.timeout)}" speechTimeout="${esc(tm.speechTimeout)}">${say(text)}</Gather><Redirect method="POST">${esc(PUBLIC_URL + '/voice')}</Redirect>`;
 }
 
-function cleanJson(text) {
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first === -1 || last === -1) return '{}';
-  return text.slice(first, last + 1);
+function jsonOnly(text) {
+  const a = text.indexOf('{');
+  const b = text.lastIndexOf('}');
+  return a >= 0 && b >= 0 ? text.slice(a, b + 1) : '{}';
 }
 
-function systemPrompt(session) {
-  return `You are the virtual receptionist for ${BUSINESS_NAME}.
-Today is ${todayText()} in Massachusetts.
-
-Goal: book an estimate appointment for Jason to come to the customer's house and look at the painting job. Do not act like you are booking the actual painting job.
-
-Collect these exact fields in this order:
-1. name
-2. service
-3. streetAddress
-4. city
-5. zip, only if caller naturally gives it; do not force zip before moving on
-6. preferredDay
-7. preferredTime
-8. notes
-
-Important wording rules:
-- Ask ONE question at a time.
-- For short fields, tell callers to answer briefly, like "Please say just your name" or "Please say just the street address".
-- Say "street address" or "city". Do NOT say "where is the room located" or "where is your living room located".
-- If caller says a room like living room, bedroom, kitchen, or hallway, that is service/notes, not the address.
-- If caller gives only a city, keep it as city and still ask for the street address.
-- If caller gives a relative day like tomorrow, Saturday, next Tuesday, or the 8th, interpret it using today's date when possible and store the clearest version.
-- Keep replies short, natural, and under two sentences.
-- If enough details are collected, confirm the details briefly, ask if they have any questions, and say Jason will follow up to confirm the estimate appointment.
-
-Current lead JSON:
-${JSON.stringify(session.lead)}
-
-Return ONLY valid JSON:
-{
-  "reply": "what the receptionist says next",
-  "lead": {
-    "name": "",
-    "service": "",
-    "streetAddress": "",
-    "city": "",
-    "zip": "",
-    "preferredDay": "",
-    "preferredTime": "",
-    "notes": "",
-    "complete": false
-  }
-}`;
+function system(s) {
+  return `You are the virtual receptionist for ${BUSINESS_NAME}. Today is ${today()} in Massachusetts. You are booking an estimate appointment for Jason to look at a painting job. Collect in order: name, service, streetAddress, city, preferredDay, preferredTime, notes. Ask one question at a time. Use the words street address and city. Never ask where a living room is located. Interpret relative dates using today's date. Keep replies under two sentences. Current lead: ${JSON.stringify(s.lead)}. Return only JSON with reply and lead.`;
 }
 
-async function reply(id, text, fromNumber) {
-  const s = state(id);
-
-  if (!process.env.OPENAI_API_KEY) {
-    const field = missingField(s.lead);
-    return fallbackQuestion(field);
-  }
-
+async function getReply(callId, text) {
+  const s = state(callId);
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const messages = [
-    { role: 'system', content: systemPrompt(s) },
-    ...s.history,
-    { role: 'user', content: `Caller phone from caller ID: ${fromNumber || 'unknown'}\nCaller said: ${text}` }
-  ];
-
   const r = await client.chat.completions.create({
     model: MODEL,
-    messages,
+    messages: [{ role: 'system', content: system(s) }, ...s.history, { role: 'user', content: text }],
     temperature: 0.2,
-    max_tokens: 180,
+    max_tokens: 160,
     response_format: { type: 'json_object' }
   });
-
-  const raw = r.choices[0]?.message?.content || '{}';
   let parsed;
-  try {
-    parsed = JSON.parse(cleanJson(raw));
-  } catch {
-    const field = missingField(s.lead);
-    parsed = { reply: fallbackQuestion(field), lead: s.lead };
-  }
-
+  try { parsed = JSON.parse(jsonOnly(r.choices[0]?.message?.content || '{}')); } catch { parsed = { reply: promptFor(missing(s.lead)), lead: s.lead }; }
   s.lead = { ...s.lead, ...(parsed.lead || {}) };
-  if (!s.lead.complete && !missingField(s.lead)) s.lead.complete = true;
-
-  let answer = parsed.reply || fallbackQuestion(missingField(s.lead));
-
-  const nextMissing = missingField(s.lead);
-  if (!s.lead.complete && nextMissing && answer.toLowerCase().includes('where is')) {
-    answer = fallbackQuestion(nextMissing);
-  }
-
-  s.history.push({ role: 'user', content: text });
-  s.history.push({ role: 'assistant', content: answer });
-
-  console.log(`[CALL ${id}] lead`, s.lead);
+  if (!missing(s.lead)) s.lead.complete = true;
+  const answer = parsed.reply || promptFor(missing(s.lead));
+  s.history.push({ role: 'user', content: text }, { role: 'assistant', content: answer });
+  console.log(`[CALL ${callId}] lead`, s.lead);
   return answer;
 }
 
-app.get('/', (req, res) => res.json({
-  ok: true,
-  mode: 'gather-checklist-adaptive',
-  voice: PUBLIC_URL + '/voice',
-  speech: PUBLIC_URL + '/handle-speech',
-  today: todayText()
-}));
-
-app.get('/debug-env', (req, res) => res.json({
-  OPENAI_API_KEY: Boolean(process.env.OPENAI_API_KEY),
-  PUBLIC_URL,
-  BUSINESS_NAME,
-  MODEL,
-  DEFAULT_GATHER_TIMEOUT,
-  DEFAULT_SPEECH_TIMEOUT,
-  today: todayText(),
-  PORT
-}));
+app.get('/', (req, res) => res.json({ ok: true, mode: 'fast-gather', today: today() }));
 
 app.all('/voice', (req, res) => {
-  const id = callId(req);
-  const s = state(id);
-  console.log(`[CALL ${id}] voice`, { method: req.method, complete: s.lead.complete, missedCount: s.missedCount });
-
-  if (s.history.length === 0) {
-    const intro = `Thanks for calling ${BUSINESS_NAME}. This is the AI receptionist. It may take a second after you finish talking. Are you calling to schedule an estimate? Please answer yes or no.`;
-    return xml(res, gather(intro, s, 'yesNo'));
-  }
-
-  s.missedCount += 1;
-  const field = missingField(s.lead) || s.lastAskedField || 'notes';
-  return xml(res, gather('Sorry, I did not hear that clearly. I will give you a little more time. ' + fallbackQuestion(field), s, field));
+  const call = id(req);
+  const s = state(call);
+  console.log(`[CALL ${call}] voice`, { missed: s.missed });
+  if (s.history.length === 0) return xml(res, gather(`Thanks for calling ${BUSINESS_NAME}. This is the AI receptionist. It may take a moment for me to respond after you finish speaking. Are you calling to schedule an estimate? Please answer yes or no.`, s, 'yesNo'));
+  s.missed += 1;
+  return xml(res, gather('Sorry, I did not hear that clearly. I will give you a little more time. ' + promptFor(missing(s.lead) || s.lastField), s, missing(s.lead) || s.lastField));
 });
 
 app.all('/handle-speech', async (req, res) => {
-  const id = callId(req);
+  const call = id(req);
+  const s = state(call);
   const text = String(speech(req)).trim();
-  const from = callerNumber(req);
-  const s = state(id);
-
-  console.log(`[CALL ${id}] speech`, {
-    method: req.method,
-    text,
-    lastAskedField: s.lastAskedField,
-    bodyKeys: Object.keys(req.body || {}).join(',')
-  });
-
+  console.log(`[CALL ${call}] speech`, { text, lastField: s.lastField });
   if (!text) {
-    s.missedCount += 1;
-    const field = missingField(s.lead) || s.lastAskedField || 'notes';
-    return xml(res, gather('Sorry, I did not hear that clearly. I will give you a little more time. ' + fallbackQuestion(field), s, field));
+    s.missed += 1;
+    return xml(res, gather('Sorry, I did not hear that clearly. I will give you a little more time. ' + promptFor(missing(s.lead) || s.lastField), s, missing(s.lead) || s.lastField));
   }
-
-  s.missedCount = 0;
-
+  s.missed = 0;
   try {
-    const answer = await reply(id, text, from);
-    console.log(`[CALL ${id}] answer`, { answer });
-
-    if (state(id).lead.complete) {
-      return xml(res, `${say(answer)}<Hangup />`);
-    }
-
-    const nextField = missingField(state(id).lead) || detectAskedField(answer, state(id));
-    return xml(res, gather(answer, state(id), nextField));
+    const answer = await getReply(call, text);
+    if (s.lead.complete) return xml(res, `${say(answer)}<Hangup />`);
+    return xml(res, gather(answer, s, missing(s.lead) || detectField(answer, s)));
   } catch (e) {
-    console.error(`[CALL ${id}] error`, e);
-    s.missedCount += 1;
-    const field = missingField(s.lead) || s.lastAskedField || 'notes';
-    return xml(res, gather('Sorry, I had a small issue. I will give you a little more time. ' + fallbackQuestion(field), s, field));
+    console.error(`[CALL ${call}] error`, e);
+    s.missed += 1;
+    return xml(res, gather('Sorry, I had a small issue. I will give you a little more time. ' + promptFor(missing(s.lead) || s.lastField), s, missing(s.lead) || s.lastField));
   }
 });
 
 app.all('/call-status', (req, res) => {
-  const id = callId(req);
+  const call = id(req);
   const status = val(req, 'CallStatus', 'status', 'event_type');
-  console.log(`[CALL ${id}] status`, { status });
-  if (String(status).toLowerCase().includes('hangup') || String(status).toLowerCase().includes('complete')) sessions.delete(id);
+  console.log(`[CALL ${call}] status`, { status });
+  if (String(status).toLowerCase().includes('hangup') || String(status).toLowerCase().includes('complete')) sessions.delete(call);
   res.sendStatus(200);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`AI receptionist running on ${PORT}`);
-  console.log(`Mode: gather-checklist-adaptive`);
-  console.log(`Today: ${todayText()}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`AI receptionist fast-gather running on ${PORT}`));
