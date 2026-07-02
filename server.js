@@ -9,7 +9,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptionist-production.up.railway.app').replace(/\/$/, '');
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'Tabor Painting';
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini real-time';
 const VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
 
 const sessions = new Map();
