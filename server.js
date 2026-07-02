@@ -1,4 +1,8 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import OpenAI from 'openai';
 import { Resend } from 'resend';
@@ -15,8 +19,12 @@ const PHONE_PROVIDER = process.env.PHONE_PROVIDER || 'Telnyx TeXML';
 const TELNYX_NUMBER = process.env.TELNYX_NUMBER || '17742316164';
 const TELNYX_VOICE_WEBHOOK_PATH = process.env.TELNYX_VOICE_WEBHOOK_PATH || '/voice';
 const TELNYX_SPEECH_WEBHOOK_PATH = process.env.TELNYX_SPEECH_WEBHOOK_PATH || '/handle-speech';
+const TELNYX_RECORDING_WEBHOOK_PATH = process.env.TELNYX_RECORDING_WEBHOOK_PATH || '/handle-recording';
 const TELNYX_STATUS_WEBHOOK_PATH = process.env.TELNYX_STATUS_WEBHOOK_PATH || '/call-status';
 const TTS_VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
+const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe';
+const RECORDING_MAX_LENGTH = process.env.RECORDING_MAX_LENGTH || '10';
+const RECORDING_TIMEOUT = process.env.RECORDING_TIMEOUT || '4';
 
 function getOpenAIClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -73,8 +81,8 @@ function getCall(callSid) {
   return calls.get(callSid);
 }
 
-function absoluteUrl(path) {
-  return `${PUBLIC_URL}${path}`;
+function absoluteUrl(pathValue) {
+  return `${PUBLIC_URL}${pathValue}`;
 }
 
 function xmlEscape(value = '') {
@@ -94,7 +102,21 @@ function sayTag(message) {
   return `<Say voice="${xmlEscape(TTS_VOICE)}" language="en-US">${xmlEscape(message)}</Say>`;
 }
 
+function sayAndRecord(res, message) {
+  sendTexml(
+    res,
+    `${sayTag(message)}<Record action="${xmlEscape(absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH))}" method="POST" maxLength="${xmlEscape(
+      RECORDING_MAX_LENGTH
+    )}" timeout="${xmlEscape(
+      RECORDING_TIMEOUT
+    )}" finishOnKey="#" playBeep="false" trim="trim-silence" format="mp3" /><Redirect method="POST">${xmlEscape(
+      absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)
+    )}</Redirect>`
+  );
+}
+
 function sayAndGather(res, message) {
+  // Legacy fallback route. The main call flow now uses OpenAI transcription through /handle-recording.
   sendTexml(
     res,
     `<Gather input="speech" action="${xmlEscape(absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH))}" speechTimeout="auto" timeout="6">${sayTag(
@@ -218,15 +240,59 @@ function getSpeech(req) {
   return getRequestValue(req, 'SpeechResult', 'speech_result', 'speech', 'transcript') || '';
 }
 
+function getRecordingUrl(req) {
+  return getRequestValue(req, 'RecordingUrl', 'recording_url', 'recordingUrl', 'recording_url_mp3', 'RecordingUri') || '';
+}
+
+function extensionFromContentType(contentType = '') {
+  if (contentType.includes('wav')) return '.wav';
+  if (contentType.includes('mpeg') || contentType.includes('mp3')) return '.mp3';
+  if (contentType.includes('mp4')) return '.mp4';
+  if (contentType.includes('webm')) return '.webm';
+  if (contentType.includes('ogg')) return '.ogg';
+  return '.mp3';
+}
+
+async function downloadRecordingToTempFile(recordingUrl) {
+  const response = await fetch(recordingUrl);
+
+  if (!response.ok) {
+    throw new Error(`Could not download recording. HTTP ${response.status}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const filePath = path.join(os.tmpdir(), `caller-audio-${randomUUID()}${extensionFromContentType(contentType)}`);
+  const audioBuffer = Buffer.from(await response.arrayBuffer());
+
+  await fs.promises.writeFile(filePath, audioBuffer);
+  return filePath;
+}
+
+async function transcribeWithOpenAI(audioFilePath) {
+  const openai = getOpenAIClient();
+
+  const transcription = await openai.audio.transcriptions.create({
+    file: fs.createReadStream(audioFilePath),
+    model: OPENAI_TRANSCRIPTION_MODEL
+  });
+
+  if (typeof transcription === 'string') {
+    return transcription;
+  }
+
+  return transcription.text || '';
+}
+
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'AI receptionist backend is running on Telnyx TeXML.',
+    message: 'AI receptionist backend is running on Telnyx TeXML with OpenAI speech-to-text.',
     phoneProvider: PHONE_PROVIDER,
     telnyxNumber: TELNYX_NUMBER || null,
     telnyxSetupUrl: absoluteUrl('/telnyx'),
     voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
-    speechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
+    recordingWebhook: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
+    legacySpeechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
     callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH),
     debugEnvUrl: absoluteUrl('/debug-env')
   });
@@ -239,12 +305,14 @@ app.get('/telnyx', (req, res) => {
       'Buy or use a Telnyx phone number.',
       'Create a Telnyx TeXML Application.',
       `Set the TeXML Application voice webhook URL to ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)} with method POST.`,
+      `The app will record caller audio and send it to OpenAI through ${absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH)}.`,
       `Set the optional status callback URL to ${absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH)} with method POST.`,
       'Assign the Telnyx number to that TeXML Application.',
       'Call the Telnyx number from another phone to test the receptionist.'
     ],
     voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
-    speechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
+    recordingWebhook: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
+    legacySpeechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
     callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH)
   });
 });
@@ -261,6 +329,10 @@ app.get('/debug-env', (req, res) => {
     TELNYX_NUMBER: hasValue(process.env.TELNYX_NUMBER),
     TTS_VOICE,
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    OPENAI_TRANSCRIPTION_MODEL,
+    TELNYX_RECORDING_WEBHOOK_PATH,
+    RECORDING_MAX_LENGTH,
+    RECORDING_TIMEOUT,
     nodeEnv: process.env.NODE_ENV || null,
     port: PORT
   });
@@ -271,13 +343,59 @@ app.all(TELNYX_VOICE_WEBHOOK_PATH, (req, res) => {
   const callState = getCall(callSid);
 
   if (callState.messages.length === 0) {
-    return sayAndGather(
+    return sayAndRecord(
       res,
       `Thanks for calling ${businessProfile.name}. This is the virtual receptionist. How can I help you today?`
     );
   }
 
-  return sayAndGather(res, 'Sorry, I did not catch that. Could you say that again?');
+  return sayAndRecord(res, 'Sorry, I did not catch that. Could you say that again?');
+});
+
+app.all(TELNYX_RECORDING_WEBHOOK_PATH, async (req, res) => {
+  const callSid = getCallSid(req);
+  const callerNumber = getCallerNumber(req);
+  const recordingUrl = getRecordingUrl(req);
+  const callState = getCall(callSid);
+  let tempAudioPath = '';
+
+  if (!String(recordingUrl).trim()) {
+    return sayAndRecord(res, 'Sorry, I could not get the audio. Could you say that one more time?');
+  }
+
+  try {
+    tempAudioPath = await downloadRecordingToTempFile(String(recordingUrl));
+    const transcript = String(await transcribeWithOpenAI(tempAudioPath)).trim();
+
+    if (!transcript) {
+      return sayAndRecord(res, 'Sorry, I did not hear anything clearly. Could you say that one more time?');
+    }
+
+    console.log(`Caller transcript for ${callSid}:`, transcript);
+
+    const ai = await getAiResponse(callState, transcript, callerNumber);
+
+    if (callState.lead.complete || ai.shouldEndCall) {
+      await sendLeadEmail(callSid, callState);
+      return endCall(
+        res,
+        ai.reply ||
+          'Perfect, I have what I need. I will pass this along and someone will follow up with you soon. Thanks for calling.'
+      );
+    }
+
+    return sayAndRecord(res, ai.reply || 'Got it. Could you tell me a little more?');
+  } catch (error) {
+    console.error('OpenAI audio receptionist error:', error);
+    return sayAndRecord(
+      res,
+      'Sorry, I had a small issue understanding the audio. Could you repeat that one more time?'
+    );
+  } finally {
+    if (tempAudioPath) {
+      fs.promises.unlink(tempAudioPath).catch(() => {});
+    }
+  }
 });
 
 app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
@@ -287,7 +405,7 @@ app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
   const callState = getCall(callSid);
 
   if (!String(speech).trim()) {
-    return sayAndGather(res, 'Sorry, I did not hear anything. How can I help you today?');
+    return sayAndRecord(res, 'Sorry, I did not hear anything. How can I help you today?');
   }
 
   try {
@@ -302,10 +420,10 @@ app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
       );
     }
 
-    return sayAndGather(res, ai.reply || 'Got it. Could you tell me a little more?');
+    return sayAndRecord(res, ai.reply || 'Got it. Could you tell me a little more?');
   } catch (error) {
     console.error('AI receptionist error:', error);
-    return sayAndGather(
+    return sayAndRecord(
       res,
       'Sorry, I had a small issue on my end. Could you repeat that one more time?'
     );
@@ -333,9 +451,10 @@ app.all(TELNYX_STATUS_WEBHOOK_PATH, async (req, res) => {
   res.sendStatus(200);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI receptionist server running on port ${PORT}`);
   console.log(`Telnyx voice webhook: ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)}`);
+  console.log(`OpenAI recording webhook: ${absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH)}`);
   console.log(`Telnyx setup info: ${absoluteUrl('/telnyx')}`);
   console.log(`Debug env page: ${absoluteUrl('/debug-env')}`);
 });
