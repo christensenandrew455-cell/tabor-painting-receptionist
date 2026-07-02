@@ -1,9 +1,11 @@
 # Tabor Painting AI Receptionist
 
-This is a basic AI receptionist backend using:
+This is a fast AI receptionist backend using:
 
 - Telnyx TeXML for the live phone call webhook
-- OpenAI for the AI brain
+- Telnyx speech gathering for the caller's spoken answers
+- Fast scripted JavaScript logic for normal appointment booking answers
+- OpenAI only as a fallback for unclear answers and quick customer questions
 - Resend for lead summary emails
 - Railway for hosting
 
@@ -13,6 +15,28 @@ The app is set up for this Railway domain:
 https://tabor-painting-receptionist-production.up.railway.app
 ```
 
+## Main idea
+
+The receptionist should not send every single caller answer to AI.
+
+For normal appointment booking, the server now uses simple logic first:
+
+```text
+Caller says yes/no
+        ↓
+JavaScript checks for yes/no keywords
+        ↓
+Server instantly returns the next scripted line
+```
+
+The AI fallback only runs when the logic cannot confidently understand the caller, or when the caller asks a free-form question like:
+
+```text
+How long does interior painting usually take?
+```
+
+That keeps the call more snappy and avoids the slow speech-to-text → AI → text-to-speech delay on every turn.
+
 ## Call flow
 
 ```text
@@ -20,25 +44,47 @@ Customer calls Telnyx number
         ↓
 Telnyx TeXML Application requests this Railway app at /voice
         ↓
-AI receptionist answers, listens, and responds
+Receptionist asks if they want to schedule an estimate
+        ↓
+Fast logic collects the lead one field at a time
+        ↓
+OpenAI fallback handles unclear answers or customer questions
         ↓
 When the lead is complete, the app emails the owner
+        ↓
+Receptionist politely ends the call and hangs up
 ```
 
-## What it does
+## What it collects
 
-When someone calls the connected Telnyx number, the app:
+The app collects:
 
-1. Answers the phone
-2. Asks how it can help
-3. Uses OpenAI to respond
-4. Collects lead info:
-   - name
-   - phone number
-   - service needed
-   - location
-   - preferred time
-5. Emails the lead summary to the owner using Resend
+- caller name
+- caller phone number when provided by Telnyx
+- service needed
+- street address
+- city
+- preferred day
+- preferred time
+- project notes
+- optional customer question
+
+## Fast service detection
+
+The service question intentionally gives the caller choices:
+
+```text
+What service do you need: interior painting, exterior painting, or staining?
+```
+
+The logic can quickly classify common answers, for example:
+
+- "interior painting"
+- "I need a room painted"
+- "bedroom walls"
+- "outside of the house"
+- "deck staining"
+- "drywall patching"
 
 ## Files
 
@@ -67,14 +113,7 @@ Open this in your browser:
 http://localhost:3000
 ```
 
-You should see:
-
-```json
-{
-  "status": "ok",
-  "message": "AI receptionist backend is running on Telnyx TeXML."
-}
-```
+You should see JSON showing the app is running in `fast-scripted-gather` mode.
 
 ## Railway environment variables
 
@@ -90,7 +129,7 @@ TELNYX_SPEECH_WEBHOOK_PATH=/handle-speech
 TELNYX_STATUS_WEBHOOK_PATH=/call-status
 TTS_VOICE=Polly.Joanna-Neural
 OPENAI_API_KEY=your_openai_api_key
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_FALLBACK_MODEL=gpt-4.1-nano
 RESEND_API_KEY=your_resend_api_key
 OWNER_EMAIL=your_email@example.com
 FROM_EMAIL=AI Receptionist <onboarding@resend.dev>
@@ -98,10 +137,35 @@ BUSINESS_NAME=Tabor Painting
 BUSINESS_SERVICES=interior painting, exterior painting, cabinet painting, drywall patching, staining, and small paint repairs
 SERVICE_AREA=your local service area
 BUSINESS_HOURS=Monday through Friday, 8 AM to 5 PM
-BOOKING_RULE=Collect the caller name, phone number, service needed, location, and preferred time. Do not promise an exact appointment. Say the owner will follow up to confirm.
 ```
 
 Important: do not put your real `.env` file into GitHub.
+
+## Model notes
+
+This app is not using a full OpenAI realtime audio session.
+
+Current architecture:
+
+```text
+Telnyx speech gather
+        ↓
+server-side JavaScript logic
+        ↓
+OpenAI fallback only when needed
+        ↓
+Telnyx Say voice response
+```
+
+Recommended fallback model:
+
+```text
+gpt-4.1-nano
+```
+
+Reason: the fallback is only doing simple extraction or quick customer Q&A, so it does not need a large reasoning model.
+
+For true live interruption handling, streaming audio, and more natural back-and-forth, the next major version would use OpenAI Realtime or a Telnyx media stream. This repo currently uses TeXML, which is simpler and easier to deploy, but not as fluid as a true realtime voice socket.
 
 ## Deploy on Railway
 
@@ -156,9 +220,9 @@ This app uses Telnyx TeXML. Telnyx TeXML supports TwiML-style verbs like `<Gathe
 
 Later upgrades can include:
 
+- pre-recorded audio files for the most common scripted responses
 - Google Sheets lead storage
-- A dashboard
-- Better voices
-- Full real-time voice
-- Client-specific business profiles
-- Your CRM system
+- a dashboard
+- full realtime voice with interruption handling
+- client-specific business profiles
+- CRM integration
