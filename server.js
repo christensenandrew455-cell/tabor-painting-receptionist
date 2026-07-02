@@ -18,6 +18,7 @@ const FROM_EMAIL = process.env.FROM_EMAIL || 'AI Receptionist <onboarding@resend
 const PHONE_PROVIDER = process.env.PHONE_PROVIDER || 'Telnyx TeXML';
 const TELNYX_NUMBER = process.env.TELNYX_NUMBER || '';
 const TELNYX_VOICE_WEBHOOK_PATH = process.env.TELNYX_VOICE_WEBHOOK_PATH || '/voice';
+const TELNYX_START_RECORDING_WEBHOOK_PATH = process.env.TELNYX_START_RECORDING_WEBHOOK_PATH || '/start-recording';
 const TELNYX_SPEECH_WEBHOOK_PATH = process.env.TELNYX_SPEECH_WEBHOOK_PATH || '/handle-speech';
 const TELNYX_RECORDING_WEBHOOK_PATH = process.env.TELNYX_RECORDING_WEBHOOK_PATH || '/handle-recording';
 const TELNYX_STATUS_WEBHOOK_PATH = process.env.TELNYX_STATUS_WEBHOOK_PATH || '/call-status';
@@ -99,19 +100,30 @@ function sayTag(message) {
   return `<Say voice="${xmlEscape(TTS_VOICE)}" language="en-US">${xmlEscape(message)}</Say>`;
 }
 
-function sayAndRecord(res, callSid, message) {
-  logStep(callSid, 'Sending Say + Record', {
+function recordTag() {
+  return `<Record action="${xmlEscape(absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH))}" method="POST" maxLength="${xmlEscape(RECORDING_MAX_LENGTH)}" timeout="${xmlEscape(RECORDING_TIMEOUT)}" finishOnKey="#" playBeep="true" trim="trim-silence" format="mp3" /><Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH))}</Redirect>`;
+}
+
+function sayThenStartRecording(res, callSid, message) {
+  logStep(callSid, 'Sending Say + Redirect to start recording', {
     message,
+    startRecordingUrl: absoluteUrl(TELNYX_START_RECORDING_WEBHOOK_PATH)
+  });
+
+  sendTexml(
+    res,
+    `${sayTag(message)}<Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_START_RECORDING_WEBHOOK_PATH))}</Redirect>`
+  );
+}
+
+function startRecording(res, callSid) {
+  logStep(callSid, 'Sending Record only', {
     recordingAction: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
     maxLength: RECORDING_MAX_LENGTH,
     timeout: RECORDING_TIMEOUT,
     playBeep: true
   });
-
-  sendTexml(
-    res,
-    `${sayTag(message)}<Record action="${xmlEscape(absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH))}" method="POST" maxLength="${xmlEscape(RECORDING_MAX_LENGTH)}" timeout="${xmlEscape(RECORDING_TIMEOUT)}" finishOnKey="#" playBeep="true" trim="trim-silence" format="mp3" /><Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH))}</Redirect>`
-  );
+  sendTexml(res, recordTag());
 }
 
 function endCall(res, callSid, message) {
@@ -283,6 +295,7 @@ app.get('/', (req, res) => {
     telnyxNumber: TELNYX_NUMBER || null,
     telnyxSetupUrl: absoluteUrl('/telnyx'),
     voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
+    startRecordingWebhook: absoluteUrl(TELNYX_START_RECORDING_WEBHOOK_PATH),
     recordingWebhook: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
     legacySpeechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
     callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH),
@@ -295,11 +308,13 @@ app.get('/telnyx', (req, res) => {
     provider: 'Telnyx TeXML',
     setup: [
       'Set the TeXML Application voice webhook URL to the /voice route with method POST.',
-      'The app records caller audio and sends it to OpenAI through the /handle-recording route.',
+      'The app says the prompt, redirects to /start-recording, then records caller audio.',
+      'The /handle-recording route sends caller audio to OpenAI transcription.',
       'Assign the Telnyx number to that TeXML Application.',
       'Call the Telnyx number from another phone to test the receptionist.'
     ],
     voiceWebhook: absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH),
+    startRecordingWebhook: absoluteUrl(TELNYX_START_RECORDING_WEBHOOK_PATH),
     recordingWebhook: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
     legacySpeechWebhook: absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH),
     callStatusWebhook: absoluteUrl(TELNYX_STATUS_WEBHOOK_PATH)
@@ -320,6 +335,7 @@ app.get('/debug-env', (req, res) => {
     OPENAI_TRANSCRIPTION_MODEL,
     OPENAI_CHAT_TIMEOUT_MS,
     OPENAI_TRANSCRIPTION_TIMEOUT_MS,
+    TELNYX_START_RECORDING_WEBHOOK_PATH,
     TELNYX_RECORDING_WEBHOOK_PATH,
     RECORDING_MAX_LENGTH,
     RECORDING_TIMEOUT,
@@ -333,9 +349,16 @@ app.all(TELNYX_VOICE_WEBHOOK_PATH, (req, res) => {
   const callState = getCall(callSid);
   logStep(callSid, 'Voice webhook hit', { messageCount: callState.messages.length, method: req.method });
   if (callState.messages.length === 0) {
-    return sayAndRecord(res, callSid, `Thanks for calling ${businessProfile.name}. This is the virtual receptionist. How can I help you today?`);
+    return sayThenStartRecording(res, callSid, `Thanks for calling ${businessProfile.name}. This is the virtual receptionist. How can I help you today?`);
   }
-  return sayAndRecord(res, callSid, 'Sorry, I did not catch that. Please wait for the beep, then say that one more time.');
+  return sayThenStartRecording(res, callSid, 'Sorry, I did not catch that. Please wait for the beep, then say that one more time.');
+});
+
+app.all(TELNYX_START_RECORDING_WEBHOOK_PATH, (req, res) => {
+  const callSid = getCallSid(req);
+  getCall(callSid);
+  logStep(callSid, 'Start-recording webhook hit', { method: req.method });
+  return startRecording(res, callSid);
 });
 
 app.all(TELNYX_RECORDING_WEBHOOK_PATH, async (req, res) => {
@@ -357,24 +380,24 @@ app.all(TELNYX_RECORDING_WEBHOOK_PATH, async (req, res) => {
   });
 
   if (!String(recordingUrl).trim()) {
-    return sayAndRecord(res, callSid, 'Sorry, I could not get the audio. Please wait for the beep, then say that one more time.');
+    return sayThenStartRecording(res, callSid, 'Sorry, I could not get the audio. Please wait for the beep, then say that one more time.');
   }
 
   try {
     tempAudioPath = await downloadRecordingToTempFile(callSid, String(recordingUrl));
     const transcript = String(await transcribeWithOpenAI(callSid, tempAudioPath)).trim();
     if (!transcript) {
-      return sayAndRecord(res, callSid, 'Sorry, I did not hear anything clearly. Please wait for the beep, then say that one more time.');
+      return sayThenStartRecording(res, callSid, 'Sorry, I did not hear anything clearly. Please wait for the beep, then say that one more time.');
     }
     const ai = await getAiResponse(callSid, callState, transcript, callerNumber);
     if (callState.lead.complete || ai.shouldEndCall) {
       await sendLeadEmail(callSid, callState);
       return endCall(res, callSid, ai.reply || 'Perfect, I have what I need. I will pass this along and someone will follow up with you soon. Thanks for calling.');
     }
-    return sayAndRecord(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
+    return sayThenStartRecording(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
   } catch (error) {
     logStep(callSid, 'ERROR in recording flow', { errorName: error.name, errorMessage: error.message, stack: error.stack });
-    return sayAndRecord(res, callSid, 'Sorry, I had a small issue understanding the audio. Please wait for the beep, then say that one more time.');
+    return sayThenStartRecording(res, callSid, 'Sorry, I had a small issue understanding the audio. Please wait for the beep, then say that one more time.');
   } finally {
     if (tempAudioPath) fs.promises.unlink(tempAudioPath).catch(() => {});
   }
@@ -386,17 +409,17 @@ app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
   const speech = getSpeech(req);
   const callState = getCall(callSid);
   logStep(callSid, 'Legacy speech webhook hit', { speech });
-  if (!String(speech).trim()) return sayAndRecord(res, callSid, 'Sorry, I did not hear anything. How can I help you today?');
+  if (!String(speech).trim()) return sayThenStartRecording(res, callSid, 'Sorry, I did not hear anything. How can I help you today?');
   try {
     const ai = await getAiResponse(callSid, callState, String(speech), callerNumber);
     if (callState.lead.complete || ai.shouldEndCall) {
       await sendLeadEmail(callSid, callState);
       return endCall(res, callSid, ai.reply || 'Perfect, I have what I need. I will pass this along and someone will follow up with you soon. Thanks for calling.');
     }
-    return sayAndRecord(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
+    return sayThenStartRecording(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
   } catch (error) {
     logStep(callSid, 'ERROR in legacy speech flow', { errorName: error.name, errorMessage: error.message, stack: error.stack });
-    return sayAndRecord(res, callSid, 'Sorry, I had a small issue on my end. Could you repeat that one more time?');
+    return sayThenStartRecording(res, callSid, 'Sorry, I had a small issue on my end. Could you repeat that one more time?');
   }
 });
 
@@ -420,6 +443,7 @@ app.all(TELNYX_STATUS_WEBHOOK_PATH, async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI receptionist server running on port ${PORT}`);
   console.log(`Telnyx voice webhook: ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)}`);
+  console.log(`Telnyx start recording webhook: ${absoluteUrl(TELNYX_START_RECORDING_WEBHOOK_PATH)}`);
   console.log(`OpenAI recording webhook: ${absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH)}`);
   console.log(`Recording max length: ${RECORDING_MAX_LENGTH}s`);
   console.log(`Recording silence timeout: ${RECORDING_TIMEOUT}s`);
