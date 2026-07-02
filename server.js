@@ -23,8 +23,31 @@ const TELNYX_RECORDING_WEBHOOK_PATH = process.env.TELNYX_RECORDING_WEBHOOK_PATH 
 const TELNYX_STATUS_WEBHOOK_PATH = process.env.TELNYX_STATUS_WEBHOOK_PATH || '/call-status';
 const TTS_VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe';
-const RECORDING_MAX_LENGTH = process.env.RECORDING_MAX_LENGTH || '10';
-const RECORDING_TIMEOUT = process.env.RECORDING_TIMEOUT || '4';
+const OPENAI_CHAT_TIMEOUT_MS = Number(process.env.OPENAI_CHAT_TIMEOUT_MS || 12000);
+const OPENAI_TRANSCRIPTION_TIMEOUT_MS = Number(process.env.OPENAI_TRANSCRIPTION_TIMEOUT_MS || 12000);
+const RECORDING_MAX_LENGTH = process.env.RECORDING_MAX_LENGTH || '8';
+const RECORDING_TIMEOUT = process.env.RECORDING_TIMEOUT || '2';
+
+function logStep(callSid, step, details = {}) {
+  const safeDetails = Object.fromEntries(
+    Object.entries(details).map(([key, value]) => {
+      if (value === undefined || value === null) return [key, value];
+      const stringValue = String(value);
+      return [key, stringValue.length > 500 ? `${stringValue.slice(0, 500)}...` : stringValue];
+    })
+  );
+
+  console.log(`[CALL ${callSid}] ${step}`, safeDetails);
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
 
 function getOpenAIClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -46,8 +69,6 @@ function hasValue(value) {
   return Boolean(value && String(value).trim().length > 0);
 }
 
-// This is a simple in-memory store. It is okay for testing.
-// Later, replace this with Google Sheets, Airtable, Supabase, or your CRM.
 const calls = new Map();
 
 const businessProfile = {
@@ -77,6 +98,7 @@ function getCall(callSid) {
       },
       emailed: false
     });
+    logStep(callSid, 'Created new call state');
   }
   return calls.get(callSid);
 }
@@ -102,7 +124,14 @@ function sayTag(message) {
   return `<Say voice="${xmlEscape(TTS_VOICE)}" language="en-US">${xmlEscape(message)}</Say>`;
 }
 
-function sayAndRecord(res, message) {
+function sayAndRecord(res, callSid, message) {
+  logStep(callSid, 'Sending Say + Record', {
+    message,
+    recordingAction: absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH),
+    maxLength: RECORDING_MAX_LENGTH,
+    timeout: RECORDING_TIMEOUT
+  });
+
   sendTexml(
     res,
     `${sayTag(message)}<Record action="${xmlEscape(absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH))}" method="POST" maxLength="${xmlEscape(
@@ -115,17 +144,8 @@ function sayAndRecord(res, message) {
   );
 }
 
-function sayAndGather(res, message) {
-  // Legacy fallback route. The main call flow now uses OpenAI transcription through /handle-recording.
-  sendTexml(
-    res,
-    `<Gather input="speech" action="${xmlEscape(absoluteUrl(TELNYX_SPEECH_WEBHOOK_PATH))}" speechTimeout="auto" timeout="6">${sayTag(
-      message
-    )}</Gather><Redirect method="POST">${xmlEscape(absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH))}</Redirect>`
-  );
-}
-
-function endCall(res, message) {
+function endCall(res, callSid, message) {
+  logStep(callSid, 'Ending call', { message });
   sendTexml(res, `${sayTag(message)}<Hangup />`);
 }
 
@@ -146,7 +166,8 @@ Your job:
 5. Do not make up prices.
 6. Do not promise exact availability.
 7. If the caller asks for pricing, say the owner can give the best estimate after seeing the job details.
-8. Once you have name, phone, service needed, location, and preferred time, politely end the call.
+8. Ask for only ONE missing detail at a time.
+9. Once you have name, phone, service needed, location, and preferred time, politely end the call.
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -164,7 +185,7 @@ Return ONLY valid JSON in this exact shape:
 }`;
 }
 
-async function getAiResponse(callState, userText, callerNumber) {
+async function getAiResponse(callSid, callState, userText, callerNumber) {
   const openai = getOpenAIClient();
 
   const messages = [
@@ -176,14 +197,27 @@ async function getAiResponse(callState, userText, callerNumber) {
     }
   ];
 
-  const completion = await openai.chat.completions.create({
+  logStep(callSid, 'Sending transcript to OpenAI chat', {
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-    messages,
-    temperature: 0.4,
-    response_format: { type: 'json_object' }
+    transcript: userText,
+    messageCount: messages.length
   });
 
+  const completion = await withTimeout(
+    openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages,
+      temperature: 0.3,
+      max_tokens: 180,
+      response_format: { type: 'json_object' }
+    }),
+    OPENAI_CHAT_TIMEOUT_MS,
+    'OpenAI chat response'
+  );
+
   const raw = completion.choices[0]?.message?.content || '{}';
+  logStep(callSid, 'Received OpenAI chat response', { raw });
+
   const parsed = JSON.parse(raw);
 
   callState.messages.push({ role: 'user', content: userText });
@@ -198,12 +232,28 @@ async function getAiResponse(callState, userText, callerNumber) {
     callState.lead.phone = callerNumber;
   }
 
+  logStep(callSid, 'Updated lead state', {
+    reply: parsed.reply,
+    complete: callState.lead.complete,
+    shouldEndCall: parsed.shouldEndCall,
+    lead: JSON.stringify(callState.lead)
+  });
+
   return parsed;
 }
 
 async function sendLeadEmail(callSid, callState) {
-  if (!OWNER_EMAIL || callState.emailed) return;
+  if (!OWNER_EMAIL) {
+    logStep(callSid, 'Skipping lead email because OWNER_EMAIL is missing');
+    return;
+  }
 
+  if (callState.emailed) {
+    logStep(callSid, 'Skipping lead email because it was already sent');
+    return;
+  }
+
+  logStep(callSid, 'Sending lead email');
   const resend = getResendClient();
   const lead = callState.lead;
 
@@ -215,6 +265,7 @@ async function sendLeadEmail(callSid, callState) {
   });
 
   callState.emailed = true;
+  logStep(callSid, 'Lead email sent');
 }
 
 function getRequestValue(req, ...keys) {
@@ -253,7 +304,8 @@ function extensionFromContentType(contentType = '') {
   return '.mp3';
 }
 
-async function downloadRecordingToTempFile(recordingUrl) {
+async function downloadRecordingToTempFile(callSid, recordingUrl) {
+  logStep(callSid, 'Downloading recording', { recordingUrl: recordingUrl ? 'present' : 'missing' });
   const response = await fetch(recordingUrl);
 
   if (!response.ok) {
@@ -265,22 +317,26 @@ async function downloadRecordingToTempFile(recordingUrl) {
   const audioBuffer = Buffer.from(await response.arrayBuffer());
 
   await fs.promises.writeFile(filePath, audioBuffer);
+  logStep(callSid, 'Recording downloaded', { contentType, bytes: audioBuffer.length, filePath });
   return filePath;
 }
 
-async function transcribeWithOpenAI(audioFilePath) {
+async function transcribeWithOpenAI(callSid, audioFilePath) {
   const openai = getOpenAIClient();
 
-  const transcription = await openai.audio.transcriptions.create({
-    file: fs.createReadStream(audioFilePath),
-    model: OPENAI_TRANSCRIPTION_MODEL
-  });
+  logStep(callSid, 'Sending recording to OpenAI transcription', { model: OPENAI_TRANSCRIPTION_MODEL });
+  const transcription = await withTimeout(
+    openai.audio.transcriptions.create({
+      file: fs.createReadStream(audioFilePath),
+      model: OPENAI_TRANSCRIPTION_MODEL
+    }),
+    OPENAI_TRANSCRIPTION_TIMEOUT_MS,
+    'OpenAI transcription'
+  );
 
-  if (typeof transcription === 'string') {
-    return transcription;
-  }
-
-  return transcription.text || '';
+  const text = typeof transcription === 'string' ? transcription : transcription.text || '';
+  logStep(callSid, 'Received OpenAI transcription', { text });
+  return text;
 }
 
 app.get('/', (req, res) => {
@@ -318,7 +374,6 @@ app.get('/telnyx', (req, res) => {
 });
 
 app.get('/debug-env', (req, res) => {
-  // This does NOT show your secret keys. It only says whether Railway can see them.
   res.json({
     OPENAI_API_KEY: hasValue(process.env.OPENAI_API_KEY),
     RESEND_API_KEY: hasValue(process.env.RESEND_API_KEY),
@@ -330,6 +385,8 @@ app.get('/debug-env', (req, res) => {
     TTS_VOICE,
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     OPENAI_TRANSCRIPTION_MODEL,
+    OPENAI_CHAT_TIMEOUT_MS,
+    OPENAI_TRANSCRIPTION_TIMEOUT_MS,
     TELNYX_RECORDING_WEBHOOK_PATH,
     RECORDING_MAX_LENGTH,
     RECORDING_TIMEOUT,
@@ -341,15 +398,17 @@ app.get('/debug-env', (req, res) => {
 app.all(TELNYX_VOICE_WEBHOOK_PATH, (req, res) => {
   const callSid = getCallSid(req);
   const callState = getCall(callSid);
+  logStep(callSid, 'Voice webhook hit', { messageCount: callState.messages.length, method: req.method });
 
   if (callState.messages.length === 0) {
     return sayAndRecord(
       res,
+      callSid,
       `Thanks for calling ${businessProfile.name}. This is the virtual receptionist. How can I help you today?`
     );
   }
 
-  return sayAndRecord(res, 'Sorry, I did not catch that. Could you say that again?');
+  return sayAndRecord(res, callSid, 'Sorry, I did not catch that. Could you say that again?');
 });
 
 app.all(TELNYX_RECORDING_WEBHOOK_PATH, async (req, res) => {
@@ -359,36 +418,47 @@ app.all(TELNYX_RECORDING_WEBHOOK_PATH, async (req, res) => {
   const callState = getCall(callSid);
   let tempAudioPath = '';
 
+  logStep(callSid, 'Recording webhook hit', {
+    method: req.method,
+    hasRecordingUrl: Boolean(recordingUrl),
+    bodyKeys: Object.keys(req.body || {}).join(','),
+    queryKeys: Object.keys(req.query || {}).join(',')
+  });
+
   if (!String(recordingUrl).trim()) {
-    return sayAndRecord(res, 'Sorry, I could not get the audio. Could you say that one more time?');
+    return sayAndRecord(res, callSid, 'Sorry, I could not get the audio. Could you say that one more time?');
   }
 
   try {
-    tempAudioPath = await downloadRecordingToTempFile(String(recordingUrl));
-    const transcript = String(await transcribeWithOpenAI(tempAudioPath)).trim();
+    tempAudioPath = await downloadRecordingToTempFile(callSid, String(recordingUrl));
+    const transcript = String(await transcribeWithOpenAI(callSid, tempAudioPath)).trim();
 
     if (!transcript) {
-      return sayAndRecord(res, 'Sorry, I did not hear anything clearly. Could you say that one more time?');
+      return sayAndRecord(res, callSid, 'Sorry, I did not hear anything clearly. Could you say that one more time?');
     }
 
-    console.log(`Caller transcript for ${callSid}:`, transcript);
-
-    const ai = await getAiResponse(callState, transcript, callerNumber);
+    const ai = await getAiResponse(callSid, callState, transcript, callerNumber);
 
     if (callState.lead.complete || ai.shouldEndCall) {
       await sendLeadEmail(callSid, callState);
       return endCall(
         res,
+        callSid,
         ai.reply ||
           'Perfect, I have what I need. I will pass this along and someone will follow up with you soon. Thanks for calling.'
       );
     }
 
-    return sayAndRecord(res, ai.reply || 'Got it. Could you tell me a little more?');
+    return sayAndRecord(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
   } catch (error) {
-    console.error('OpenAI audio receptionist error:', error);
+    logStep(callSid, 'ERROR in recording flow', {
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
     return sayAndRecord(
       res,
+      callSid,
       'Sorry, I had a small issue understanding the audio. Could you repeat that one more time?'
     );
   } finally {
@@ -403,28 +473,35 @@ app.all(TELNYX_SPEECH_WEBHOOK_PATH, async (req, res) => {
   const callerNumber = getCallerNumber(req);
   const speech = getSpeech(req);
   const callState = getCall(callSid);
+  logStep(callSid, 'Legacy speech webhook hit', { speech });
 
   if (!String(speech).trim()) {
-    return sayAndRecord(res, 'Sorry, I did not hear anything. How can I help you today?');
+    return sayAndRecord(res, callSid, 'Sorry, I did not hear anything. How can I help you today?');
   }
 
   try {
-    const ai = await getAiResponse(callState, String(speech), callerNumber);
+    const ai = await getAiResponse(callSid, callState, String(speech), callerNumber);
 
     if (callState.lead.complete || ai.shouldEndCall) {
       await sendLeadEmail(callSid, callState);
       return endCall(
         res,
+        callSid,
         ai.reply ||
           'Perfect, I have what I need. I will pass this along and someone will follow up with you soon. Thanks for calling.'
       );
     }
 
-    return sayAndRecord(res, ai.reply || 'Got it. Could you tell me a little more?');
+    return sayAndRecord(res, callSid, ai.reply || 'Got it. Could you tell me a little more?');
   } catch (error) {
-    console.error('AI receptionist error:', error);
+    logStep(callSid, 'ERROR in legacy speech flow', {
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
     return sayAndRecord(
       res,
+      callSid,
       'Sorry, I had a small issue on my end. Could you repeat that one more time?'
     );
   }
@@ -437,15 +514,17 @@ app.all(TELNYX_STATUS_WEBHOOK_PATH, async (req, res) => {
   ).toLowerCase();
   const callState = calls.get(callSid);
 
+  logStep(callSid, 'Status webhook hit', { callStatus, hasCallState: Boolean(callState) });
+
   if (callState && ['completed', 'hangup', 'call.hangup', 'done'].includes(callStatus)) {
     try {
       await sendLeadEmail(callSid, callState);
     } catch (error) {
-      console.error('Failed to send end-of-call email:', error);
+      logStep(callSid, 'Failed to send end-of-call email', { errorMessage: error.message });
     }
 
-    // Clean up memory after the call is done.
     calls.delete(callSid);
+    logStep(callSid, 'Deleted call state');
   }
 
   res.sendStatus(200);
@@ -455,6 +534,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`AI receptionist server running on port ${PORT}`);
   console.log(`Telnyx voice webhook: ${absoluteUrl(TELNYX_VOICE_WEBHOOK_PATH)}`);
   console.log(`OpenAI recording webhook: ${absoluteUrl(TELNYX_RECORDING_WEBHOOK_PATH)}`);
+  console.log(`Recording max length: ${RECORDING_MAX_LENGTH}s`);
+  console.log(`Recording silence timeout: ${RECORDING_TIMEOUT}s`);
   console.log(`Telnyx setup info: ${absoluteUrl('/telnyx')}`);
   console.log(`Debug env page: ${absoluteUrl('/debug-env')}`);
 });
