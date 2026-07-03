@@ -18,7 +18,8 @@ const STREAM_URL = process.env.TELNYX_STREAM_URL || PUBLIC_URL.replace(/^http/i,
 const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'both_tracks';
 const STREAM_CODEC = process.env.TELNYX_STREAM_CODEC || 'PCMU';
 
-const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-mini-realtime-preview';
+// Current Realtime model default. Override in Railway with OPENAI_REALTIME_MODEL if your model list shows a different exact name.
+const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2';
 const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE || 'alloy';
 const OPENAI_REALTIME_URL = process.env.OPENAI_REALTIME_URL || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`;
 
@@ -97,8 +98,7 @@ async function startMediaStream(callControlId) {
 
 function promptForOpening() {
   return `Thank you for calling ${BUSINESS_NAME}. This is an AI receptionist. It may take a moment for me to respond after you finish speaking. Are you calling to schedule an estimate? Please answer yes or no.`;
-}
-
+}\n
 function realtimeInstructions() {
   return `You are the AI receptionist for ${BUSINESS_NAME}. Keep the call simple, quick, and natural.
 
@@ -334,7 +334,6 @@ app.all('/voice-api-webhook', async (req, res) => {
   }
 });
 
-// Keep old TeXML URL from breaking while testing Voice API.
 app.all('/voice', (req, res) => {
   xml(res, `${say(promptForOpening())}<Pause length="5" /><Hangup />`);
 });
