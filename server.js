@@ -153,19 +153,25 @@ function createOpenAIRealtimeSocket(connectionId) {
     sendOpenAI(ws, {
       type: 'session.update',
       session: {
-        modalities: ['text', 'audio'],
+        type: 'realtime',
         instructions: realtimeInstructions(),
-        voice: OPENAI_REALTIME_VOICE,
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 650
-        },
-        temperature: 0.6,
-        max_response_output_tokens: 'inf'
+        output_modalities: ['audio'],
+        max_output_tokens: 'inf',
+        audio: {
+          input: {
+            format: 'g711_ulaw',
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 650
+            }
+          },
+          output: {
+            format: 'g711_ulaw',
+            voice: OPENAI_REALTIME_VOICE
+          }
+        }
       }
     });
   });
@@ -211,18 +217,18 @@ function telnyxAudioEvent(delta, ctx) {
   return event;
 }
 
+function createAudioResponse(ctx, reason = 'manual', instructions = '') {
+  const response = { output_modalities: ['audio'] };
+  if (instructions) response.instructions = instructions;
+  const sent = sendOpenAI(ctx.openaiWs, { type: 'response.create', response });
+  console.log('[response.create]', { connectionId: ctx.connectionId, reason, sent, response });
+  return sent;
+}
+
 function forceGreeting(ctx, reason = 'manual') {
   if (ctx.greeted || !ctx.openaiSessionReady) return false;
   ctx.greeted = true;
-  const sent = sendOpenAI(ctx.openaiWs, {
-    type: 'response.create',
-    response: {
-      modalities: ['audio', 'text'],
-      instructions: promptForOpening()
-    }
-  });
-  console.log('[GREETING create]', { connectionId: ctx.connectionId, reason, sent, streamId: ctx.streamId, telnyxStarted: ctx.telnyxStarted });
-  return sent;
+  return createAudioResponse(ctx, reason, promptForOpening());
 }
 
 function handleOpenAIMessage(raw, ctx) {
@@ -241,7 +247,7 @@ function handleOpenAIMessage(raw, ctx) {
   }
 
   if (type === 'error') {
-    console.error('[OPENAI REALTIME error event]', { connectionId: ctx.connectionId, msg });
+    console.error('[OPENAI REALTIME error event]', { connectionId: ctx.connectionId, error: msg.error || msg });
     return;
   }
 
@@ -270,16 +276,13 @@ function handleOpenAIMessage(raw, ctx) {
 
   if (type === 'input_audio_buffer.speech_stopped') {
     const committed = sendOpenAI(ctx.openaiWs, { type: 'input_audio_buffer.commit' });
-    const created = sendOpenAI(ctx.openaiWs, {
-      type: 'response.create',
-      response: { modalities: ['audio', 'text'] }
-    });
+    const created = createAudioResponse(ctx, 'speech-stopped');
     console.log('[USER speech stopped -> response]', { connectionId: ctx.connectionId, committed, created });
     return;
   }
 
   if (type === 'response.done') {
-    console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId, audioDeltas: ctx.openaiAudioDeltas });
+    console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId, status: msg.response?.status, details: msg.response?.status_details, audioDeltas: ctx.openaiAudioDeltas });
   }
 }
 
