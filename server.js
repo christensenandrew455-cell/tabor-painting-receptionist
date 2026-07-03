@@ -211,15 +211,33 @@ function telnyxAudioEvent(delta, ctx) {
   return event;
 }
 
+function maybeStartGreeting(ctx) {
+  if (ctx.greeted || !ctx.openaiSessionReady || !ctx.telnyxStarted) return;
+  ctx.greeted = true;
+  const sent = sendOpenAI(ctx.openaiWs, {
+    type: 'response.create',
+    response: {
+      modalities: ['audio', 'text'],
+      instructions: promptForOpening()
+    }
+  });
+  console.log('[GREETING create]', { connectionId: ctx.connectionId, sent, streamId: ctx.streamId });
+}
+
 function handleOpenAIMessage(raw, ctx) {
   let msg;
   try {
     msg = JSON.parse(raw.toString());
   } catch {
+    console.log('[OPENAI REALTIME non-json]', { connectionId: ctx.connectionId, bytes: raw.length });
     return;
   }
 
-  const type = msg.type || '';
+  const type = msg.type || 'unknown';
+
+  if (!type.includes('delta')) {
+    console.log('[OPENAI REALTIME event]', { connectionId: ctx.connectionId, type });
+  }
 
   if (type === 'error') {
     console.error('[OPENAI REALTIME error event]', { connectionId: ctx.connectionId, msg });
@@ -227,23 +245,20 @@ function handleOpenAIMessage(raw, ctx) {
   }
 
   if (type === 'session.updated' || type === 'session.created') {
-    console.log('[OPENAI REALTIME session event]', { connectionId: ctx.connectionId, type });
-    if (!ctx.greeted) {
-      ctx.greeted = true;
-      sendOpenAI(ctx.openaiWs, {
-        type: 'response.create',
-        response: {
-          modalities: ['audio', 'text'],
-          instructions: promptForOpening()
-        }
-      });
-    }
+    ctx.openaiSessionReady = true;
+    maybeStartGreeting(ctx);
     return;
   }
 
   if (type === 'response.audio.delta' || type === 'response.output_audio.delta') {
     const delta = msg.delta || msg.audio || '';
-    if (delta) sendTelnyx(ctx.telnyxWs, telnyxAudioEvent(delta, ctx));
+    if (delta) {
+      ctx.openaiAudioDeltas += 1;
+      const sent = sendTelnyx(ctx.telnyxWs, telnyxAudioEvent(delta, ctx));
+      if (ctx.openaiAudioDeltas <= 5 || ctx.openaiAudioDeltas % 50 === 0) {
+        console.log('[OpenAI audio -> Telnyx]', { connectionId: ctx.connectionId, deltas: ctx.openaiAudioDeltas, bytes: delta.length, sent, streamId: ctx.streamId });
+      }
+    }
     return;
   }
 
@@ -253,20 +268,17 @@ function handleOpenAIMessage(raw, ctx) {
   }
 
   if (type === 'input_audio_buffer.speech_stopped') {
-    sendOpenAI(ctx.openaiWs, {
+    const committed = sendOpenAI(ctx.openaiWs, { type: 'input_audio_buffer.commit' });
+    const created = sendOpenAI(ctx.openaiWs, {
       type: 'response.create',
       response: { modalities: ['audio', 'text'] }
     });
+    console.log('[USER speech stopped -> response]', { connectionId: ctx.connectionId, committed, created });
     return;
   }
 
   if (type === 'response.done') {
-    console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId });
-    return;
-  }
-
-  if (type && !type.includes('delta')) {
-    console.log('[OPENAI REALTIME event]', { connectionId: ctx.connectionId, type });
+    console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId, audioDeltas: ctx.openaiAudioDeltas });
   }
 }
 
@@ -389,7 +401,10 @@ wss.on('connection', (telnyxWs, request) => {
     streamId: '',
     callControlId: '',
     packets: 0,
-    greeted: false
+    greeted: false,
+    telnyxStarted: false,
+    openaiSessionReady: false,
+    openaiAudioDeltas: 0
   };
 
   mediaStreams.set(connectionId, ctx);
@@ -416,7 +431,9 @@ wss.on('connection', (telnyxWs, request) => {
     }
 
     if (event === 'start' || event === 'connected' || event === 'streaming.started') {
+      ctx.telnyxStarted = true;
       console.log('[MEDIA STREAM start]', { connectionId, streamId: ctx.streamId, callControlId: ctx.callControlId, msg });
+      maybeStartGreeting(ctx);
       return;
     }
 
@@ -436,6 +453,7 @@ wss.on('connection', (telnyxWs, request) => {
           track: msg.media?.track,
           payloadBytes: payload.length,
           openaiReady: ctx.openaiWs?.readyState === WebSocket.OPEN,
+          sessionReady: ctx.openaiSessionReady,
           sent
         });
       }
@@ -443,7 +461,7 @@ wss.on('connection', (telnyxWs, request) => {
     }
 
     if (event === 'stop' || event === 'streaming.stopped') {
-      console.log('[MEDIA STREAM stop]', { connectionId, msg });
+      console.log('[MEDIA STREAM stop]', { connectionId, msg, openaiAudioDeltas: ctx.openaiAudioDeltas });
       if (ctx.openaiWs?.readyState === WebSocket.OPEN) ctx.openaiWs.close();
       mediaStreams.delete(connectionId);
       return;
@@ -453,7 +471,7 @@ wss.on('connection', (telnyxWs, request) => {
   });
 
   telnyxWs.on('close', () => {
-    console.log('[MEDIA STREAM closed]', { connectionId });
+    console.log('[MEDIA STREAM closed]', { connectionId, openaiAudioDeltas: ctx.openaiAudioDeltas });
     if (ctx.openaiWs?.readyState === WebSocket.OPEN) ctx.openaiWs.close();
     mediaStreams.delete(connectionId);
   });
