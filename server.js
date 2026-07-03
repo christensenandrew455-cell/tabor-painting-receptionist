@@ -18,8 +18,15 @@ const STREAM_URL = process.env.TELNYX_STREAM_URL || PUBLIC_URL.replace(/^http/i,
 const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'both_tracks';
 const STREAM_CODEC = process.env.TELNYX_STREAM_CODEC || 'PCMU';
 
-// Current Realtime model default. Override in Railway with OPENAI_REALTIME_MODEL if your model list shows a different exact name.
-const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2';
+function normalizeRealtimeModel(value) {
+  return String(value || 'gpt-realtime-2')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/^gpt-?realtime-?2$/, 'gpt-realtime-2');
+}
+
+const OPENAI_REALTIME_MODEL = normalizeRealtimeModel(process.env.OPENAI_REALTIME_MODEL);
 const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE || 'alloy';
 const OPENAI_REALTIME_URL = process.env.OPENAI_REALTIME_URL || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`;
 
@@ -81,7 +88,11 @@ async function telnyxCommand(callControlId, action, body = {}) {
   }
 
   console.log('[TELNYX command ok]', { action, status: response.status });
-  try { return JSON.parse(text); } catch { return text; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 async function answerVoiceApiCall(callControlId) {
@@ -98,7 +109,8 @@ async function startMediaStream(callControlId) {
 
 function promptForOpening() {
   return `Thank you for calling ${BUSINESS_NAME}. This is an AI receptionist. It may take a moment for me to respond after you finish speaking. Are you calling to schedule an estimate? Please answer yes or no.`;
-}\n
+}
+
 function realtimeInstructions() {
   return `You are the AI receptionist for ${BUSINESS_NAME}. Keep the call simple, quick, and natural.
 
@@ -201,7 +213,11 @@ function telnyxAudioEvent(delta, ctx) {
 
 function handleOpenAIMessage(raw, ctx) {
   let msg;
-  try { msg = JSON.parse(raw.toString()); } catch { return; }
+  try {
+    msg = JSON.parse(raw.toString());
+  } catch {
+    return;
+  }
 
   const type = msg.type || '';
 
@@ -385,7 +401,9 @@ wss.on('connection', (telnyxWs, request) => {
     ctx.packets += 1;
 
     let msg;
-    try { msg = JSON.parse(raw.toString()); } catch {
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
       console.log('[MEDIA STREAM non-json]', { connectionId, bytes: raw.length });
       return;
     }
