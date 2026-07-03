@@ -108,7 +108,7 @@ async function startMediaStream(callControlId) {
 }
 
 function promptForOpening() {
-  return `Thank you for calling ${BUSINESS_NAME}. This is an AI receptionist. It may take a moment for me to respond after you finish speaking. Are you calling to schedule an estimate? Please answer yes or no.`;
+  return `Thank you for calling ${BUSINESS_NAME}. This is an AI receptionist. Are you calling to schedule an estimate? Please answer yes or no.`;
 }
 
 function realtimeInstructions() {
@@ -211,8 +211,8 @@ function telnyxAudioEvent(delta, ctx) {
   return event;
 }
 
-function maybeStartGreeting(ctx) {
-  if (ctx.greeted || !ctx.openaiSessionReady || !ctx.telnyxStarted) return;
+function forceGreeting(ctx, reason = 'manual') {
+  if (ctx.greeted || !ctx.openaiSessionReady) return false;
   ctx.greeted = true;
   const sent = sendOpenAI(ctx.openaiWs, {
     type: 'response.create',
@@ -221,7 +221,8 @@ function maybeStartGreeting(ctx) {
       instructions: promptForOpening()
     }
   });
-  console.log('[GREETING create]', { connectionId: ctx.connectionId, sent, streamId: ctx.streamId });
+  console.log('[GREETING create]', { connectionId: ctx.connectionId, reason, sent, streamId: ctx.streamId, telnyxStarted: ctx.telnyxStarted });
+  return sent;
 }
 
 function handleOpenAIMessage(raw, ctx) {
@@ -246,7 +247,7 @@ function handleOpenAIMessage(raw, ctx) {
 
   if (type === 'session.updated' || type === 'session.created') {
     ctx.openaiSessionReady = true;
-    maybeStartGreeting(ctx);
+    setTimeout(() => forceGreeting(ctx, type), 100);
     return;
   }
 
@@ -433,11 +434,12 @@ wss.on('connection', (telnyxWs, request) => {
     if (event === 'start' || event === 'connected' || event === 'streaming.started') {
       ctx.telnyxStarted = true;
       console.log('[MEDIA STREAM start]', { connectionId, streamId: ctx.streamId, callControlId: ctx.callControlId, msg });
-      maybeStartGreeting(ctx);
       return;
     }
 
     if (event === 'media') {
+      if (ctx.packets === 20) forceGreeting(ctx, 'first-audio-packets');
+
       const payload = getTelnyxPayload(msg);
       if (!payload) return;
 
