@@ -3,7 +3,7 @@ import http from 'http';
 import express from 'express';
 import OpenAI from 'openai';
 import { Resend } from 'resend';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptionist-production.up.railway.app').replace(/\/$/, '');
 const BUSINESS_NAME = process.env.BUSINESS_NAME || 'Tabor Painting';
 
-// TeXML still works. Voice API media streaming is now also scaffolded.
+// TeXML still works. Voice API media streaming now bridges to OpenAI Realtime.
 const FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const VOICE = process.env.TTS_VOICE || 'Polly.Joanna-Neural';
 const OWNER_EMAIL = process.env.OWNER_EMAIL || '';
@@ -24,12 +24,19 @@ const BUSINESS_HOURS = process.env.BUSINESS_HOURS || 'Monday through Friday, 8 A
 
 // Telnyx Voice API / Call Control settings.
 // Put your Voice API application webhook at: PUBLIC_URL + /voice-api-webhook
-// Telnyx will connect to this app's WebSocket at: wss://your-domain/media-stream
+// Telnyx connects to this app's WebSocket at: wss://your-domain/media-stream
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || '';
 const TELNYX_API_BASE = process.env.TELNYX_API_BASE || 'https://api.telnyx.com/v2';
 const STREAM_URL = process.env.TELNYX_STREAM_URL || PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
-const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'inbound_track';
+const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'both_tracks';
 const STREAM_CODEC = process.env.TELNYX_STREAM_CODEC || 'PCMU';
+
+// OpenAI Realtime settings.
+// If your account's model picker shows another exact realtime model name, put it in OPENAI_REALTIME_MODEL.
+const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-mini-realtime-preview';
+const OPENAI_REALTIME_VOICE = process.env.OPENAI_REALTIME_VOICE || 'alloy';
+const OPENAI_REALTIME_URL = process.env.OPENAI_REALTIME_URL || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`;
+const OPENAI_REALTIME_BETA_HEADER = process.env.OPENAI_REALTIME_BETA_HEADER || 'realtime=v1';
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -525,12 +532,185 @@ function getVoiceApiEventType(payload) {
   return payload?.data?.event_type || payload?.event_type || '';
 }
 
+function realtimeInstructions() {
+  return `You are the AI receptionist for ${BUSINESS_NAME}. Keep the call simple, quick, and natural.
+
+Main job: book a painting estimate for Jason.
+Collect: name, service, street address, city, preferred day, preferred time, email, and project notes.
+Before ending, repeat the details back and ask if they are correct.
+If correct, say Jason will follow up when he gets the chance to confirm the estimate, then politely end.
+
+Services: ${BUSINESS_SERVICES}.
+Service area: ${SERVICE_AREA}.
+Business hours: ${BUSINESS_HOURS}.
+Jason cannot come to the phone because he is busy with a customer or out on a job.
+Do not quote exact prices. Do not promise exact appointment availability.
+For job length questions: a simple room can often be around a day, but prep, room size, number of walls, repairs, coats, and drying time matter. Jason confirms timing and price after looking at the job.
+
+Conversation rules:
+- Ask one question at a time.
+- Do not ramble.
+- Do not get off topic.
+- Do not say you are ChatGPT.
+- If the caller says they do not want an estimate, ask what you can help them with.
+- If the caller is unclear, ask a short clarifying question.`;
+}
+
+function createOpenAIRealtimeSocket(connectionId) {
+  if (!process.env.OPENAI_API_KEY) {
+    console.error('[OPENAI REALTIME skipped - missing OPENAI_API_KEY]', { connectionId });
+    return null;
+  }
+
+  const headers = {
+    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    'OpenAI-Safety-Identifier': `telnyx-${connectionId}`
+  };
+
+  if (OPENAI_REALTIME_BETA_HEADER) headers['OpenAI-Beta'] = OPENAI_REALTIME_BETA_HEADER;
+
+  const ws = new WebSocket(OPENAI_REALTIME_URL, { headers });
+  ws.on('open', () => {
+    console.log('[OPENAI REALTIME connected]', { connectionId, model: OPENAI_REALTIME_MODEL });
+    safeOpenAISend(ws, {
+      type: 'session.update',
+      session: {
+        modalities: ['text', 'audio'],
+        instructions: realtimeInstructions(),
+        voice: OPENAI_REALTIME_VOICE,
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 650
+        },
+        temperature: 0.6,
+        max_response_output_tokens: 'inf'
+      }
+    });
+  });
+
+  ws.on('close', (code, reason) => {
+    console.log('[OPENAI REALTIME closed]', { connectionId, code, reason: reason?.toString?.() || '' });
+  });
+
+  ws.on('error', (error) => {
+    console.error('[OPENAI REALTIME error]', { connectionId, error });
+  });
+
+  return ws;
+}
+
+function safeOpenAISend(openaiWs, obj) {
+  if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+  openaiWs.send(JSON.stringify(obj));
+  return true;
+}
+
+function safeTelnyxSend(telnyxWs, obj) {
+  if (!telnyxWs || telnyxWs.readyState !== WebSocket.OPEN) return false;
+  telnyxWs.send(JSON.stringify(obj));
+  return true;
+}
+
+function getTelnyxPayload(msg) {
+  return msg?.media?.payload || msg?.payload || msg?.audio || '';
+}
+
+function getTelnyxStreamId(msg) {
+  return msg?.stream_id || msg?.streamId || msg?.stream_sid || msg?.streamSid || msg?.start?.stream_id || msg?.start?.streamId || '';
+}
+
+function telnyxOutboundAudioEvent(delta, ctx) {
+  const event = {
+    event: 'media',
+    media: { payload: delta }
+  };
+
+  if (ctx.streamId) event.stream_id = ctx.streamId;
+  if (ctx.callControlId) event.call_control_id = ctx.callControlId;
+  return event;
+}
+
+function handleOpenAIRealtimeMessage(raw, ctx) {
+  let msg;
+  try {
+    msg = JSON.parse(raw.toString());
+  } catch {
+    console.log('[OPENAI REALTIME non-json]', { connectionId: ctx.connectionId, bytes: raw.length });
+    return;
+  }
+
+  const type = msg.type || '';
+
+  if (type === 'error') {
+    console.error('[OPENAI REALTIME error event]', { connectionId: ctx.connectionId, msg });
+    return;
+  }
+
+  if (type === 'session.updated' || type === 'session.created') {
+    console.log('[OPENAI REALTIME session event]', { connectionId: ctx.connectionId, type });
+    if (!ctx.greeted) {
+      ctx.greeted = true;
+      safeOpenAISend(ctx.openaiWs, {
+        type: 'response.create',
+        response: {
+          modalities: ['audio', 'text'],
+          instructions: promptFor('yesNo')
+        }
+      });
+    }
+    return;
+  }
+
+  if (type === 'response.audio.delta' || type === 'response.output_audio.delta') {
+    const delta = msg.delta || msg.audio || '';
+    if (delta) safeTelnyxSend(ctx.telnyxWs, telnyxOutboundAudioEvent(delta, ctx));
+    return;
+  }
+
+  if (type === 'response.text.delta' || type === 'response.output_text.delta' || type === 'response.audio_transcript.delta' || type === 'response.output_audio_transcript.delta') {
+    const delta = msg.delta || '';
+    if (delta) process.stdout.write(delta);
+    return;
+  }
+
+  if (type === 'input_audio_buffer.speech_started') {
+    // Caller interrupted. Ask OpenAI to stop current response if possible.
+    safeOpenAISend(ctx.openaiWs, { type: 'response.cancel' });
+    return;
+  }
+
+  if (type === 'input_audio_buffer.speech_stopped') {
+    // Some Realtime configurations auto-create a response. This extra create makes the bridge
+    // more reliable for phone-call testing if auto-response is not triggered.
+    safeOpenAISend(ctx.openaiWs, {
+      type: 'response.create',
+      response: { modalities: ['audio', 'text'] }
+    });
+    return;
+  }
+
+  if (type === 'response.done') {
+    console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId });
+    return;
+  }
+
+  if (type && !type.includes('delta')) {
+    console.log('[OPENAI REALTIME event]', { connectionId: ctx.connectionId, type });
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
-    mode: 'fast-scripted-gather-plus-media-stream-scaffold',
+    mode: 'telnyx-media-stream-openai-realtime-bridge',
     today: today(),
     fallbackModel: FALLBACK_MODEL,
+    realtimeModel: OPENAI_REALTIME_MODEL,
+    realtimeVoice: OPENAI_REALTIME_VOICE,
     voice: VOICE,
     streamUrl: STREAM_URL,
     streamTrack: STREAM_TRACK,
@@ -548,6 +728,8 @@ app.get('/debug-env', (req, res) => {
     publicUrl: PUBLIC_URL,
     businessName: BUSINESS_NAME,
     fallbackModel: FALLBACK_MODEL,
+    realtimeModel: OPENAI_REALTIME_MODEL,
+    realtimeVoice: OPENAI_REALTIME_VOICE,
     voice: VOICE,
     streamUrl: STREAM_URL,
     streamTrack: STREAM_TRACK,
@@ -563,7 +745,9 @@ app.get('/telnyx', (req, res) => {
     mediaStreamWebSocket: STREAM_URL,
     speechWebhook: `${PUBLIC_URL}/handle-speech`,
     statusWebhook: `${PUBLIC_URL}/call-status`,
-    method: 'POST'
+    method: 'POST',
+    requiredRailwayVariables: ['TELNYX_API_KEY', 'OPENAI_API_KEY'],
+    optionalRailwayVariables: ['OPENAI_REALTIME_MODEL', 'OPENAI_REALTIME_VOICE', 'TELNYX_STREAM_TRACK', 'TELNYX_STREAM_CODEC']
   });
 });
 
@@ -688,14 +872,29 @@ server.on('upgrade', (request, socket, head) => {
   });
 });
 
-wss.on('connection', (ws, request) => {
+wss.on('connection', (telnyxWs, request) => {
   const connectionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  mediaStreams.set(connectionId, { ws, connectedAt: new Date().toISOString(), packets: 0 });
-  console.log('[MEDIA STREAM connected]', { connectionId, url: request.url });
+  const openaiWs = createOpenAIRealtimeSocket(connectionId);
+  const ctx = {
+    connectionId,
+    telnyxWs,
+    openaiWs,
+    connectedAt: new Date().toISOString(),
+    packets: 0,
+    streamId: '',
+    callControlId: '',
+    greeted: false
+  };
 
-  ws.on('message', (raw) => {
-    const stream = mediaStreams.get(connectionId);
-    if (stream) stream.packets += 1;
+  mediaStreams.set(connectionId, ctx);
+  console.log('[MEDIA STREAM connected]', { connectionId, url: request.url, realtimeModel: OPENAI_REALTIME_MODEL });
+
+  if (openaiWs) {
+    openaiWs.on('message', (raw) => handleOpenAIRealtimeMessage(raw, ctx));
+  }
+
+  telnyxWs.on('message', (raw) => {
+    ctx.packets += 1;
 
     let msg;
     try {
@@ -706,22 +905,31 @@ wss.on('connection', (ws, request) => {
     }
 
     const event = msg.event || msg.event_type || msg.type || 'unknown';
+    const streamId = getTelnyxStreamId(msg);
+    if (streamId) ctx.streamId = streamId;
+    if (msg.call_control_id) ctx.callControlId = msg.call_control_id;
 
     if (event === 'start' || event === 'connected' || event === 'streaming.started') {
-      console.log('[MEDIA STREAM start]', { connectionId, msg });
+      console.log('[MEDIA STREAM start]', { connectionId, streamId: ctx.streamId, callControlId: ctx.callControlId, msg });
       return;
     }
 
     if (event === 'media') {
-      // Telnyx media payloads arrive here. Next step is to forward these audio frames
-      // into OpenAI Realtime, then send audio back over this same socket if bidirectional
-      // streaming is enabled on the Telnyx side.
-      if (stream?.packets <= 5 || stream?.packets % 100 === 0) {
-        console.log('[MEDIA STREAM audio]', {
+      const payload = getTelnyxPayload(msg);
+      if (!payload) return;
+
+      safeOpenAISend(ctx.openaiWs, {
+        type: 'input_audio_buffer.append',
+        audio: payload
+      });
+
+      if (ctx.packets <= 5 || ctx.packets % 100 === 0) {
+        console.log('[MEDIA STREAM audio -> OpenAI]', {
           connectionId,
-          packets: stream?.packets,
+          packets: ctx.packets,
           track: msg.media?.track,
-          payloadBytes: msg.media?.payload?.length || 0
+          payloadBytes: payload.length,
+          openaiReady: ctx.openaiWs?.readyState === WebSocket.OPEN
         });
       }
       return;
@@ -729,6 +937,7 @@ wss.on('connection', (ws, request) => {
 
     if (event === 'stop' || event === 'streaming.stopped') {
       console.log('[MEDIA STREAM stop]', { connectionId, msg });
+      if (ctx.openaiWs?.readyState === WebSocket.OPEN) ctx.openaiWs.close();
       mediaStreams.delete(connectionId);
       return;
     }
@@ -736,13 +945,15 @@ wss.on('connection', (ws, request) => {
     console.log('[MEDIA STREAM event]', { connectionId, event, msg });
   });
 
-  ws.on('close', () => {
+  telnyxWs.on('close', () => {
     console.log('[MEDIA STREAM closed]', { connectionId });
+    if (ctx.openaiWs?.readyState === WebSocket.OPEN) ctx.openaiWs.close();
     mediaStreams.delete(connectionId);
   });
 
-  ws.on('error', (error) => {
+  telnyxWs.on('error', (error) => {
     console.error('[MEDIA STREAM error]', { connectionId, error });
+    if (ctx.openaiWs?.readyState === WebSocket.OPEN) ctx.openaiWs.close();
     mediaStreams.delete(connectionId);
   });
 });
@@ -751,4 +962,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`AI receptionist running on ${PORT}`);
   console.log(`Voice API webhook: ${PUBLIC_URL}/voice-api-webhook`);
   console.log(`Media stream WebSocket: ${STREAM_URL}`);
+  console.log(`OpenAI Realtime model: ${OPENAI_REALTIME_MODEL}`);
 });
