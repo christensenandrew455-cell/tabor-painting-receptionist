@@ -156,16 +156,22 @@ function createOpenAIRealtimeSocket(connectionId) {
         type: 'realtime',
         instructions: realtimeInstructions(),
         output_modalities: ['audio'],
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        voice: OPENAI_REALTIME_VOICE,
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 650
-        },
-        max_output_tokens: 'inf'
+        max_output_tokens: 'inf',
+        audio: {
+          input: {
+            format: { type: 'audio/pcmu' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 650
+            }
+          },
+          output: {
+            format: { type: 'audio/pcmu' },
+            voice: OPENAI_REALTIME_VOICE
+          }
+        }
       }
     });
   });
