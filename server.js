@@ -156,22 +156,16 @@ function createOpenAIRealtimeSocket(connectionId) {
         type: 'realtime',
         instructions: realtimeInstructions(),
         output_modalities: ['audio'],
-        max_output_tokens: 'inf',
-        audio: {
-          input: {
-            format: 'g711_ulaw',
-            turn_detection: {
-              type: 'server_vad',
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 650
-            }
-          },
-          output: {
-            format: 'g711_ulaw',
-            voice: OPENAI_REALTIME_VOICE
-          }
-        }
+        input_audio_format: 'g711_ulaw',
+        output_audio_format: 'g711_ulaw',
+        voice: OPENAI_REALTIME_VOICE,
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 650
+        },
+        max_output_tokens: 'inf'
       }
     });
   });
@@ -213,7 +207,6 @@ function telnyxAudioEvent(delta, ctx) {
     media: { payload: delta }
   };
   if (ctx.streamId) event.stream_id = ctx.streamId;
-  if (ctx.callControlId) event.call_control_id = ctx.callControlId;
   return event;
 }
 
