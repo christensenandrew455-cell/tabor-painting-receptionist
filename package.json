@@ -1,7 +1,7 @@
 {
   "name": "tabor-painting-receptionist",
   "version": "1.0.0",
-  "description": "AI receptionist backend using Telnyx TeXML, OpenAI, Resend, and Railway.",
+  "description": "AI receptionist backend using Telnyx TeXML, Telnyx Voice API media streams, OpenAI, Resend, and Railway.",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "openai": "^4.77.0",
-    "resend": "^4.0.1"
+    "resend": "^4.0.1",
+    "ws": "^8.18.0"
   },
   "engines": {
     "node": ">=20"
