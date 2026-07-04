@@ -103,7 +103,10 @@ async function startMediaStream(callControlId) {
   return telnyxCommand(callControlId, 'streaming_start', {
     stream_url: STREAM_URL,
     stream_track: STREAM_TRACK,
-    codec: STREAM_CODEC
+    stream_codec: STREAM_CODEC,
+    stream_bidirectional_mode: 'rtp',
+    stream_bidirectional_codec: STREAM_CODEC,
+    stream_bidirectional_sampling_rate: 8000
   });
 }
 
