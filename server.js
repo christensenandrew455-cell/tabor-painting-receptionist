@@ -15,8 +15,9 @@ const BUSINESS_NAME = process.env.BUSINESS_NAME || 'Tabor Painting';
 const TELNYX_API_KEY = process.env.TELNYX_API_KEY || '';
 const TELNYX_API_BASE = process.env.TELNYX_API_BASE || 'https://api.telnyx.com/v2';
 const STREAM_URL = process.env.TELNYX_STREAM_URL || PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
-const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'both_tracks';
+const STREAM_TRACK = process.env.TELNYX_STREAM_TRACK || 'inbound_track';
 const STREAM_CODEC = process.env.TELNYX_STREAM_CODEC || 'PCMU';
+const MIN_AUDIO_CHUNKS_BEFORE_COMMIT = 5;
 
 function normalizeRealtimeModel(value) {
   return String(value || 'gpt-realtime-2')
@@ -275,6 +276,10 @@ function getTelnyxPayload(msg) {
   return msg?.media?.payload || msg?.payload || msg?.audio || '';
 }
 
+function getTelnyxTrack(msg) {
+  return String(msg?.media?.track || msg?.track || '').toLowerCase();
+}
+
 function telnyxAudioEvent(delta, ctx) {
   const event = {
     event: 'media',
@@ -285,9 +290,15 @@ function telnyxAudioEvent(delta, ctx) {
 }
 
 function createAudioResponse(ctx, reason = 'manual', instructions = '') {
+  if (ctx.openaiResponseActive) {
+    console.log('[response.create skipped - active response]', { connectionId: ctx.connectionId, reason });
+    return false;
+  }
+
   const response = { output_modalities: ['audio'] };
   if (instructions) response.instructions = instructions;
   const sent = sendOpenAI(ctx.openaiWs, { type: 'response.create', response });
+  if (sent) ctx.openaiResponseActive = true;
   console.log('[response.create]', { connectionId: ctx.connectionId, reason, sent, response });
   return sent;
 }
@@ -314,6 +325,9 @@ function handleOpenAIMessage(raw, ctx) {
   }
 
   if (type === 'error') {
+    const code = msg.error?.code || '';
+    if (code === 'input_audio_buffer_commit_empty') ctx.openaiInputAudioChunks = 0;
+    if (code === 'conversation_already_has_active_response') ctx.openaiResponseActive = true;
     console.error('[OPENAI REALTIME error event]', { connectionId: ctx.connectionId, error: msg.error || msg });
     return;
   }
@@ -321,6 +335,11 @@ function handleOpenAIMessage(raw, ctx) {
   if (type === 'session.updated' || type === 'session.created') {
     ctx.openaiSessionReady = true;
     setTimeout(() => forceGreeting(ctx, type), 100);
+    return;
+  }
+
+  if (type === 'response.created') {
+    ctx.openaiResponseActive = true;
     return;
   }
 
@@ -337,18 +356,33 @@ function handleOpenAIMessage(raw, ctx) {
   }
 
   if (type === 'input_audio_buffer.speech_started') {
-    sendOpenAI(ctx.openaiWs, { type: 'response.cancel' });
+    if (ctx.openaiResponseActive) {
+      sendOpenAI(ctx.openaiWs, { type: 'response.cancel' });
+      ctx.openaiResponseActive = false;
+    }
     return;
   }
 
   if (type === 'input_audio_buffer.speech_stopped') {
+    if (ctx.openaiInputAudioChunks < MIN_AUDIO_CHUNKS_BEFORE_COMMIT) {
+      console.log('[USER speech stopped skipped - not enough caller audio]', {
+        connectionId: ctx.connectionId,
+        chunks: ctx.openaiInputAudioChunks,
+        minimum: MIN_AUDIO_CHUNKS_BEFORE_COMMIT
+      });
+      ctx.openaiInputAudioChunks = 0;
+      return;
+    }
+
     const committed = sendOpenAI(ctx.openaiWs, { type: 'input_audio_buffer.commit' });
+    ctx.openaiInputAudioChunks = 0;
     const created = createAudioResponse(ctx, 'speech-stopped');
     console.log('[USER speech stopped -> response]', { connectionId: ctx.connectionId, committed, created });
     return;
   }
 
-  if (type === 'response.done') {
+  if (type === 'response.done' || type === 'response.cancelled') {
+    ctx.openaiResponseActive = false;
     console.log('[OPENAI REALTIME response done]', { connectionId: ctx.connectionId, status: msg.response?.status, details: msg.response?.status_details, audioDeltas: ctx.openaiAudioDeltas });
   }
 }
@@ -475,6 +509,8 @@ wss.on('connection', (telnyxWs, request) => {
     greeted: false,
     telnyxStarted: false,
     openaiSessionReady: false,
+    openaiResponseActive: false,
+    openaiInputAudioChunks: 0,
     openaiAudioDeltas: 0
   };
 
@@ -510,6 +546,14 @@ wss.on('connection', (telnyxWs, request) => {
     if (event === 'media') {
       if (ctx.packets === 20) forceGreeting(ctx, 'first-audio-packets');
 
+      const track = getTelnyxTrack(msg);
+      if (track.includes('outbound')) {
+        if (ctx.packets <= 5 || ctx.packets % 200 === 0) {
+          console.log('[MEDIA STREAM skipped outbound audio]', { connectionId, packets: ctx.packets, track });
+        }
+        return;
+      }
+
       const payload = getTelnyxPayload(msg);
       if (!payload) return;
 
@@ -517,6 +561,7 @@ wss.on('connection', (telnyxWs, request) => {
         type: 'input_audio_buffer.append',
         audio: payload
       });
+      if (sent) ctx.openaiInputAudioChunks += 1;
 
       if (ctx.packets <= 5 || ctx.packets % 100 === 0) {
         console.log('[MEDIA STREAM audio -> OpenAI]', {
@@ -526,6 +571,7 @@ wss.on('connection', (telnyxWs, request) => {
           payloadBytes: payload.length,
           openaiReady: ctx.openaiWs?.readyState === WebSocket.OPEN,
           sessionReady: ctx.openaiSessionReady,
+          inputChunks: ctx.openaiInputAudioChunks,
           sent
         });
       }
