@@ -5,8 +5,8 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node patch-runtime.js && node server.js",
+    "dev": "node patch-runtime.js && node --watch server.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
