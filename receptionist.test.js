@@ -74,3 +74,12 @@ test('paces PCMU audio and waits for Telnyx playback before hangup', () => {
   assert.match(server, /max_output_tokens: MAX_OUTPUT_TOKENS/);
   assert.doesNotMatch(server, /setTimeout\(\(\) => \{[\s\S]{0,160}telnyxCommand\(ctx\.callControlId, 'hangup'\)[\s\S]{0,40}, 700\)/);
 });
+
+test('allows the complete recap and logs why a response ended', () => {
+  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
+  assert.match(server, /const MAX_OUTPUT_TOKENS = 320;/);
+  assert.doesNotMatch(server, /const MAX_OUTPUT_TOKENS = 160;/);
+  assert.match(server, /\[OpenAI response done\]/);
+  assert.match(server, /status_details\?\.reason/);
+  assert.match(server, /outputTokens: response\.usage\?\.output_tokens/);
+});
