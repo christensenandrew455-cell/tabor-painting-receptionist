@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { REALTIME_MODEL, buildOcmPayload, getCallerPhone, instructions, tools, validateLead } from './receptionist-core.js';
+import {
+  REALTIME_MODEL,
+  buildOcmPayload,
+  getCallerPhone,
+  instructions,
+  normalizePreferredTime,
+  tools,
+  validateLead
+} from './receptionist-core.js';
 
 test('hard-locks the requested realtime mini model', () => {
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
@@ -11,7 +19,7 @@ test('extracts caller ID from a Telnyx webhook', () => {
   assert.equal(getCallerPhone({ data: { payload: { from: '+17745551234' } } }), '+17745551234');
 });
 
-test('validates and maps the seven-field intake to Contacted Me', () => {
+test('validates and maps the nine-field intake to Contacted Me', () => {
   const result = validateLead({
     fullName: 'Taylor Smith',
     email: 'taylor@example.com',
@@ -19,16 +27,49 @@ test('validates and maps the seven-field intake to Contacted Me', () => {
     townOrCity: 'Berlin',
     streetAddress: '10 Main Street',
     contactMethod: 'text',
+    preferredDay: 'wednesday',
+    preferredTime: '4:30 pm',
     additionalNotes: 'A couple outside walls'
   });
   assert.equal(result.valid, true);
+  assert.equal(result.lead.preferredDay, 'Wednesday');
+  assert.equal(result.lead.preferredTime, '4:30 PM');
+
   const payload = buildOcmPayload('+17745551234', result.lead);
   assert.equal(payload.sectionKey, 'contactedMe');
   assert.equal(payload.Phone, '+17745551234');
   assert.equal(payload.Job, 'exterior painting');
+  assert.equal(payload.PreferredDay, 'Wednesday');
+  assert.equal(payload.PreferredTime, '4:30 PM');
   assert.match(payload.Notes, /Best contact method: text/);
   assert.match(payload.Notes, /Additional notes: A couple outside walls/);
   assert.doesNotMatch(payload.Notes, /Project details:/);
+});
+
+test('accepts only estimate times from 9 AM through 4:30 PM', () => {
+  assert.equal(normalizePreferredTime('9am'), '9:00 AM');
+  assert.equal(normalizePreferredTime('1:15 PM'), '1:15 PM');
+  assert.equal(normalizePreferredTime('4:30 pm'), '4:30 PM');
+  assert.equal(normalizePreferredTime('8:59 am'), '');
+  assert.equal(normalizePreferredTime('4:31 pm'), '');
+  assert.equal(normalizePreferredTime('6 pm'), '');
+});
+
+test('rejects weekends and out-of-range estimate times', () => {
+  const result = validateLead({
+    fullName: 'Taylor Smith',
+    email: 'taylor@example.com',
+    serviceType: 'interior painting',
+    townOrCity: 'Berlin',
+    streetAddress: '10 Main Street',
+    contactMethod: 'call',
+    preferredDay: 'saturday',
+    preferredTime: '5 pm',
+    additionalNotes: ''
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.includes('a preferred estimate day from Monday through Friday'));
+  assert.ok(result.errors.includes('a preferred estimate time between 9:00 AM and 4:30 PM'));
 });
 
 test('keeps the requested intake order and category-only service question', () => {
@@ -40,6 +81,8 @@ test('keeps the requested intake order and category-only service question', () =
     'what town or city',
     'street address',
     'best way we can contact you',
+    'what day would work best',
+    'what time would work best',
     'anything else you would like Jason to know'
   ];
   let previous = -1;
@@ -48,22 +91,27 @@ test('keeps the requested intake order and category-only service question', () =
     assert.ok(index > previous, `${question} must appear in order`);
     previous = index;
   }
+  assert.match(prompt, /Monday through Friday/i);
+  assert.match(prompt, /9:00 AM to 4:30 PM/i);
+  assert.match(prompt, /We can only do estimate times between 9:00 AM and 4:30 PM/i);
   assert.match(prompt, /interior painting, exterior painting, wood staining, and small paint repair/i);
   assert.match(prompt, /Do not ask about project size, scope/i);
-  assert.doesNotMatch(prompt, /preferred day|preferred time/i);
   assert.doesNotMatch(prompt, /projectDetails/);
 });
 
-test('removes projectDetails from the lead tool schema', () => {
+test('uses day and time in the lead tool schema without projectDetails', () => {
   const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
   assert.ok(submitTool);
   assert.equal('projectDetails' in submitTool.parameters.properties, false);
   assert.equal(submitTool.parameters.required.includes('projectDetails'), false);
-  assert.deepEqual(submitTool.parameters.properties.serviceType.enum, [
-    'interior painting',
-    'exterior painting',
-    'wood staining',
-    'small paint repair'
+  assert.equal(submitTool.parameters.required.includes('preferredDay'), true);
+  assert.equal(submitTool.parameters.required.includes('preferredTime'), true);
+  assert.deepEqual(submitTool.parameters.properties.preferredDay.enum, [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday'
   ]);
 });
 
