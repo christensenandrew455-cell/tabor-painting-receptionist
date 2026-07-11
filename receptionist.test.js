@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { REALTIME_MODEL, buildOcmPayload, getCallerPhone, instructions, validateLead } from './receptionist-core.js';
+import { REALTIME_MODEL, buildOcmPayload, getCallerPhone, instructions, tools, validateLead } from './receptionist-core.js';
 
 test('hard-locks the requested realtime mini model', () => {
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
@@ -16,11 +16,10 @@ test('validates and maps the seven-field intake to Contacted Me', () => {
     fullName: 'Taylor Smith',
     email: 'taylor@example.com',
     serviceType: 'exterior painting',
-    projectDetails: 'A couple outside walls',
     townOrCity: 'Berlin',
     streetAddress: '10 Main Street',
     contactMethod: 'text',
-    additionalNotes: ''
+    additionalNotes: 'A couple outside walls'
   });
   assert.equal(result.valid, true);
   const payload = buildOcmPayload('+17745551234', result.lead);
@@ -28,18 +27,20 @@ test('validates and maps the seven-field intake to Contacted Me', () => {
   assert.equal(payload.Phone, '+17745551234');
   assert.equal(payload.Job, 'exterior painting');
   assert.match(payload.Notes, /Best contact method: text/);
+  assert.match(payload.Notes, /Additional notes: A couple outside walls/);
+  assert.doesNotMatch(payload.Notes, /Project details:/);
 });
 
-test('keeps the requested intake order and removes appointment scheduling fields', () => {
+test('keeps the requested intake order and category-only service question', () => {
   const prompt = instructions();
   const questions = [
     'first and last name',
     'email address',
-    'what service were you looking to get',
+    'what service would you like',
     'what town or city',
     'street address',
     'best way we can contact you',
-    'Jason to know anything else'
+    'anything else you would like Jason to know'
   ];
   let previous = -1;
   for (const question of questions) {
@@ -47,7 +48,23 @@ test('keeps the requested intake order and removes appointment scheduling fields
     assert.ok(index > previous, `${question} must appear in order`);
     previous = index;
   }
+  assert.match(prompt, /interior painting, exterior painting, wood staining, and small paint repair/i);
+  assert.match(prompt, /Do not ask about project size, scope/i);
   assert.doesNotMatch(prompt, /preferred day|preferred time/i);
+  assert.doesNotMatch(prompt, /projectDetails/);
+});
+
+test('removes projectDetails from the lead tool schema', () => {
+  const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
+  assert.ok(submitTool);
+  assert.equal('projectDetails' in submitTool.parameters.properties, false);
+  assert.equal(submitTool.parameters.required.includes('projectDetails'), false);
+  assert.deepEqual(submitTool.parameters.properties.serviceType.enum, [
+    'interior painting',
+    'exterior painting',
+    'wood staining',
+    'small paint repair'
+  ]);
 });
 
 test('requires sustained speech before clearing Alex audio', () => {
@@ -77,8 +94,8 @@ test('paces PCMU audio and waits for Telnyx playback before hangup', () => {
 
 test('allows the complete recap and logs why a response ended', () => {
   const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
-  assert.match(server, /const MAX_OUTPUT_TOKENS = 320;/);
-  assert.doesNotMatch(server, /const MAX_OUTPUT_TOKENS = 160;/);
+  assert.match(server, /const MAX_OUTPUT_TOKENS = 600;/);
+  assert.doesNotMatch(server, /const MAX_OUTPUT_TOKENS = 320;/);
   assert.match(server, /\[OpenAI response done\]/);
   assert.match(server, /status_details\?\.reason/);
   assert.match(server, /outputTokens: response\.usage\?\.output_tokens/);
