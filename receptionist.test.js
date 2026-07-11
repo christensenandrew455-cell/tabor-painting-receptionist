@@ -61,3 +61,16 @@ test('requires sustained speech before clearing Alex audio', () => {
   assert.match(server, /type: 'conversation\.item\.truncate'/);
   assert.doesNotMatch(server, /input_audio_buffer\.speech_started'[\s\S]{0,120}event: 'clear'/);
 });
+
+test('paces PCMU audio and waits for Telnyx playback before hangup', () => {
+  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
+  assert.match(server, /const AUDIO_FRAME_MS = 20;/);
+  assert.match(server, /const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS \* PCMU_BYTES_PER_MS;/);
+  assert.match(server, /const AUDIO_PREBUFFER_MS = 60;/);
+  assert.match(server, /setTimeout\(\(\) => pumpAudio\(ctx\), AUDIO_FRAME_MS\)/);
+  assert.match(server, /event: 'mark'/);
+  assert.match(server, /event === 'mark'/);
+  assert.match(server, /completeAssistantPlayback\(ctx\)/);
+  assert.match(server, /max_output_tokens: MAX_OUTPUT_TOKENS/);
+  assert.doesNotMatch(server, /setTimeout\(\(\) => \{[\s\S]{0,160}telnyxCommand\(ctx\.callControlId, 'hangup'\)[\s\S]{0,40}, 700\)/);
+});
