@@ -29,7 +29,7 @@ const PCMU_BYTES_PER_MS = 8;
 const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
 const AUDIO_PREBUFFER_MS = 60;
 const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
-const MAX_OUTPUT_TOKENS = 320;
+const MAX_OUTPUT_TOKENS = 600;
 const activeCalls = new Map();
 const callMetadata = new Map();
 
