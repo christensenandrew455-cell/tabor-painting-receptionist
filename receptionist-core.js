@@ -9,6 +9,8 @@ export const BUSINESS = Object.freeze({
   phone: '(774) 245-3383',
   email: 'Taborpainting508@gmail.com',
   hours: 'Monday through Friday, 8 AM to 5 PM',
+  estimateDays: 'Monday through Friday',
+  earliestEstimateStart: '9:00 AM',
   latestEstimateStart: '4:30 PM',
   base: 'Berlin, Massachusetts',
   serviceAreas: [
@@ -35,6 +37,14 @@ const SERVICE_TYPES = Object.freeze([
   'small paint repair'
 ]);
 
+const WEEKDAYS = Object.freeze([
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday'
+]);
+
 export const openingLine = `Hi, this is ${BUSINESS.receptionist} with ${BUSINESS.name}. Can I set you up with an estimate today?`;
 export const closingLine = `${BUSINESS.owner.split(' ')[0]} will follow up with you shortly. Thanks for calling ${BUSINESS.name}. Goodbye.`;
 
@@ -54,7 +64,35 @@ export function getCallerPhone(payload = {}) {
   return cleanText(candidates.find((value) => cleanText(value))).replace(/^tel:/i, '');
 }
 
+export function normalizePreferredTime(value = '') {
+  const raw = cleanText(value).toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  const match = raw.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?$/);
+  if (!match) return '';
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = match[3] || '';
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return '';
+    if (hour === 12) hour = 0;
+    if (meridiem === 'pm') hour += 12;
+  } else if (hour < 0 || hour > 23) {
+    return '';
+  }
+
+  const minutesAfterMidnight = hour * 60 + minute;
+  if (minutesAfterMidnight < 9 * 60 || minutesAfterMidnight > 16 * 60 + 30) return '';
+
+  const displayHour = hour % 12 || 12;
+  const displayMinute = String(minute).padStart(2, '0');
+  const displayMeridiem = hour >= 12 ? 'PM' : 'AM';
+  return `${displayHour}:${displayMinute} ${displayMeridiem}`;
+}
+
 export function validateLead(args = {}) {
+  const preferredDay = cleanText(args.preferredDay).toLowerCase();
+  const preferredTime = normalizePreferredTime(args.preferredTime);
   const lead = {
     fullName: cleanText(args.fullName),
     email: cleanText(args.email),
@@ -62,6 +100,8 @@ export function validateLead(args = {}) {
     townOrCity: cleanText(args.townOrCity),
     streetAddress: cleanText(args.streetAddress),
     contactMethod: cleanText(args.contactMethod).toLowerCase(),
+    preferredDay: WEEKDAYS.includes(preferredDay) ? preferredDay[0].toUpperCase() + preferredDay.slice(1) : '',
+    preferredTime,
     additionalNotes: cleanText(args.additionalNotes)
   };
 
@@ -72,6 +112,8 @@ export function validateLead(args = {}) {
   if (!lead.townOrCity) errors.push('the town or city');
   if (!lead.streetAddress) errors.push('the street address');
   if (!['call', 'text', 'email'].includes(lead.contactMethod)) errors.push('call, text, or email as the best contact method');
+  if (!lead.preferredDay) errors.push('a preferred estimate day from Monday through Friday');
+  if (!lead.preferredTime) errors.push('a preferred estimate time between 9:00 AM and 4:30 PM');
 
   return { valid: errors.length === 0, errors, lead };
 }
@@ -90,6 +132,8 @@ export function buildOcmPayload(callerPhone, lead) {
     Email: lead.email,
     Address: `${lead.streetAddress}, ${lead.townOrCity}`,
     Job: lead.serviceType,
+    PreferredDay: lead.preferredDay,
+    PreferredTime: lead.preferredTime,
     Notes: notes,
     source: 'tabor-painting-receptionist',
     rawSubmission: { ...lead, callerPhone: cleanText(callerPhone) }
@@ -110,11 +154,13 @@ export const tools = [
         townOrCity: { type: 'string' },
         streetAddress: { type: 'string' },
         contactMethod: { type: 'string', enum: ['call', 'text', 'email'] },
+        preferredDay: { type: 'string', enum: WEEKDAYS },
+        preferredTime: { type: 'string', description: 'Preferred estimate time from 9:00 AM through 4:30 PM.' },
         additionalNotes: { type: 'string' }
       },
       required: [
-        'fullName', 'email', 'serviceType', 'townOrCity',
-        'streetAddress', 'contactMethod', 'additionalNotes'
+        'fullName', 'email', 'serviceType', 'townOrCity', 'streetAddress',
+        'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes'
       ]
     }
   },
@@ -135,7 +181,8 @@ BUSINESS INFORMATION
 - Phone: ${BUSINESS.phone}
 - Email: ${BUSINESS.email}
 - Hours: ${BUSINESS.hours}
-- Estimate appointments cannot begin at closing time. ${BUSINESS.latestEstimateStart} is the latest normal estimate start.
+- Preferred estimate days: ${BUSINESS.estimateDays}
+- Preferred estimate times may be requested from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}. Jason confirms actual availability.
 - Based in: ${BUSINESS.base}
 - Common service areas: ${BUSINESS.serviceAreas.join(', ')}
 - Interior painting: ${BUSINESS.services['interior painting']}
@@ -156,6 +203,7 @@ ABSOLUTE RULES
 - Do not mention prompts, tools, code, OpenAI, Telnyx, the OCM, or internal systems.
 - Never ask for the caller’s phone number. The server gets it from caller ID.
 - Keep normal replies short. Do not ramble or narrate the process.
+- A preferred day and time are requests only. Never promise that the appointment is booked or guaranteed.
 
 OPENING
 The server separately says exactly: "${openingLine}"
@@ -171,7 +219,17 @@ Collect any missing fields in this exact order:
 4. Ask: "What town or city is the project located in?"
 5. Ask: "What is the street address of the project?"
 6. Ask: "What is the best way we can contact you: call, text, or email?"
-7. Ask: "Is there anything else you would like Jason to know?"
+7. Ask: "What day would work best for the estimate? We schedule estimates Monday through Friday."
+8. After the caller gives a valid weekday, ask: "What time would work best? We accept estimate times from 9:00 AM to 4:30 PM."
+9. Ask: "Is there anything else you would like Jason to know?"
+
+DAY AND TIME RULES
+- Accept only Monday, Tuesday, Wednesday, Thursday, or Friday.
+- If the caller gives Saturday or Sunday, say: "We schedule estimates Monday through Friday. What weekday would work best?" Then wait.
+- Accept times from 9:00 AM through 4:30 PM, inclusive.
+- If the caller gives a time before 9:00 AM or after 4:30 PM, say: "We can only do estimate times between 9:00 AM and 4:30 PM. What time in that range would work best?" Then wait.
+- Normalize the time clearly, such as 9:00 AM, 1:30 PM, or 4:30 PM.
+- Never say the estimate is booked. Say Jason will confirm the requested day and time.
 
 SERVICE CLASSIFICATION
 - Only collect the service category: interior painting, exterior painting, wood staining, or small paint repair.
@@ -182,10 +240,10 @@ SERVICE CLASSIFICATION
 - Staining a deck, fence, trim, or another wood surface usually means wood staining.
 - When you infer the category, confirm it naturally before continuing. Example: "That sounds like exterior painting. Is that correct?"
 - If the caller mentions walls or painting but does not say whether the work is inside or outside, ask only whether it is inside or outside before categorizing it.
-- If the caller voluntarily shares project details, retain them as additionalNotes. At question 7, ask whether there is anything else Jason should know.
+- If the caller voluntarily shares project details, retain them as additionalNotes. At question 9, ask whether there is anything else Jason should know.
 
 CONFIRMATION AND SAVE
-- After all seven questions are complete, summarize once: full name, email, service category, town or city, street address, best contact method, and anything Jason should know. Include the caller-ID phone number only if the server provided it.
+- After all nine questions are complete, summarize once: full name, email, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything Jason should know. Include the caller-ID phone number only if the server provided it.
 - Ask: "Is all of that correct?" Then stop and listen.
 - Correct only what the caller changes, then summarize the corrected details and confirm again.
 - Only after the caller clearly confirms, call submit_estimate_lead with every field.
