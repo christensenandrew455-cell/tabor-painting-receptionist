@@ -29,7 +29,7 @@ const PCMU_BYTES_PER_MS = 8;
 const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
 const AUDIO_PREBUFFER_MS = 60;
 const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
-const MAX_OUTPUT_TOKENS = 160;
+const MAX_OUTPUT_TOKENS = 320;
 const activeCalls = new Map();
 const callMetadata = new Map();
 
@@ -484,6 +484,17 @@ function handleOpenAiMessage(ctx, raw) {
   }
 
   if (message.type === 'response.done') {
+    const response = message.response || {};
+    const status = response.status || message.status || 'unknown';
+    const reason = response.status_details?.reason || message.status_details?.reason || '';
+    console.log('[OpenAI response done]', {
+      callId: ctx.callControlId || ctx.id,
+      responseId: response.id || message.response_id || '',
+      status,
+      reason,
+      outputTokens: response.usage?.output_tokens ?? null
+    });
+
     ctx.openAiGenerating = false;
     cancelBargeInTimer(ctx);
 
