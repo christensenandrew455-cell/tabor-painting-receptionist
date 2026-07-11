@@ -22,6 +22,9 @@ const STREAM_URL = PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
 const OCM_WEBHOOK_URL = process.env.OCM_WEBHOOK_URL || 'https://ark-websites-ocm.vercel.app/api/intake';
 const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
+const BARGE_IN_CONFIRM_MS = 450;
+const MIN_USER_TURN_MS = 250;
+const PCMU_BYTES_PER_MS = 8;
 const activeCalls = new Map();
 const callMetadata = new Map();
 
@@ -75,17 +78,34 @@ function queueResponse(ctx, instructionsText, hangupAfter = false) {
   flushResponse(ctx);
 }
 
+function requestNaturalResponse(ctx) {
+  ctx.pendingNaturalResponse = true;
+  flushResponse(ctx);
+}
+
 function flushResponse(ctx) {
-  if (!ctx.sessionReady || !ctx.streamReady || ctx.responseActive || !ctx.pendingResponse) return false;
-  const next = ctx.pendingResponse;
-  ctx.pendingResponse = null;
-  ctx.hangupAfterResponse = next.hangupAfter;
+  if (!ctx.sessionReady || !ctx.streamReady || ctx.responseActive) return false;
+
+  if (ctx.pendingResponse) {
+    const next = ctx.pendingResponse;
+    ctx.pendingResponse = null;
+    ctx.hangupAfterResponse = next.hangupAfter;
+    ctx.responseActive = sendJson(ctx.openai, {
+      type: 'response.create',
+      response: {
+        output_modalities: ['audio'],
+        instructions: next.instructionsText
+      }
+    });
+    return ctx.responseActive;
+  }
+
+  if (!ctx.pendingNaturalResponse) return false;
+  ctx.pendingNaturalResponse = false;
+  ctx.hangupAfterResponse = false;
   ctx.responseActive = sendJson(ctx.openai, {
     type: 'response.create',
-    response: {
-      output_modalities: ['audio'],
-      instructions: next.instructionsText
-    }
+    response: { output_modalities: ['audio'] }
   });
   return ctx.responseActive;
 }
@@ -179,6 +199,46 @@ async function handleTool(ctx, call) {
   if (call.name === 'finish_call') finishCall(ctx, call);
 }
 
+function cancelBargeInTimer(ctx) {
+  if (ctx.bargeInTimer) clearTimeout(ctx.bargeInTimer);
+  ctx.bargeInTimer = null;
+}
+
+function audioDurationMs(base64Audio) {
+  try {
+    return Buffer.from(base64Audio, 'base64').length / PCMU_BYTES_PER_MS;
+  } catch {
+    return 0;
+  }
+}
+
+function confirmBargeIn(ctx) {
+  ctx.bargeInTimer = null;
+  if (!ctx.responseActive) return;
+
+  ctx.bargeInConfirmed = true;
+  ctx.hangupAfterResponse = false;
+  sendJson(ctx.openai, { type: 'response.cancel' });
+  sendTelnyx(ctx, { event: 'clear' });
+
+  const elapsedMs = ctx.assistantAudioStartedAt ? Date.now() - ctx.assistantAudioStartedAt : 0;
+  const audioEndMs = Math.floor(Math.max(0, Math.min(ctx.assistantAudioSentMs, elapsedMs)));
+  if (ctx.assistantItemId && audioEndMs > 0) {
+    sendJson(ctx.openai, {
+      type: 'conversation.item.truncate',
+      item_id: ctx.assistantItemId,
+      content_index: 0,
+      audio_end_ms: audioEndMs
+    });
+  }
+}
+
+function startBargeInTimer(ctx) {
+  cancelBargeInTimer(ctx);
+  if (!ctx.responseActive) return;
+  ctx.bargeInTimer = setTimeout(() => confirmBargeIn(ctx), BARGE_IN_CONFIRM_MS);
+}
+
 function createOpenAiSocket(ctx) {
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
   const ws = new WebSocket(OPENAI_URL, {
@@ -203,11 +263,11 @@ function createOpenAiSocket(ctx) {
             format: AUDIO_FORMAT,
             turn_detection: {
               type: 'server_vad',
-              threshold: 0.5,
+              threshold: 0.7,
               prefix_padding_ms: 250,
               silence_duration_ms: 650,
-              create_response: true,
-              interrupt_response: true
+              create_response: false,
+              interrupt_response: false
             }
           },
           output: { format: AUDIO_FORMAT, voice: REALTIME_VOICE }
@@ -259,6 +319,15 @@ function handleOpenAiMessage(ctx, raw) {
 
   if (message.type === 'response.created') {
     ctx.responseActive = true;
+    ctx.assistantItemId = '';
+    ctx.assistantAudioSentMs = 0;
+    ctx.assistantAudioStartedAt = 0;
+    return;
+  }
+
+  if (message.type === 'response.output_item.added' || message.type === 'response.output_item.created') {
+    const item = message.item || message.output_item || {};
+    if (item.type === 'message' && item.role === 'assistant') ctx.assistantItemId = item.id || ctx.assistantItemId;
     return;
   }
 
@@ -270,25 +339,39 @@ function handleOpenAiMessage(ctx, raw) {
 
   if (message.type === 'response.audio.delta' || message.type === 'response.output_audio.delta') {
     const audio = message.delta || message.audio;
-    if (audio) sendTelnyx(ctx, { event: 'media', media: { payload: audio } });
+    if (audio) {
+      if (!ctx.assistantAudioStartedAt) ctx.assistantAudioStartedAt = Date.now();
+      ctx.assistantAudioSentMs += audioDurationMs(audio);
+      sendTelnyx(ctx, { event: 'media', media: { payload: audio } });
+    }
     return;
   }
 
   if (message.type === 'input_audio_buffer.speech_started') {
-    sendTelnyx(ctx, { event: 'clear' });
-    ctx.hangupAfterResponse = false;
+    ctx.userSpeechStartedAt = Date.now();
+    ctx.bargeInConfirmed = false;
+    startBargeInTimer(ctx);
+    return;
+  }
+
+  if (message.type === 'input_audio_buffer.speech_stopped') {
+    const speechMs = ctx.userSpeechStartedAt ? Date.now() - ctx.userSpeechStartedAt : 0;
+    ctx.userSpeechStartedAt = 0;
+    cancelBargeInTimer(ctx);
+    if (speechMs >= MIN_USER_TURN_MS) requestNaturalResponse(ctx);
     return;
   }
 
   if (message.type === 'response.cancelled') {
     ctx.responseActive = false;
-    ctx.hangupAfterResponse = false;
+    cancelBargeInTimer(ctx);
     flushResponse(ctx);
     return;
   }
 
   if (message.type === 'response.done') {
     ctx.responseActive = false;
+    cancelBargeInTimer(ctx);
     if (ctx.hangupAfterResponse) {
       ctx.hangupAfterResponse = false;
       setTimeout(() => {
@@ -370,7 +453,14 @@ wss.on('connection', (telnyx) => {
     phoneContextSent: false,
     responseActive: false,
     pendingResponse: null,
+    pendingNaturalResponse: false,
     hangupAfterResponse: false,
+    assistantItemId: '',
+    assistantAudioSentMs: 0,
+    assistantAudioStartedAt: 0,
+    userSpeechStartedAt: 0,
+    bargeInTimer: null,
+    bargeInConfirmed: false,
     leadSaved: false,
     leadSaveFailed: false,
     handledCalls: new Set()
@@ -418,6 +508,7 @@ wss.on('connection', (telnyx) => {
   });
 
   const cleanup = () => {
+    cancelBargeInTimer(ctx);
     if (ctx.openai?.readyState === WebSocket.OPEN) ctx.openai.close();
     activeCalls.delete(ctx.id);
   };
