@@ -24,7 +24,12 @@ const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
 const BARGE_IN_CONFIRM_MS = 450;
 const MIN_USER_TURN_MS = 250;
+const AUDIO_FRAME_MS = 20;
 const PCMU_BYTES_PER_MS = 8;
+const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
+const AUDIO_PREBUFFER_MS = 60;
+const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
+const MAX_OUTPUT_TOKENS = 160;
 const activeCalls = new Map();
 const callMetadata = new Map();
 
@@ -204,12 +209,108 @@ function cancelBargeInTimer(ctx) {
   ctx.bargeInTimer = null;
 }
 
-function audioDurationMs(base64Audio) {
-  try {
-    return Buffer.from(base64Audio, 'base64').length / PCMU_BYTES_PER_MS;
-  } catch {
-    return 0;
+function stopAudioPump(ctx) {
+  if (ctx.audioPumpTimer) clearTimeout(ctx.audioPumpTimer);
+  ctx.audioPumpTimer = null;
+}
+
+function clearLocalAudio(ctx) {
+  stopAudioPump(ctx);
+  ctx.audioBuffer = Buffer.alloc(0);
+  ctx.audioPumpStarted = false;
+  ctx.openAiAudioDone = false;
+  ctx.waitingForPlaybackMark = false;
+  ctx.playbackMarkName = '';
+}
+
+function completeAssistantPlayback(ctx) {
+  ctx.responseActive = false;
+  ctx.openAiGenerating = false;
+  ctx.openAiAudioDone = false;
+  ctx.waitingForPlaybackMark = false;
+  ctx.playbackMarkName = '';
+
+  if (ctx.hangupAfterResponse) {
+    ctx.hangupAfterResponse = false;
+    if (ctx.callControlId) {
+      telnyxCommand(ctx.callControlId, 'hangup').catch((error) => console.error('[Hangup]', error.message));
+    }
+    return;
   }
+
+  flushResponse(ctx);
+}
+
+function sendPlaybackMark(ctx) {
+  if (ctx.waitingForPlaybackMark) return;
+  if (ctx.assistantAudioSentMs <= 0) {
+    completeAssistantPlayback(ctx);
+    return;
+  }
+
+  ctx.playbackMarkName = `assistant-playback-${ctx.responseSequence}`;
+  ctx.waitingForPlaybackMark = sendTelnyx(ctx, {
+    event: 'mark',
+    mark: { name: ctx.playbackMarkName }
+  });
+
+  if (!ctx.waitingForPlaybackMark) completeAssistantPlayback(ctx);
+}
+
+function pumpAudio(ctx) {
+  ctx.audioPumpTimer = null;
+  if (!ctx.streamReady || ctx.bargeInConfirmed) return;
+
+  let frame = null;
+  if (ctx.audioBuffer.length >= AUDIO_FRAME_BYTES) {
+    frame = ctx.audioBuffer.subarray(0, AUDIO_FRAME_BYTES);
+    ctx.audioBuffer = ctx.audioBuffer.subarray(AUDIO_FRAME_BYTES);
+  } else if (ctx.openAiAudioDone && ctx.audioBuffer.length > 0) {
+    frame = Buffer.alloc(AUDIO_FRAME_BYTES, 0xff);
+    ctx.audioBuffer.copy(frame);
+    ctx.audioBuffer = Buffer.alloc(0);
+  }
+
+  if (frame) {
+    if (!ctx.assistantAudioStartedAt) ctx.assistantAudioStartedAt = Date.now();
+    ctx.assistantAudioSentMs += AUDIO_FRAME_MS;
+    sendTelnyx(ctx, {
+      event: 'media',
+      media: { payload: frame.toString('base64') }
+    });
+    ctx.audioPumpTimer = setTimeout(() => pumpAudio(ctx), AUDIO_FRAME_MS);
+    return;
+  }
+
+  if (ctx.openAiAudioDone) {
+    sendPlaybackMark(ctx);
+    return;
+  }
+
+  ctx.audioPumpTimer = setTimeout(() => pumpAudio(ctx), 10);
+}
+
+function startAudioPump(ctx) {
+  if (ctx.audioPumpTimer || ctx.waitingForPlaybackMark || ctx.bargeInConfirmed) return;
+  if (!ctx.audioPumpStarted) {
+    if (!ctx.openAiAudioDone && ctx.audioBuffer.length < AUDIO_PREBUFFER_BYTES) return;
+    ctx.audioPumpStarted = true;
+  }
+  ctx.audioPumpTimer = setTimeout(() => pumpAudio(ctx), 0);
+}
+
+function enqueueAudio(ctx, base64Audio) {
+  let chunk;
+  try {
+    chunk = Buffer.from(base64Audio, 'base64');
+  } catch {
+    return;
+  }
+  if (!chunk.length || ctx.bargeInConfirmed) return;
+  ctx.audioBuffer = ctx.audioBuffer.length
+    ? Buffer.concat([ctx.audioBuffer, chunk])
+    : chunk;
+  startAudioPump(ctx);
 }
 
 function confirmBargeIn(ctx) {
@@ -218,11 +319,12 @@ function confirmBargeIn(ctx) {
 
   ctx.bargeInConfirmed = true;
   ctx.hangupAfterResponse = false;
-  sendJson(ctx.openai, { type: 'response.cancel' });
+  if (ctx.openAiGenerating) sendJson(ctx.openai, { type: 'response.cancel' });
+
+  clearLocalAudio(ctx);
   sendTelnyx(ctx, { event: 'clear' });
 
-  const elapsedMs = ctx.assistantAudioStartedAt ? Date.now() - ctx.assistantAudioStartedAt : 0;
-  const audioEndMs = Math.floor(Math.max(0, Math.min(ctx.assistantAudioSentMs, elapsedMs)));
+  const audioEndMs = Math.floor(Math.max(0, ctx.assistantAudioSentMs));
   if (ctx.assistantItemId && audioEndMs > 0) {
     sendJson(ctx.openai, {
       type: 'conversation.item.truncate',
@@ -230,6 +332,11 @@ function confirmBargeIn(ctx) {
       content_index: 0,
       audio_end_ms: audioEndMs
     });
+  }
+
+  if (!ctx.openAiGenerating) {
+    ctx.responseActive = false;
+    flushResponse(ctx);
   }
 }
 
@@ -255,7 +362,7 @@ function createOpenAiSocket(ctx) {
         type: 'realtime',
         instructions: instructions(),
         output_modalities: ['audio'],
-        max_output_tokens: 220,
+        max_output_tokens: MAX_OUTPUT_TOKENS,
         tools,
         tool_choice: 'auto',
         audio: {
@@ -318,7 +425,11 @@ function handleOpenAiMessage(ctx, raw) {
   }
 
   if (message.type === 'response.created') {
+    clearLocalAudio(ctx);
+    ctx.responseSequence += 1;
     ctx.responseActive = true;
+    ctx.openAiGenerating = true;
+    ctx.bargeInConfirmed = false;
     ctx.assistantItemId = '';
     ctx.assistantAudioSentMs = 0;
     ctx.assistantAudioStartedAt = 0;
@@ -339,16 +450,13 @@ function handleOpenAiMessage(ctx, raw) {
 
   if (message.type === 'response.audio.delta' || message.type === 'response.output_audio.delta') {
     const audio = message.delta || message.audio;
-    if (audio) {
-      if (!ctx.assistantAudioStartedAt) ctx.assistantAudioStartedAt = Date.now();
-      ctx.assistantAudioSentMs += audioDurationMs(audio);
-      sendTelnyx(ctx, { event: 'media', media: { payload: audio } });
-    }
+    if (audio) enqueueAudio(ctx, audio);
     return;
   }
 
   if (message.type === 'input_audio_buffer.speech_started') {
     ctx.userSpeechStartedAt = Date.now();
+    ctx.userSpeechStartedWhileAssistant = ctx.responseActive;
     ctx.bargeInConfirmed = false;
     startBargeInTimer(ctx);
     return;
@@ -356,30 +464,38 @@ function handleOpenAiMessage(ctx, raw) {
 
   if (message.type === 'input_audio_buffer.speech_stopped') {
     const speechMs = ctx.userSpeechStartedAt ? Date.now() - ctx.userSpeechStartedAt : 0;
+    const interruptedAssistant = ctx.userSpeechStartedWhileAssistant;
     ctx.userSpeechStartedAt = 0;
+    ctx.userSpeechStartedWhileAssistant = false;
     cancelBargeInTimer(ctx);
-    if (speechMs >= MIN_USER_TURN_MS) requestNaturalResponse(ctx);
+    if (speechMs < MIN_USER_TURN_MS) return;
+    if (interruptedAssistant && !ctx.bargeInConfirmed) return;
+    requestNaturalResponse(ctx);
     return;
   }
 
   if (message.type === 'response.cancelled') {
+    ctx.openAiGenerating = false;
     ctx.responseActive = false;
     cancelBargeInTimer(ctx);
+    clearLocalAudio(ctx);
     flushResponse(ctx);
     return;
   }
 
   if (message.type === 'response.done') {
-    ctx.responseActive = false;
+    ctx.openAiGenerating = false;
     cancelBargeInTimer(ctx);
-    if (ctx.hangupAfterResponse) {
-      ctx.hangupAfterResponse = false;
-      setTimeout(() => {
-        if (ctx.callControlId) telnyxCommand(ctx.callControlId, 'hangup').catch((error) => console.error('[Hangup]', error.message));
-      }, 700);
+
+    if (ctx.bargeInConfirmed) {
+      ctx.responseActive = false;
+      clearLocalAudio(ctx);
+      flushResponse(ctx);
       return;
     }
-    flushResponse(ctx);
+
+    ctx.openAiAudioDone = true;
+    startAudioPump(ctx);
   }
 }
 
@@ -455,10 +571,19 @@ wss.on('connection', (telnyx) => {
     pendingResponse: null,
     pendingNaturalResponse: false,
     hangupAfterResponse: false,
+    responseSequence: 0,
+    openAiGenerating: false,
+    openAiAudioDone: false,
+    audioBuffer: Buffer.alloc(0),
+    audioPumpTimer: null,
+    audioPumpStarted: false,
+    waitingForPlaybackMark: false,
+    playbackMarkName: '',
     assistantItemId: '',
     assistantAudioSentMs: 0,
     assistantAudioStartedAt: 0,
     userSpeechStartedAt: 0,
+    userSpeechStartedWhileAssistant: false,
     bargeInTimer: null,
     bargeInConfirmed: false,
     leadSaved: false,
@@ -504,11 +629,20 @@ wss.on('connection', (telnyx) => {
       return;
     }
 
+    if (event === 'mark') {
+      const name = message.mark?.name || '';
+      if (ctx.waitingForPlaybackMark && name === ctx.playbackMarkName) {
+        completeAssistantPlayback(ctx);
+      }
+      return;
+    }
+
     if (event === 'stop' || event === 'streaming.stopped') telnyx.close();
   });
 
   const cleanup = () => {
     cancelBargeInTimer(ctx);
+    clearLocalAudio(ctx);
     if (ctx.openai?.readyState === WebSocket.OPEN) ctx.openai.close();
     activeCalls.delete(ctx.id);
   };
