@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { REALTIME_MODEL, buildOcmPayload, getCallerPhone, instructions, validateLead } from './receptionist-core.js';
 
 test('hard-locks the requested realtime mini model', () => {
@@ -47,4 +48,16 @@ test('keeps the requested intake order and removes appointment scheduling fields
     previous = index;
   }
   assert.doesNotMatch(prompt, /preferred day|preferred time/i);
+});
+
+test('requires sustained speech before clearing Alex audio', () => {
+  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
+  assert.match(server, /const BARGE_IN_CONFIRM_MS = 450;/);
+  assert.match(server, /threshold: 0\.7/);
+  assert.match(server, /create_response: false/);
+  assert.match(server, /interrupt_response: false/);
+  assert.match(server, /setTimeout\(\(\) => confirmBargeIn\(ctx\), BARGE_IN_CONFIRM_MS\)/);
+  assert.match(server, /type: 'response\.cancel'/);
+  assert.match(server, /type: 'conversation\.item\.truncate'/);
+  assert.doesNotMatch(server, /input_audio_buffer\.speech_started'[\s\S]{0,120}event: 'clear'/);
 });
