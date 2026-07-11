@@ -31,9 +31,8 @@ export const BUSINESS = Object.freeze({
 const SERVICE_TYPES = Object.freeze([
   'interior painting',
   'exterior painting',
-  'small paint repair',
   'wood staining',
-  'other'
+  'small paint repair'
 ]);
 
 export const openingLine = `Hi, this is ${BUSINESS.receptionist} with ${BUSINESS.name}. Can I set you up with an estimate today?`;
@@ -60,7 +59,6 @@ export function validateLead(args = {}) {
     fullName: cleanText(args.fullName),
     email: cleanText(args.email),
     serviceType: cleanText(args.serviceType).toLowerCase(),
-    projectDetails: cleanText(args.projectDetails),
     townOrCity: cleanText(args.townOrCity),
     streetAddress: cleanText(args.streetAddress),
     contactMethod: cleanText(args.contactMethod).toLowerCase(),
@@ -70,8 +68,7 @@ export function validateLead(args = {}) {
   const errors = [];
   if (lead.fullName.split(/\s+/).filter(Boolean).length < 2) errors.push('the caller’s full first and last name');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) errors.push('a complete email address');
-  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push('a valid service category');
-  if (!lead.projectDetails) errors.push('a short description of the work');
+  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push('interior painting, exterior painting, wood staining, or small paint repair');
   if (!lead.townOrCity) errors.push('the town or city');
   if (!lead.streetAddress) errors.push('the street address');
   if (!['call', 'text', 'email'].includes(lead.contactMethod)) errors.push('call, text, or email as the best contact method');
@@ -81,7 +78,6 @@ export function validateLead(args = {}) {
 
 export function buildOcmPayload(callerPhone, lead) {
   const notes = [
-    `Project details: ${lead.projectDetails}`,
     `Best contact method: ${lead.contactMethod}`,
     lead.additionalNotes ? `Additional notes: ${lead.additionalNotes}` : 'Additional notes: none'
   ].join('\n');
@@ -111,14 +107,13 @@ export const tools = [
         fullName: { type: 'string' },
         email: { type: 'string' },
         serviceType: { type: 'string', enum: SERVICE_TYPES },
-        projectDetails: { type: 'string' },
         townOrCity: { type: 'string' },
         streetAddress: { type: 'string' },
         contactMethod: { type: 'string', enum: ['call', 'text', 'email'] },
         additionalNotes: { type: 'string' }
       },
       required: [
-        'fullName', 'email', 'serviceType', 'projectDetails', 'townOrCity',
+        'fullName', 'email', 'serviceType', 'townOrCity',
         'streetAddress', 'contactMethod', 'additionalNotes'
       ]
     }
@@ -172,24 +167,25 @@ ESTIMATE INTAKE — USE THIS ORDER
 Collect any missing fields in this exact order:
 1. Ask: "Can I please have your first and last name?"
 2. Ask: "Can you please share your email address?"
-3. Ask: "And what service were you looking to get? We specialize in interior painting, exterior painting, small paint repair, and wood staining."
+3. Ask: "What service would you like? We specialize in interior painting, exterior painting, wood staining, and small paint repair."
 4. Ask: "What town or city is the project located in?"
 5. Ask: "What is the street address of the project?"
 6. Ask: "What is the best way we can contact you: call, text, or email?"
-7. Ask: "Would you like Jason to know anything else?"
+7. Ask: "Is there anything else you would like Jason to know?"
 
-COMMON-SENSE SERVICE CLASSIFICATION
+SERVICE CLASSIFICATION
+- Only collect the service category: interior painting, exterior painting, wood staining, or small paint repair.
+- Do not ask about project size, scope, number of rooms, surfaces, measurements, condition, colors, or other job details.
 - Inside a home, room, indoor walls, ceilings, interior trim, or interior doors usually means interior painting.
 - Outside a home, siding, exterior walls, or exterior trim usually means exterior painting.
 - A touch-up, small damaged area, small patch, or minor repair usually means small paint repair.
 - Staining a deck, fence, trim, or another wood surface usually means wood staining.
-- Keep the caller’s actual description in projectDetails.
 - When you infer the category, confirm it naturally before continuing. Example: "That sounds like exterior painting. Is that correct?"
-- If the caller mentions walls or painting but does not say whether the work is inside or outside, ask whether it is inside or outside before categorizing it.
-- If it still does not clearly fit after one brief clarification, use other and briefly describe it. Never force a wrong category.
+- If the caller mentions walls or painting but does not say whether the work is inside or outside, ask only whether it is inside or outside before categorizing it.
+- If the caller voluntarily shares project details, retain them as additionalNotes. At question 7, ask whether there is anything else Jason should know.
 
 CONFIRMATION AND SAVE
-- After all seven questions are complete, summarize once: full name, email, service category, project details, town or city, street address, best contact method, and notes. Include the caller-ID phone number only if the server provided it.
+- After all seven questions are complete, summarize once: full name, email, service category, town or city, street address, best contact method, and anything Jason should know. Include the caller-ID phone number only if the server provided it.
 - Ask: "Is all of that correct?" Then stop and listen.
 - Correct only what the caller changes, then summarize the corrected details and confirm again.
 - Only after the caller clearly confirms, call submit_estimate_lead with every field.
