@@ -119,19 +119,30 @@ export function validateLead(args = {}) {
 }
 
 export function buildOcmPayload(callerPhone, lead) {
-  const notes = [
-    `Best contact method: ${lead.contactMethod}`,
-    lead.additionalNotes ? `Additional notes: ${lead.additionalNotes}` : 'Additional notes: none'
-  ].join('\n');
+  const nameParts = cleanText(lead.fullName).split(/\s+/).filter(Boolean);
+  const firstName = nameParts.shift() || '';
+  const lastName = nameParts.join(' ');
+  const streetAddress = cleanText(lead.streetAddress);
+  const townOrCity = cleanText(lead.townOrCity);
+  const address = [streetAddress, townOrCity].filter(Boolean).join(', ');
+  const notes = lead.additionalNotes
+    ? `Additional notes: ${lead.additionalNotes}`
+    : 'Additional notes: none';
 
   return {
     clientId: 'tabor-painting',
     sectionKey: 'contactedMe',
-    Name: lead.fullName,
+    FirstName: firstName,
+    LastName: lastName,
+    Name: cleanText(lead.fullName),
     Phone: cleanText(callerPhone),
     Email: lead.email,
-    Address: `${lead.streetAddress}, ${lead.townOrCity}`,
+    StreetAddress: streetAddress,
+    TownOrCity: townOrCity,
+    Address: address,
+    ServiceType: lead.serviceType,
     Job: lead.serviceType,
+    BestContactMethod: lead.contactMethod,
     PreferredDay: lead.preferredDay,
     PreferredTime: lead.preferredTime,
     Notes: notes,
