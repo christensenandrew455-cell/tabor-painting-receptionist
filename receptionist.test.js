@@ -8,8 +8,10 @@ import {
   instructions,
   normalizePreferredTime,
   tools,
-  validateLead
-} from './receptionist-core.js';
+  validateLead,
+} from './receptionist-core-v2.js';
+
+const productionServer = fs.readFileSync(new URL('./server-v2.js', import.meta.url), 'utf8');
 
 test('hard-locks the requested realtime mini model', () => {
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
@@ -29,7 +31,7 @@ test('validates and maps the nine-field intake to Contacted Me', () => {
     contactMethod: 'text',
     preferredDay: 'wednesday',
     preferredTime: '4:30 pm',
-    additionalNotes: 'A couple outside walls'
+    additionalNotes: 'A couple outside walls',
   });
   assert.equal(result.valid, true);
   assert.equal(result.lead.preferredDay, 'Wednesday');
@@ -39,9 +41,12 @@ test('validates and maps the nine-field intake to Contacted Me', () => {
   assert.equal(payload.sectionKey, 'contactedMe');
   assert.equal(payload.Phone, '+17745551234');
   assert.equal(payload.Job, 'exterior painting');
-  assert.equal(payload.PreferredDay, 'Wednesday');
+  assert.match(payload.PreferredDay, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(payload.EstimateDate, payload.PreferredDay);
+  assert.equal(payload.RequestedWeekday, 'Wednesday');
   assert.equal(payload.PreferredTime, '4:30 PM');
   assert.match(payload.Notes, /Best contact method: text/);
+  assert.match(payload.Notes, /Requested estimate: Wednesday at 4:30 PM/);
   assert.match(payload.Notes, /Additional notes: A couple outside walls/);
   assert.doesNotMatch(payload.Notes, /Project details:/);
 });
@@ -65,11 +70,11 @@ test('rejects weekends and out-of-range estimate times', () => {
     contactMethod: 'call',
     preferredDay: 'saturday',
     preferredTime: '5 pm',
-    additionalNotes: ''
+    additionalNotes: '',
   });
   assert.equal(result.valid, false);
-  assert.ok(result.errors.includes('a preferred estimate day from Monday through Friday'));
-  assert.ok(result.errors.includes('a preferred estimate time between 9:00 AM and 4:30 PM'));
+  assert.match(result.errors.join(' '), /preferred estimate day.*Monday.*Friday/i);
+  assert.match(result.errors.join(' '), /preferred estimate time between 9:00 AM and 4:30 PM/i);
 });
 
 test('keeps the requested intake order and category-only service question', () => {
@@ -83,7 +88,7 @@ test('keeps the requested intake order and category-only service question', () =
     'best way we can contact you',
     'what day would work best',
     'what time would work best',
-    'anything else you would like Jason to know'
+    'anything else you would like Jason to know',
   ];
   let previous = -1;
   for (const question of questions) {
@@ -94,7 +99,9 @@ test('keeps the requested intake order and category-only service question', () =
   assert.match(prompt, /Monday through Friday/i);
   assert.match(prompt, /9:00 AM to 4:30 PM/i);
   assert.match(prompt, /We can only do estimate times between 9:00 AM and 4:30 PM/i);
-  assert.match(prompt, /interior painting, exterior painting, wood staining, and small paint repair/i);
+  for (const service of ['interior painting', 'exterior painting', 'small paint repair', 'wood staining']) {
+    assert.match(prompt, new RegExp(service, 'i'));
+  }
   assert.match(prompt, /Do not ask about project size, scope/i);
   assert.doesNotMatch(prompt, /projectDetails/);
 });
@@ -111,40 +118,46 @@ test('uses day and time in the lead tool schema without projectDetails', () => {
     'tuesday',
     'wednesday',
     'thursday',
-    'friday'
+    'friday',
   ]);
 });
 
 test('requires sustained speech before clearing Alex audio', () => {
-  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
-  assert.match(server, /const BARGE_IN_CONFIRM_MS = 450;/);
-  assert.match(server, /threshold: 0\.7/);
-  assert.match(server, /create_response: false/);
-  assert.match(server, /interrupt_response: false/);
-  assert.match(server, /setTimeout\(\(\) => confirmBargeIn\(ctx\), BARGE_IN_CONFIRM_MS\)/);
-  assert.match(server, /type: 'response\.cancel'/);
-  assert.match(server, /type: 'conversation\.item\.truncate'/);
-  assert.doesNotMatch(server, /input_audio_buffer\.speech_started'[\s\S]{0,120}event: 'clear'/);
+  assert.match(productionServer, /const BARGE_IN_CONFIRM_MS = 450;/);
+  assert.match(productionServer, /threshold: 0\.7/);
+  assert.match(productionServer, /create_response: false/);
+  assert.match(productionServer, /interrupt_response: false/);
+  assert.match(productionServer, /setTimeout\(\(\) => confirmBargeIn\(ctx\), BARGE_IN_CONFIRM_MS\)/);
+  assert.match(productionServer, /type: 'response\.cancel'/);
+  assert.match(productionServer, /type: 'conversation\.item\.truncate'/);
+  assert.doesNotMatch(productionServer, /input_audio_buffer\.speech_started'[\s\S]{0,120}event: 'clear'/);
 });
 
 test('paces PCMU audio and waits for Telnyx playback before hangup', () => {
-  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
-  assert.match(server, /const AUDIO_FRAME_MS = 20;/);
-  assert.match(server, /const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS \* PCMU_BYTES_PER_MS;/);
-  assert.match(server, /const AUDIO_PREBUFFER_MS = 60;/);
-  assert.match(server, /setTimeout\(\(\) => pumpAudio\(ctx\), AUDIO_FRAME_MS\)/);
-  assert.match(server, /event: 'mark'/);
-  assert.match(server, /event === 'mark'/);
-  assert.match(server, /completeAssistantPlayback\(ctx\)/);
-  assert.match(server, /max_output_tokens: MAX_OUTPUT_TOKENS/);
-  assert.doesNotMatch(server, /setTimeout\(\(\) => \{[\s\S]{0,160}telnyxCommand\(ctx\.callControlId, 'hangup'\)[\s\S]{0,40}, 700\)/);
+  assert.match(productionServer, /const AUDIO_FRAME_MS = 20;/);
+  assert.match(productionServer, /const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS \* PCMU_BYTES_PER_MS;/);
+  assert.match(productionServer, /const AUDIO_PREBUFFER_MS = 60;/);
+  assert.match(productionServer, /setTimeout\(\(\) => pumpAudio\(ctx\), AUDIO_FRAME_MS\)/);
+  assert.match(productionServer, /event: 'mark'/);
+  assert.match(productionServer, /event === 'mark'/);
+  assert.match(productionServer, /completeAssistantPlayback\(ctx\)/);
+  assert.match(productionServer, /max_output_tokens: MAX_OUTPUT_TOKENS/);
+  assert.match(productionServer, /speed: AUDIO_SPEED/);
+  assert.doesNotMatch(productionServer, /setTimeout\(\(\) => \{[\s\S]{0,160}telnyxCommand\(ctx\.callControlId, 'hangup'\)[\s\S]{0,40}, 700\)/);
+});
+
+test('waits silently when the caller asks for a pause', () => {
+  assert.match(productionServer, /const HOLD_PATTERN/);
+  assert.match(productionServer, /ctx\.holdMode = true/);
+  assert.match(productionServer, /if \(!ctx\.pendingNaturalResponse \|\| ctx\.holdMode\) return false/);
+  assert.match(productionServer, /conversation\.item\.input_audio_transcription\.completed/);
+  assert.match(productionServer, /gpt-4o-mini-transcribe/);
 });
 
 test('allows the complete recap and logs why a response ended', () => {
-  const server = fs.readFileSync(new URL('./server.js', import.meta.url), 'utf8');
-  assert.match(server, /const MAX_OUTPUT_TOKENS = 800;/);
-  assert.doesNotMatch(server, /const MAX_OUTPUT_TOKENS = 600;/);
-  assert.match(server, /\[OpenAI response done\]/);
-  assert.match(server, /status_details\?\.reason/);
-  assert.match(server, /outputTokens: response\.usage\?\.output_tokens/);
+  assert.match(productionServer, /const MAX_OUTPUT_TOKENS = 800;/);
+  assert.doesNotMatch(productionServer, /const MAX_OUTPUT_TOKENS = 600;/);
+  assert.match(productionServer, /\[OpenAI response done\]/);
+  assert.match(productionServer, /status_details\?\.reason/);
+  assert.match(productionServer, /outputTokens: response\.usage\?\.output_tokens/);
 });
