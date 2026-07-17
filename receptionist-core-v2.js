@@ -84,6 +84,14 @@ export function buildOcmPayload(callerPhone, lead) {
   const payload = buildBaseOcmPayload(callerPhone, lead);
   const requestedWeekday = String(lead?.preferredDay || '').trim();
   const preferredDate = resolvePreferredDate(requestedWeekday);
+  const contactMethod = String(lead?.contactMethod || '').trim().toLowerCase();
+  const requestedTime = String(lead?.preferredTime || '').trim();
+  const additionalNotes = String(lead?.additionalNotes || '').trim();
+  const notes = [
+    contactMethod && `Best contact method: ${contactMethod}`,
+    requestedWeekday && `Requested estimate: ${requestedWeekday}${requestedTime ? ` at ${requestedTime}` : ''}${preferredDate ? ` (${preferredDate})` : ''}`,
+    `Additional notes: ${additionalNotes || 'none'}`,
+  ].filter(Boolean).join('\n');
 
   return {
     ...payload,
@@ -91,6 +99,7 @@ export function buildOcmPayload(callerPhone, lead) {
     PreferredDate: preferredDate,
     EstimateDate: preferredDate,
     RequestedWeekday: requestedWeekday,
+    Notes: notes,
     rawSubmission: {
       ...(payload.rawSubmission || {}),
       requestedWeekday,
