@@ -54,12 +54,21 @@ test('makes email optional in the lead tool schema', () => {
   assert.match(submitTool.parameters.properties.email.description, /optional/i);
 });
 
-test('instructions include optional email, phone privacy, save, and hold behavior', () => {
+test('instructions use only available contact methods', () => {
+  const prompt = instructions();
+  assert.match(prompt, /If no email was provided[\s\S]*call or text\?/i);
+  assert.match(prompt, /If an email was provided[\s\S]*call, text, or email\?/i);
+  assert.match(prompt, /Do not offer email/i);
+});
+
+test('instructions include optional email, phone privacy, save, and strict silent hold behavior', () => {
   const prompt = instructions();
   assert.match(prompt, /Would you like to add your email\? Yes or no/i);
   assert.match(prompt, /email as an empty string/i);
   assert.match(prompt, /Never say or repeat the caller-ID phone number/i);
   assert.match(prompt, /give me one second to save that/i);
-  assert.match(prompt, /remain completely silent/i);
-  assert.match(prompt, /calm, measured pace/i);
+  assert.match(prompt, /Silence is mandatory/i);
+  assert.match(prompt, /take your time[\s\S]*forbidden/i);
+  assert.match(prompt, /standalone filler/i);
+  assert.match(prompt, /natural, measured pace/i);
 });
