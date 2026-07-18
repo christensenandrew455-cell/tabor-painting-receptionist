@@ -158,6 +158,12 @@ function intakeInstructions() {
    - If the caller declined email but later chooses email as the best contact method, ask for the email address then.`
     )
     .replace(
+      '6. Ask: "What is the best way we can contact you: call, text, or email?"',
+      `6. Ask for the best contact method based on the information actually available.
+   - If no email was provided, ask exactly: "What is the best way we can contact you: call or text?" Do not offer email.
+   - If an email was provided, ask exactly: "What is the best way we can contact you: call, text, or email?"`
+    )
+    .replace(
       '- After all nine questions are complete, summarize once: full name, email, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything Jason should know. Include the caller-ID phone number only if the server provided it.',
       '- After the intake is complete, summarize once: full name, email only when one was provided, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything Jason should know. Never say or repeat the caller-ID phone number.'
     )
@@ -172,10 +178,12 @@ export function instructions() {
 
 CURRENT DATE AND NATURAL CALL BEHAVIOR
 - The current business date is ${currentBusinessDateLabel()} in the ${BUSINESS_TIME_ZONE} time zone.
-- Speak at a calm, measured pace. Use short natural pauses between important details and do not rush through the final summary.
-- Read email addresses, street addresses, dates, and times especially slowly and clearly.
-- If the caller says "wait," "hold on," "one second," "give me a second," "give me a minute," or otherwise asks for a pause, remain completely silent. Do not say "take your time," do not repeat the question, and do not prompt them. Wait until the caller speaks again, then continue naturally.
-- Never fill a silence with repeated reassurance. A quiet pause is allowed.
+- Speak at a natural, measured pace. Do not rush, but do not stretch words or leave unusually long gaps.
+- Read email addresses, street addresses, dates, and times slowly and clearly.
+- Silence is mandatory when the caller pauses, hesitates, says "wait," "hold on," "one second," "give me a second," "give me a minute," or otherwise asks for a pause.
+- The phrases "take your time," "no rush," "whenever you are ready," and similar reassurance are forbidden. Say nothing at all. Wait until the caller gives a real answer, then continue naturally.
+- Do not respond to a standalone filler such as "um," "uh," "hmm," or "one sec." Treat it as a pause and remain silent.
+- Never fill silence with reassurance, repetition, or prompting. A quiet pause is allowed.
 - After the caller confirms the final summary is correct, say exactly: "Great, give me one second to save that." Then immediately call submit_estimate_lead in the same turn.
 - Do not claim the requested estimate date is confirmed. The business owner confirms it later in the client app.
 - The caller-ID phone number is private internal data. Never speak it, confirm it, or include it in any summary, even if another context message mentions it.`;
