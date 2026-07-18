@@ -1,12 +1,12 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Tabor Painting AI receptionist using Telnyx media streams, OpenAI Realtime, ARK OCM, and Railway.",
   "main": "server-v2.js",
   "type": "module",
   "scripts": {
-    "start": "node --import ./ocm-bootstrap.js server-v2.js",
-    "dev": "node --watch --import ./ocm-bootstrap.js server-v2.js",
+    "start": "OPENAI_REALTIME_SPEED=0.94 VAD_SILENCE_DURATION_MS=1200 node --import ./ocm-bootstrap.js server-v2.js",
+    "dev": "OPENAI_REALTIME_SPEED=0.94 VAD_SILENCE_DURATION_MS=1200 node --watch --import ./ocm-bootstrap.js server-v2.js",
     "check": "node --check server-v2.js && node --check receptionist-core-v2.js",
     "test": "node --test"
   },
