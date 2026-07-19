@@ -1,6 +1,6 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Clone-ready Telnyx and OpenAI Realtime receptionist that sends confirmed leads to ARK OCM.",
   "main": "server.js",
   "type": "module",
@@ -8,7 +8,7 @@
     "start": "node --import ./ocm-bootstrap.js server.js",
     "dev": "node --watch --import ./ocm-bootstrap.js server.js",
     "check": "node --check ocm-bootstrap.js && node --check receptionist-core.js && node --check server.js",
-    "test": "node --test test/receptionist.test.js"
+    "test": "node --import ./test/test-env.js --test test/receptionist.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
