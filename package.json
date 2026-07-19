@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node --import ./ocm-bootstrap.js server.js",
     "dev": "node --watch --import ./ocm-bootstrap.js server.js",
-    "check": "node --check ocm-bootstrap.js && node --check receptionist-core.js && node --check server.js",
+    "check": "node --check ocm-bootstrap.js && node --check call-policy.js && node --check receptionist-core.js && node --check server.js",
     "test": "node --import ./test/test-env.js --test test/receptionist.test.js"
   },
   "dependencies": {

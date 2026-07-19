@@ -21,6 +21,16 @@ import {
   tools,
   validateLead,
 } from './receptionist-core.js';
+import {
+  CALL_HARD_LIMIT_MS,
+  CALL_MAX_MS,
+  NO_PROGRESS_LIMIT_MS,
+  POLICY_CHECK_MS,
+  SILENCE_LIMIT_MS,
+  callUsageOutcome,
+  durationSeconds,
+  noteTranscriptProgress,
+} from './call-policy.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = resolvePublicUrl();
@@ -37,7 +47,9 @@ const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
 const AUDIO_PREBUFFER_MS = 60;
 const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
 const MAX_OUTPUT_TOKENS = 800;
+const OCM_USAGE_URL = resolveOcmUsageUrl();
 const activeCalls = new Map();
+const activeCallsByControlId = new Map();
 const callMetadata = new Map();
 
 const HOLD_PATTERN = /\b(?:hold on|wait(?: a moment)?|one second|one sec|give me (?:a|one) (?:second|sec|minute|moment)|just a (?:second|sec|minute|moment)|hang on|pause for a (?:second|minute|moment))\b/i;
@@ -59,6 +71,15 @@ function resolvePublicUrl() {
   }
 
   return `${url.origin}${url.pathname}`.replace(/\/$/, '');
+}
+
+function resolveOcmUsageUrl() {
+  const url = new URL(OCM_WEBHOOK_URL);
+  url.pathname = '/api/receptionist/call-usage';
+  url.searchParams.set('clientId', String(process.env.OCM_CLIENT_ID || url.searchParams.get('clientId') || '').trim());
+  url.searchParams.set('key', String(process.env.OCM_CONNECTION_KEY || url.searchParams.get('key') || '').trim());
+  url.searchParams.delete('source');
+  return url.toString();
 }
 
 function assertRuntimeConfiguration() {
@@ -113,6 +134,175 @@ async function telnyxCommand(id, action, body = {}) {
   if (!response.ok) throw new Error(`Telnyx ${action} failed: ${response.status} ${await response.text()}`);
 }
 
+async function postUsageAction(payload, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(OCM_USAGE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ARK-Connection-Key': String(process.env.OCM_CONNECTION_KEY || ''),
+        },
+        body: JSON.stringify({
+          clientId: process.env.OCM_CLIENT_ID,
+          ...payload,
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
+      const body = await response.text();
+      let data = {};
+      try {
+        data = body ? JSON.parse(body) : {};
+      } catch {
+        throw new Error(`ARK OCM returned non-JSON: ${response.status}`);
+      }
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `ARK OCM usage request failed: ${response.status}`);
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, attempt * 350));
+    }
+  }
+  throw lastError || new Error('ARK OCM usage request failed.');
+}
+
+async function callerIsBlocked(callerPhone) {
+  if (!String(callerPhone || '').trim()) return false;
+  try {
+    const data = await postUsageAction({ action: 'check', callerPhone }, 1);
+    return data.blocked === true;
+  } catch (error) {
+    console.error('[Call block check failed open]', error.message);
+    return false;
+  }
+}
+
+async function reportCallUsage(ctx) {
+  if (!ctx.startedAt || ctx.usageReported) return;
+  if (ctx.usageReportPromise) return ctx.usageReportPromise;
+
+  const endedAt = Date.now();
+  const payload = {
+    action: 'record',
+    callId: ctx.callControlId || ctx.id,
+    callerPhone: ctx.callerPhone,
+    durationSeconds: durationSeconds(ctx.startedAt, endedAt),
+    leadSaved: ctx.leadSaved,
+    outcome: callUsageOutcome({ leadSaved: ctx.leadSaved, endReason: ctx.endReason }),
+    endReason: ctx.endReason || 'remote-hangup',
+    timeZone: BUSINESS.timeZone,
+    startedAt: new Date(ctx.startedAt).toISOString(),
+    endedAt: new Date(endedAt).toISOString(),
+  };
+
+  ctx.usageReportPromise = postUsageAction(payload, 3)
+    .then((result) => {
+      ctx.usageReported = true;
+      console.log('[Call usage saved]', {
+        callId: ctx.callControlId || ctx.id,
+        durationSeconds: payload.durationSeconds,
+        outcome: payload.outcome,
+        blocked: result.blocked === true,
+      });
+    })
+    .catch((error) => {
+      console.error('[Call usage save failed]', error.message);
+    })
+    .finally(() => {
+      ctx.usageReportPromise = null;
+    });
+
+  return ctx.usageReportPromise;
+}
+
+function clearCallPolicyTimers(ctx) {
+  if (ctx.policyTimer) clearInterval(ctx.policyTimer);
+  if (ctx.maxCallTimer) clearTimeout(ctx.maxCallTimer);
+  if (ctx.hardCallTimer) clearTimeout(ctx.hardCallTimer);
+  ctx.policyTimer = null;
+  ctx.maxCallTimer = null;
+  ctx.hardCallTimer = null;
+}
+
+function forceHangup(ctx, reason) {
+  if (ctx.cleanedUp) return;
+  ctx.ending = true;
+  ctx.endReason = ctx.endReason || reason;
+  ctx.pendingNaturalResponse = false;
+  ctx.pendingResponse = null;
+  ctx.hangupAfterResponse = false;
+  if (ctx.callControlId) {
+    telnyxCommand(ctx.callControlId, 'hangup').catch((error) => console.error('[Forced hangup]', error.message));
+  } else {
+    ctx.telnyx?.close();
+  }
+}
+
+function queuePolicyEnding(ctx, reason, spokenLine) {
+  if (ctx.cleanedUp || ctx.ending) return;
+  ctx.ending = true;
+  ctx.endReason = reason;
+  ctx.holdMode = false;
+  ctx.pendingNaturalResponse = false;
+  const pending = {
+    instructionsText: `Say exactly this and nothing else: "${spokenLine}"`,
+    hangupAfter: true,
+  };
+
+  if (ctx.responseActive) {
+    ctx.pendingResponse = pending;
+    ctx.hangupAfterResponse = false;
+    clearLocalAudio(ctx);
+    sendTelnyx(ctx, { event: 'clear' });
+    if (ctx.openAiGenerating) {
+      sendJson(ctx.openai, { type: 'response.cancel' });
+      return;
+    }
+    ctx.responseActive = false;
+  } else {
+    ctx.pendingResponse = pending;
+  }
+  flushResponse(ctx);
+}
+
+function evaluateCallPolicy(ctx) {
+  if (!ctx.startedAt || ctx.cleanedUp || ctx.ending) return;
+  const now = Date.now();
+  if (now - ctx.lastSpeechAt >= SILENCE_LIMIT_MS) {
+    queuePolicyEnding(ctx, 'silence', "I'm sorry, but I haven't heard a response, so I have to end this call now. Goodbye.");
+    return;
+  }
+  if (now - ctx.lastProgressAt >= NO_PROGRESS_LIMIT_MS) {
+    queuePolicyEnding(ctx, 'no-progress', "I'm sorry, but I am unable to complete this request, so I have to end this call now. Goodbye.");
+  }
+}
+
+function startCallPolicy(ctx) {
+  if (ctx.startedAt) return;
+  const now = Date.now();
+  ctx.startedAt = now;
+  ctx.lastSpeechAt = now;
+  ctx.lastProgressAt = now;
+  ctx.policyTimer = setInterval(() => evaluateCallPolicy(ctx), POLICY_CHECK_MS);
+  ctx.maxCallTimer = setTimeout(() => {
+    if (ctx.cleanedUp || ctx.ending) return;
+    const line = ctx.leadSaved
+      ? "I'm sorry, there are more customers waiting. Your information has been saved, and the business will follow up shortly. Goodbye."
+      : "I'm sorry, there are more customers waiting, and I have to end this call now. Goodbye.";
+    queuePolicyEnding(ctx, 'max-duration', line);
+  }, CALL_MAX_MS);
+  ctx.hardCallTimer = setTimeout(() => forceHangup(ctx, 'max-duration'), CALL_HARD_LIMIT_MS);
+}
+
+function noteCallerActivity(ctx, transcript) {
+  const now = Date.now();
+  ctx.lastSpeechAt = now;
+  if (noteTranscriptProgress(ctx.progressTokens, transcript)) ctx.lastProgressAt = now;
+}
+
 function sendJson(ws, message) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
   ws.send(JSON.stringify(message));
@@ -125,6 +315,7 @@ function queueResponse(ctx, instructionsText, hangupAfter = false) {
 }
 
 function requestNaturalResponse(ctx) {
+  if (ctx.ending) return;
   ctx.pendingNaturalResponse = true;
   flushResponse(ctx);
 }
@@ -234,6 +425,8 @@ function finishCall(ctx, call) {
     return;
   }
   sendToolOutput(ctx, call.callId, { ok: true });
+  ctx.endReason = 'completed';
+  ctx.ending = true;
   queueResponse(ctx, `Say exactly this and nothing else: "${closingLine}"`, true);
 }
 
@@ -362,7 +555,7 @@ function enqueueAudio(ctx, base64Audio) {
 
 function confirmBargeIn(ctx) {
   ctx.bargeInTimer = null;
-  if (!ctx.responseActive) return;
+  if (ctx.ending || !ctx.responseActive) return;
 
   ctx.bargeInConfirmed = true;
   ctx.hangupAfterResponse = false;
@@ -422,7 +615,9 @@ function handleCallerTranscript(ctx, transcript) {
   const text = String(transcript || '').trim();
   if (!text) return;
   ctx.lastCallerTranscript = text;
+  noteCallerActivity(ctx, text);
   clearTranscriptTimer(ctx);
+  if (ctx.ending) return;
 
   if (isHoldRequest(text)) {
     ctx.holdMode = true;
@@ -567,6 +762,7 @@ function handleOpenAiMessage(ctx, raw) {
   }
 
   if (message.type === 'input_audio_buffer.speech_started') {
+    if (ctx.ending) return;
     ctx.userSpeechStartedAt = Date.now();
     ctx.userSpeechStartedWhileAssistant = ctx.responseActive;
     ctx.bargeInConfirmed = false;
@@ -654,6 +850,10 @@ app.get('/health', (req, res) => {
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
     hasOcmConnection: Boolean(process.env.OCM_CONNECTION_KEY),
     activeCalls: activeCalls.size,
+    callMaximumSeconds: CALL_MAX_MS / 1000,
+    hardCallMaximumSeconds: CALL_HARD_LIMIT_MS / 1000,
+    silenceMaximumSeconds: SILENCE_LIMIT_MS / 1000,
+    noProgressMaximumSeconds: NO_PROGRESS_LIMIT_MS / 1000,
   });
 });
 
@@ -665,8 +865,19 @@ app.post('/voice-api-webhook', async (req, res) => {
   if (!id) return;
 
   try {
-    if (type === 'call.initiated') await telnyxCommand(id, 'answer');
-    if (type === 'call.answered') {
+    const metadata = callMetadata.get(id) || {};
+    if (type === 'call.initiated') {
+      if (metadata.rejected) return;
+      const callerPhone = getCallerPhone(req.body) || metadata.callerPhone || '';
+      if (await callerIsBlocked(callerPhone)) {
+        callMetadata.set(id, { ...metadata, callerPhone, rejected: true, updatedAt: Date.now() });
+        await telnyxCommand(id, 'reject', { cause: 'CALL_REJECTED' });
+        console.log('[Caller rejected for repeated max-duration calls]', { callId: id });
+        return;
+      }
+      await telnyxCommand(id, 'answer');
+    }
+    if (type === 'call.answered' && !metadata.rejected) {
       await telnyxCommand(id, 'streaming_start', {
         stream_url: STREAM_URL,
         stream_track: 'inbound_track',
@@ -676,7 +887,14 @@ app.post('/voice-api-webhook', async (req, res) => {
         stream_bidirectional_sampling_rate: 8000,
       });
     }
-    if (type === 'call.hangup' || type === 'streaming.stopped') callMetadata.delete(id);
+    if (type === 'call.hangup' || type === 'streaming.stopped') {
+      const ctx = activeCallsByControlId.get(id);
+      if (ctx) {
+        ctx.endReason = ctx.endReason || 'remote-hangup';
+        reportCallUsage(ctx).catch(() => null);
+      }
+      callMetadata.delete(id);
+    }
   } catch (error) {
     console.error('[Telnyx webhook]', type, error.message);
   }
@@ -699,6 +917,18 @@ wss.on('connection', (telnyx) => {
     streamId: '',
     callControlId: '',
     callerPhone: '',
+    startedAt: 0,
+    lastSpeechAt: 0,
+    lastProgressAt: 0,
+    progressTokens: new Set(),
+    policyTimer: null,
+    maxCallTimer: null,
+    hardCallTimer: null,
+    ending: false,
+    endReason: '',
+    usageReported: false,
+    usageReportPromise: null,
+    cleanedUp: false,
     sessionReady: false,
     streamReady: false,
     phoneContextSent: false,
@@ -755,6 +985,8 @@ wss.on('connection', (telnyx) => {
       ctx.callControlId = callControlId(message) || ctx.callControlId;
       const remembered = callMetadata.get(ctx.callControlId) || {};
       ctx.callerPhone = getCallerPhone(message) || remembered.callerPhone || ctx.callerPhone;
+      if (ctx.callControlId) activeCallsByControlId.set(ctx.callControlId, ctx);
+      startCallPolicy(ctx);
       attachCallerContext(ctx);
       flushResponse(ctx);
       return;
@@ -778,11 +1010,17 @@ wss.on('connection', (telnyx) => {
   });
 
   const cleanup = () => {
+    if (ctx.cleanedUp) return;
+    ctx.cleanedUp = true;
+    ctx.endReason = ctx.endReason || 'remote-hangup';
     cancelBargeInTimer(ctx);
     clearTranscriptTimer(ctx);
+    clearCallPolicyTimers(ctx);
     clearLocalAudio(ctx);
     if (ctx.openai?.readyState === WebSocket.OPEN) ctx.openai.close();
+    if (ctx.callControlId) activeCallsByControlId.delete(ctx.callControlId);
     activeCalls.delete(ctx.id);
+    reportCallUsage(ctx).catch(() => null);
   };
 
   telnyx.on('close', cleanup);

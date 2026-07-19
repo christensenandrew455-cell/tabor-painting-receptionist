@@ -18,6 +18,11 @@ import {
   tools,
   validateLead,
 } from '../receptionist-core.js';
+import {
+  callUsageOutcome,
+  durationSeconds,
+  noteTranscriptProgress,
+} from '../call-policy.js';
 
 function completeLead(overrides = {}) {
   return {
@@ -241,4 +246,21 @@ test('bootstrap requires the exact variable list, hardcodes the shared endpoint,
   assert.equal(output.clientId, 'sample-business');
   assert.equal(output.key, 'private-test-value');
   assert.equal(output.source, 'sample-business-receptionist');
+});
+
+
+test('tracks substantive progress but ignores repeated filler', () => {
+  const seen = new Set();
+  assert.equal(noteTranscriptProgress(seen, 'um, yeah, okay'), false);
+  assert.equal(noteTranscriptProgress(seen, 'Taylor Morgan'), true);
+  assert.equal(noteTranscriptProgress(seen, 'Taylor Morgan'), false);
+  assert.equal(noteTranscriptProgress(seen, 'interior painting in Berlin'), true);
+});
+
+test('classifies call outcomes and rounds connected seconds up', () => {
+  assert.equal(callUsageOutcome({ leadSaved: true, endReason: 'max-duration' }), 'lead-saved');
+  assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'max-duration' }), 'max-duration-no-lead');
+  assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'silence' }), 'silence-no-lead');
+  assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'no-progress' }), 'no-progress-no-lead');
+  assert.equal(durationSeconds(1000, 61001), 61);
 });
