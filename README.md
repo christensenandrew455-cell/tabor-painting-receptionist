@@ -1,108 +1,79 @@
-# Tabor Painting AI Receptionist
+# Clone-Ready AI Receptionist
 
-A clone-ready phone receptionist deployed on Railway. It answers Telnyx calls, runs the conversation through OpenAI Realtime, and sends caller-confirmed estimate requests into the correct ARK Client Center account.
+This Railway service answers Telnyx calls, runs the conversation through OpenAI Realtime, and sends caller-confirmed leads to the correct ARK Client Center account.
 
-## What is cloned
-
-The receptionist service is cloned once per business.
-
-The ARK Client Center app is **not** cloned. Every receptionist clone sends leads to the same production app, using that business's own `OCM_CLIENT_ID` and `OCM_CONNECTION_KEY`.
-
-```text
-Incoming Telnyx number
-    -> this Railway receptionist clone
-    -> OpenAI Realtime conversation
-    -> production ARK Client Center intake webhook
-    -> the correct business account
-```
+The ARK app is shared. Only the receptionist service is cloned for each business.
 
 ## Exact Railway variables
 
-These are the only manually managed receptionist variables.
-
-### Required
+Every clone must contain all eleven variables below:
 
 ```text
-PUBLIC_URL
-TELNYX_API_KEY
-OPENAI_API_KEY
+AI_MODEL
+AI_SILENCE_MS
+AI_SPEECH_SPEED
+AI_VOICE
+BUSINESS_INFO
 OCM_CLIENT_ID
 OCM_CONNECTION_KEY
-BUSINESS_INFO
-```
-
-### Optional behavior overrides
-
-```text
+OPENAI_API_KEY
+PUBLIC_URL
 RECEPTIONIST_SCRIPT
-AI_MODEL
-AI_VOICE
-AI_SPEECH_SPEED
-AI_SILENCE_MS
+TELNYX_API_KEY
 ```
 
-Railway provides `PORT` and `RAILWAY_PUBLIC_DOMAIN` automatically. The shared production OCM webhook and OCM source label are hardcoded or derived by the application.
+The service now refuses to start when any one of these variables is blank or missing. There is no built-in business-information fallback and no built-in receptionist-script fallback.
 
-### Delete old variables
+Railway supplies `PORT` automatically. Do not add it manually.
 
-The runtime no longer reads these old variables. Remove them from Railway if they are present:
+## What each variable controls
 
-```text
-OCM_WEBHOOK_URL
-OCM_SOURCE
-OPENAI_REALTIME_MODEL
-OPENAI_REALTIME_VOICE
-OPENAI_REALTIME_SPEED
-VAD_SILENCE_DURATION_MS
-TRANSCRIPT_WAIT_MS
-BUSINESS_TIME_ZONE
-```
-
-No Resend variable or Resend package is used by this receptionist.
+- `AI_MODEL`: OpenAI Realtime model.
+- `AI_SILENCE_MS`: caller-pause detection time, from 300 through 3000 milliseconds.
+- `AI_SPEECH_SPEED`: voice speed, from 0.25 through 1.5.
+- `AI_VOICE`: OpenAI Realtime voice.
+- `BUSINESS_INFO`: one JSON object containing every business-specific fact.
+- `OCM_CLIENT_ID`: the exact ARK Client Center business ID.
+- `OCM_CONNECTION_KEY`: the private ARK connection value for that business.
+- `OPENAI_API_KEY`: the OpenAI key used by this clone. Use a separate key when usage must be separated by customer.
+- `PUBLIC_URL`: this Railway service's public HTTPS address.
+- `RECEPTIONIST_SCRIPT`: the full business-specific call flow and wording.
+- `TELNYX_API_KEY`: the Telnyx credential used to answer and control calls.
 
 ## BUSINESS_INFO
 
-`BUSINESS_INFO` is one JSON variable containing every business-specific fact. The same object controls:
-
-- The business, receptionist, and owner names.
-- The opening and closing lines.
-- Business phone, email, hours, location, and time zone.
-- Estimate days and accepted time window.
-- Service areas and valid service categories.
-- Business descriptions and extra information.
-- The service options accepted by the OpenAI lead-saving tool.
-
-Example:
+`BUSINESS_INFO` must be valid JSON and must provide:
 
 ```json
 {
-  "name": "Tabor Painting",
+  "name": "Example Business",
   "receptionist": "Alex",
-  "owner": "Jason Beirne",
-  "phone": "(774) 245-3383",
-  "email": "Taborpainting508@gmail.com",
+  "owner": "Example Owner",
+  "phone": "(555) 555-0100",
+  "email": "hello@example.com",
   "hours": "Monday through Friday, 8 AM to 5 PM",
   "timeZone": "America/New_York",
   "estimateDays": "Monday through Friday",
   "estimateWeekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
   "earliestEstimateStart": "9:00 AM",
   "latestEstimateStart": "4:30 PM",
-  "base": "Berlin, Massachusetts",
-  "serviceAreas": ["Berlin", "Bolton", "Hudson"],
+  "base": "Example City",
+  "serviceAreas": ["Example State"],
   "services": {
-    "interior painting": "Indoor walls, ceilings, trim, doors, and repainting.",
-    "exterior painting": "Exterior surfaces, preparation, and trim.",
-    "small paint repair": "Small touch-ups and minor paint or patch repairs.",
-    "wood staining": "Staining decks, fences, trim, and other wood surfaces."
+    "example service": "Description of the service."
   },
-  "about": [
-    "Tabor Painting is a residential painting company based in Berlin, Massachusetts."
-  ],
+  "about": ["Short business description."],
   "openingLine": "Hi, this is {{receptionist_name}} with {{business_name}}. Can I set you up with an estimate today?",
   "closingLine": "{{owner_first_name}} will follow up with you shortly. Thanks for calling {{business_name}}. Goodbye.",
-  "extraInformation": ""
+  "extraInformation": "Additional facts the receptionist may tell callers."
 }
 ```
+
+The configured services become the only service categories accepted by the lead-saving tool. Estimate days, times, time zone, names, opening, closing, service area, and all business answers also come from this variable.
+
+## RECEPTIONIST_SCRIPT
+
+`RECEPTIONIST_SCRIPT` is required and must contain the full call flow for that business. The code does not supply a default script.
 
 Supported placeholders:
 
@@ -115,83 +86,65 @@ Supported placeholders:
 {{estimate_days}}
 {{earliest_estimate_time}}
 {{latest_estimate_time}}
+{{opening_line}}
+{{closing_line}}
 ```
 
-Older field aliases such as `businessName`, `receptionistName`, `ownerName`, `businessHours`, and `location` remain accepted, so the existing Tabor configuration does not need an immediate rewrite.
+Shared safety and infrastructure behavior stays hardcoded around the variable script. This includes caller-ID privacy, one-question-at-a-time handling, confirmed-lead saving, OCM routing, retries, Telnyx streaming, interruption handling, and server-controlled hangup behavior.
 
-## RECEPTIONIST_SCRIPT
+## Shared routing
 
-The tested Tabor intake flow remains built in. Leave `RECEPTIONIST_SCRIPT` empty to keep that behavior.
-
-Set `RECEPTIONIST_SCRIPT` only when a cloned receptionist needs different wording, question order, or workflow. It can use the same placeholders as `BUSINESS_INFO`.
-
-Hardcoded operating safeguards remain outside the variable script. A custom script cannot remove caller-ID privacy, one-question-at-a-time behavior, confirmed-lead saving, OCM routing, or the server-controlled hangup process.
-
-## AI behavior variables
+The production ARK intake endpoint is hardcoded because every clone sends into the same app. The source label is derived automatically from `OCM_CLIENT_ID`:
 
 ```text
-AI_MODEL=gpt-realtime-mini
-AI_VOICE=alloy
-AI_SPEECH_SPEED=0.94
-AI_SILENCE_MS=1200
+OCM_CLIENT_ID-receptionist
 ```
 
-- `AI_MODEL` selects the OpenAI Realtime model.
-- `AI_VOICE` selects the Realtime voice.
-- `AI_SPEECH_SPEED` controls spoken pacing from `0.25` through `1.5`.
-- `AI_SILENCE_MS` controls how long the caller can pause before a turn is considered complete, from `300` through `3000` milliseconds.
+Do not add these old variables:
 
-The audio codec, Telnyx stream settings, barge-in handling, hold behavior, retries, validation, tool definitions, and OCM webhook endpoint remain hardcoded because they are shared runtime logic rather than client configuration.
+```text
+OCM_WEBHOOK_URL
+OCM_SOURCE
+OPENAI_REALTIME_MODEL
+OPENAI_REALTIME_VOICE
+OPENAI_REALTIME_SPEED
+VAD_SILENCE_DURATION_MS
+TRANSCRIPT_WAIT_MS
+BUSINESS_TIME_ZONE
+```
+
+No Resend variable or Resend package is used.
 
 ## Clone process
 
-1. Duplicate the Railway receptionist service.
-2. Give the clone its own public Railway domain.
-3. Add the exact variables from `.env.example`.
-4. Use the new business's OpenAI API key when usage needs separate billing.
-5. Set the new business's `OCM_CLIENT_ID` and private `OCM_CONNECTION_KEY`.
-6. Replace `BUSINESS_INFO`.
-7. Optionally replace `RECEPTIONIST_SCRIPT`, voice, speed, silence timing, or model.
-8. In Telnyx, assign the new phone number to a Voice API application whose POST webhook is:
+1. Duplicate the Railway receptionist service or repository.
+2. Give the new service its own public Railway domain.
+3. Add all eleven required variables.
+4. Replace `BUSINESS_INFO` with the new business's facts.
+5. Replace `RECEPTIONIST_SCRIPT` with the new business's call flow.
+6. Use the correct `OCM_CLIENT_ID` and `OCM_CONNECTION_KEY`.
+7. Use a separate `OPENAI_API_KEY` when customer usage must be isolated.
+8. In Telnyx, attach the new telephone number to a Voice API application using:
 
 ```text
 https://YOUR-RAILWAY-DOMAIN/voice-api-webhook
 ```
 
-The WebSocket media endpoint is created automatically:
+The media stream is:
 
 ```text
 wss://YOUR-RAILWAY-DOMAIN/media-stream
 ```
 
-The phone number itself is configured in Telnyx. It is not a Railway variable because the runtime never needs to read it.
+The telephone number is configured in Telnyx, not as a Railway variable.
 
-## Current call flow
-
-The default script collects:
-
-1. Full first and last name.
-2. Optional email address.
-3. Service category.
-4. Town or city.
-5. Street address.
-6. Best available contact method.
-7. Preferred estimate day.
-8. Preferred estimate time.
-9. Additional notes.
-
-The caller's phone number comes from Telnyx caller ID and is never spoken back to the caller. After the caller confirms the summary, the receptionist saves the lead to the business's `contactedMe` section.
-
-## Local checks
-
-Requires Node.js 20 or newer.
+## Validation
 
 ```bash
 npm install
-cp .env.example .env
 npm run check
 npm test
-npm run dev
+npm start
 ```
 
-Never commit real API keys or a real OCM connection key.
+Never commit real provider credentials or an ARK connection value.
