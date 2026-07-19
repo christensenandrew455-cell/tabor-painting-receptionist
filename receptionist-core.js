@@ -1,144 +1,112 @@
-export const AUDIO_FORMAT = Object.freeze({ type: 'audio/pcmu' });
-export const REALTIME_MODEL = cleanText(process.env.AI_MODEL) || 'gpt-realtime-mini';
-export const REALTIME_VOICE = cleanText(process.env.AI_VOICE) || 'alloy';
-export const SPEECH_SPEED = clampNumber(process.env.AI_SPEECH_SPEED, 0.94, 0.25, 1.5);
-export const SILENCE_DURATION_MS = Math.round(clampNumber(process.env.AI_SILENCE_MS, 1200, 300, 3000));
-
-const DEFAULT_BUSINESS = Object.freeze({
-  name: 'Tabor Painting',
-  receptionist: 'Alex',
-  owner: 'Jason Beirne',
-  phone: '(774) 245-3383',
-  email: 'Taborpainting508@gmail.com',
-  hours: 'Monday through Friday, 8 AM to 5 PM',
-  timeZone: 'America/New_York',
-  estimateDays: 'Monday through Friday',
-  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-  earliestEstimateStart: '9:00 AM',
-  latestEstimateStart: '4:30 PM',
-  base: 'Berlin, Massachusetts',
-  serviceAreas: [
-    'Berlin', 'Bolton', 'Hudson', 'Clinton', 'Marlborough', 'Northborough',
-    'Boylston', 'West Boylston', 'Sterling', 'Lancaster', 'Worcester',
-  ],
-  services: {
-    'interior painting': 'Walls, rooms, ceilings, trim, doors, touch-ups, repainting, and other indoor painting.',
-    'exterior painting': 'Exterior surfaces and trim, with careful surface preparation and clean coverage.',
-    'small paint repair': 'Small touch-ups, minor paint damage, and small paint or patch repairs.',
-    'wood staining': 'Staining wood surfaces such as decks, fences, trim, and other wood features.',
-  },
-  about: [
-    'Tabor Painting is a residential painting company based in Berlin, Massachusetts.',
-    'Jason Beirne founded the company after gaining hands-on experience with Student Painters.',
-    'The company focuses on careful preparation, clean work areas, clear communication, attention to detail, smooth finishes, and professional long-lasting results.',
-  ],
-  openingLine: '',
-  closingLine: '',
-  extraInformation: '',
-});
-
-function clampNumber(value, fallback, minimum, maximum) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(maximum, Math.max(minimum, parsed));
-}
-
-export function cleanText(value = '') {
+function cleanText(value = '') {
   return String(value ?? '').trim();
 }
 
-function parseBusinessInfo(value) {
-  const raw = cleanText(value);
-  if (!raw) return {};
+function requireEnv(name) {
+  const value = cleanText(process.env[name]);
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
 
+function requiredNumber(name, minimum, maximum) {
+  const raw = requireEnv(name);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a number from ${minimum} through ${maximum}.`);
+  }
+  return value;
+}
+
+function parseBusinessInfo() {
+  const raw = requireEnv('BUSINESS_INFO');
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    parsed = JSON.parse(raw);
   } catch {
-    // Backward compatibility: plain text is treated as additional business knowledge.
+    throw new Error('BUSINESS_INFO must be valid JSON.');
   }
-
-  return { extraInformation: raw };
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('BUSINESS_INFO must be one JSON object.');
+  }
+  return parsed;
 }
 
-function firstConfigured(config, keys, fallback = '') {
-  for (const key of keys) {
-    const value = config?.[key];
-    if (value !== undefined && value !== null && cleanText(value)) return value;
-  }
-  return fallback;
+function requiredText(config, field) {
+  const value = cleanText(config[field]);
+  if (!value) throw new Error(`BUSINESS_INFO.${field} is required.`);
+  return value;
 }
 
-function textList(value, fallback = []) {
-  if (Array.isArray(value)) {
-    const cleaned = value.map((item) => cleanText(item)).filter(Boolean);
-    if (cleaned.length) return cleaned;
-  }
-  if (typeof value === 'string' && value.trim()) {
-    return value.split(',').map((item) => item.trim()).filter(Boolean);
-  }
-  return [...fallback];
+function requiredList(config, field) {
+  const value = config[field];
+  const list = Array.isArray(value)
+    ? value.map((item) => cleanText(item)).filter(Boolean)
+    : typeof value === 'string'
+      ? value.split(',').map((item) => item.trim()).filter(Boolean)
+      : [];
+  if (!list.length) throw new Error(`BUSINESS_INFO.${field} must contain at least one value.`);
+  return list;
 }
 
-function serviceMap(value, fallback = {}) {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const entries = Object.entries(value)
-      .map(([name, description]) => [cleanText(name).toLowerCase(), cleanText(description)])
-      .filter(([name]) => Boolean(name));
-    if (entries.length) return Object.fromEntries(entries);
+function requiredServices(config) {
+  const value = config.services;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('BUSINESS_INFO.services must be a JSON object of service names and descriptions.');
   }
-
-  if (Array.isArray(value)) {
-    const entries = value
-      .map((name) => cleanText(name).toLowerCase())
-      .filter(Boolean)
-      .map((name) => [name, `${name}.`]);
-    if (entries.length) return Object.fromEntries(entries);
-  }
-
-  return { ...fallback };
+  const entries = Object.entries(value)
+    .map(([name, description]) => [cleanText(name).toLowerCase(), cleanText(description)])
+    .filter(([name, description]) => name && description);
+  if (!entries.length) throw new Error('BUSINESS_INFO.services must contain at least one service.');
+  return Object.fromEntries(entries);
 }
 
-const configuredBusiness = parseBusinessInfo(process.env.BUSINESS_INFO);
+function cleanClientId(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+export const AUDIO_FORMAT = Object.freeze({ type: 'audio/pcmu' });
+export const REALTIME_MODEL = requireEnv('AI_MODEL');
+export const REALTIME_VOICE = requireEnv('AI_VOICE');
+export const SPEECH_SPEED = requiredNumber('AI_SPEECH_SPEED', 0.25, 1.5);
+export const SILENCE_DURATION_MS = Math.round(requiredNumber('AI_SILENCE_MS', 300, 3000));
+
+const configuredBusiness = parseBusinessInfo();
 
 export const BUSINESS = Object.freeze({
-  name: cleanText(firstConfigured(configuredBusiness, ['name', 'businessName'], DEFAULT_BUSINESS.name)),
-  receptionist: cleanText(firstConfigured(configuredBusiness, ['receptionist', 'receptionistName'], DEFAULT_BUSINESS.receptionist)),
-  owner: cleanText(firstConfigured(configuredBusiness, ['owner', 'ownerName'], DEFAULT_BUSINESS.owner)),
-  phone: cleanText(firstConfigured(configuredBusiness, ['phone', 'businessPhone'], DEFAULT_BUSINESS.phone)),
-  email: cleanText(firstConfigured(configuredBusiness, ['email', 'businessEmail'], DEFAULT_BUSINESS.email)),
-  hours: cleanText(firstConfigured(configuredBusiness, ['hours', 'businessHours'], DEFAULT_BUSINESS.hours)),
-  timeZone: cleanText(firstConfigured(configuredBusiness, ['timeZone', 'timezone'], DEFAULT_BUSINESS.timeZone)),
-  estimateDays: cleanText(firstConfigured(configuredBusiness, ['estimateDays', 'estimateDaysText'], DEFAULT_BUSINESS.estimateDays)),
-  estimateWeekdays: textList(
-    firstConfigured(configuredBusiness, ['estimateWeekdays', 'bookingWeekdays'], DEFAULT_BUSINESS.estimateWeekdays),
-    DEFAULT_BUSINESS.estimateWeekdays,
-  ).map((day) => day.toLowerCase()),
-  earliestEstimateStart: cleanText(firstConfigured(
-    configuredBusiness,
-    ['earliestEstimateStart', 'earliestEstimateTime'],
-    DEFAULT_BUSINESS.earliestEstimateStart,
-  )),
-  latestEstimateStart: cleanText(firstConfigured(
-    configuredBusiness,
-    ['latestEstimateStart', 'latestEstimateTime'],
-    DEFAULT_BUSINESS.latestEstimateStart,
-  )),
-  base: cleanText(firstConfigured(configuredBusiness, ['base', 'location', 'businessBase'], DEFAULT_BUSINESS.base)),
-  serviceAreas: textList(
-    firstConfigured(configuredBusiness, ['serviceAreas', 'areasServed'], DEFAULT_BUSINESS.serviceAreas),
-    DEFAULT_BUSINESS.serviceAreas,
-  ),
-  services: serviceMap(configuredBusiness.services, DEFAULT_BUSINESS.services),
-  about: textList(configuredBusiness.about, DEFAULT_BUSINESS.about),
-  openingLine: cleanText(configuredBusiness.openingLine),
-  closingLine: cleanText(configuredBusiness.closingLine),
-  extraInformation: cleanText(firstConfigured(
-    configuredBusiness,
-    ['extraInformation', 'additionalInformation', 'businessInformation'],
-    DEFAULT_BUSINESS.extraInformation,
-  )),
+  name: requiredText(configuredBusiness, 'name'),
+  receptionist: requiredText(configuredBusiness, 'receptionist'),
+  owner: requiredText(configuredBusiness, 'owner'),
+  phone: requiredText(configuredBusiness, 'phone'),
+  email: requiredText(configuredBusiness, 'email'),
+  hours: requiredText(configuredBusiness, 'hours'),
+  timeZone: requiredText(configuredBusiness, 'timeZone'),
+  estimateDays: requiredText(configuredBusiness, 'estimateDays'),
+  estimateWeekdays: requiredList(configuredBusiness, 'estimateWeekdays').map((day) => day.toLowerCase()),
+  earliestEstimateStart: requiredText(configuredBusiness, 'earliestEstimateStart'),
+  latestEstimateStart: requiredText(configuredBusiness, 'latestEstimateStart'),
+  base: requiredText(configuredBusiness, 'base'),
+  serviceAreas: requiredList(configuredBusiness, 'serviceAreas'),
+  services: requiredServices(configuredBusiness),
+  about: Array.isArray(configuredBusiness.about)
+    ? configuredBusiness.about.map((item) => cleanText(item)).filter(Boolean)
+    : cleanText(configuredBusiness.about) ? [cleanText(configuredBusiness.about)] : [],
+  openingLine: requiredText(configuredBusiness, 'openingLine'),
+  closingLine: requiredText(configuredBusiness, 'closingLine'),
+  extraInformation: cleanText(configuredBusiness.extraInformation),
 });
+
+try {
+  new Intl.DateTimeFormat('en-US', { timeZone: BUSINESS.timeZone }).format();
+} catch {
+  throw new Error('BUSINESS_INFO.timeZone must be a valid IANA time zone, such as America/New_York.');
+}
+
+const CLIENT_ID = cleanClientId(requireEnv('OCM_CLIENT_ID'));
+if (!CLIENT_ID) throw new Error('OCM_CLIENT_ID must contain letters, numbers, hyphens, or underscores.');
 
 const OWNER_FIRST_NAME = BUSINESS.owner.split(/\s+/).filter(Boolean)[0] || 'the owner';
 const SERVICE_TYPES = Object.freeze(Object.keys(BUSINESS.services));
@@ -154,13 +122,13 @@ const WEEKDAY_INDEX = Object.freeze({
 });
 
 function serviceList() {
-  if (SERVICE_TYPES.length <= 1) return SERVICE_TYPES[0] || 'the available services';
+  if (SERVICE_TYPES.length <= 1) return SERVICE_TYPES[0];
   return `${SERVICE_TYPES.slice(0, -1).join(', ')}, or ${SERVICE_TYPES.at(-1)}`;
 }
 
 function weekdayList() {
   const labels = WEEKDAYS.map((day) => day.charAt(0).toUpperCase() + day.slice(1));
-  if (labels.length <= 1) return labels[0] || BUSINESS.estimateDays;
+  if (labels.length <= 1) return labels[0];
   return `${labels.slice(0, -1).join(', ')}, or ${labels.at(-1)}`;
 }
 
@@ -182,19 +150,17 @@ export function renderTemplate(value = '') {
   });
 }
 
-const DEFAULT_OPENING_LINE = 'Hi, this is {{receptionist_name}} with {{business_name}}. Can I set you up with an estimate today?';
-const DEFAULT_CLOSING_LINE = '{{owner_first_name}} will follow up with you shortly. Thanks for calling {{business_name}}. Goodbye.';
-
-export const openingLine = renderTemplate(BUSINESS.openingLine || DEFAULT_OPENING_LINE);
-export const closingLine = renderTemplate(BUSINESS.closingLine || DEFAULT_CLOSING_LINE);
+export const openingLine = renderTemplate(BUSINESS.openingLine);
+export const closingLine = renderTemplate(BUSINESS.closingLine);
 export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
 export const saveFailureLine = `I could not save that just now, but ${OWNER_FIRST_NAME} can still follow up.`;
-export const SAFETY_IDENTIFIER = cleanText(process.env.OCM_CLIENT_ID)
-  .toLowerCase()
-  .replace(/[^a-z0-9_-]/g, '-')
-  .replace(/-+/g, '-')
-  .replace(/^-|-$/g, '') || 'ark-receptionist';
+export const SAFETY_IDENTIFIER = CLIENT_ID || 'ark-receptionist';
 export const TRANSCRIPTION_PROMPT = `Natural phone calls for ${BUSINESS.name}: names, email addresses, service requests, towns or cities, street addresses, dates, and times.`;
+
+const rawReceptionistScript = requireEnv('RECEPTIONIST_SCRIPT');
+export const receptionistScript = renderTemplate(rawReceptionistScript
+  .replaceAll('{{opening_line}}', openingLine)
+  .replaceAll('{{closing_line}}', closingLine));
 
 export function getCallerPhone(payload = {}) {
   const candidates = [
@@ -241,10 +207,12 @@ export function normalizePreferredTime(value = '') {
   const minutesAfterMidnight = clockMinutes(value);
   if (minutesAfterMidnight === null) return '';
 
-  const earliest = clockMinutes(BUSINESS.earliestEstimateStart) ?? 9 * 60;
-  const latest = clockMinutes(BUSINESS.latestEstimateStart) ?? 16 * 60 + 30;
+  const earliest = clockMinutes(BUSINESS.earliestEstimateStart);
+  const latest = clockMinutes(BUSINESS.latestEstimateStart);
+  if (earliest === null || latest === null || earliest > latest) {
+    throw new Error('BUSINESS_INFO estimate start times are invalid.');
+  }
   if (minutesAfterMidnight < earliest || minutesAfterMidnight > latest) return '';
-
   return displayClock(minutesAfterMidnight);
 }
 
@@ -290,7 +258,6 @@ function datePartsInBusinessTimeZone(date = new Date()) {
     month: '2-digit',
     day: '2-digit',
   }).formatToParts(date);
-
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return {
     year: Number(values.year),
@@ -322,13 +289,12 @@ export function buildOcmPayload(callerPhone, lead) {
   const streetAddress = cleanText(lead.streetAddress);
   const townOrCity = cleanText(lead.townOrCity);
   const address = [streetAddress, townOrCity].filter(Boolean).join(', ');
-  const clientId = cleanText(process.env.OCM_CLIENT_ID) || 'tabor-painting';
-  const source = `${clientId}-receptionist`;
   const requestedWeekday = cleanText(lead.preferredDay);
   const preferredDate = resolvePreferredDate(requestedWeekday);
   const requestedTime = cleanText(lead.preferredTime);
   const contactMethod = cleanText(lead.contactMethod).toLowerCase();
   const additionalNotes = cleanText(lead.additionalNotes);
+  const source = `${CLIENT_ID}-receptionist`;
   const notes = [
     contactMethod && `Best contact method: ${contactMethod}`,
     requestedWeekday && `Requested estimate: ${requestedWeekday}${requestedTime ? ` at ${requestedTime}` : ''}${preferredDate ? ` (${preferredDate})` : ''}`,
@@ -336,7 +302,7 @@ export function buildOcmPayload(callerPhone, lead) {
   ].filter(Boolean).join('\n');
 
   return {
-    clientId,
+    clientId: CLIENT_ID,
     sectionKey: 'contactedMe',
     FirstName: firstName,
     LastName: lastName,
@@ -408,6 +374,7 @@ function businessKnowledge() {
   const services = Object.entries(BUSINESS.services)
     .map(([name, description]) => `- ${name}: ${description}`)
     .join('\n');
+  const about = BUSINESS.about.length ? `- About: ${BUSINESS.about.join(' ')}\n` : '';
 
   return `BUSINESS INFORMATION
 - Business name: ${BUSINESS.name}
@@ -423,57 +390,8 @@ function businessKnowledge() {
 - Common service areas: ${BUSINESS.serviceAreas.join(', ')}
 - Services:
 ${services}
-- About: ${BUSINESS.about.join(' ')}
-${BUSINESS.extraInformation ? `- Additional information: ${BUSINESS.extraInformation}\n` : ''}- Never quote a price, promise exact availability, or invent an answer. Say ${OWNER_FIRST_NAME} can confirm anything not listed here.`;
+${about}${BUSINESS.extraInformation ? `- Additional information: ${BUSINESS.extraInformation}\n` : ''}- Never quote a price, promise exact availability, or invent an answer. Say ${OWNER_FIRST_NAME} can confirm anything not listed here.`;
 }
-
-const DEFAULT_SCRIPT = `OPENING
-The server separately says exactly: "{{opening_line}}"
-Wait for the caller’s answer.
-- If yes, begin the estimate intake.
-- If no, say: "No problem. What can I help you with?" Answer only from the business information. If they later want an estimate, begin the intake.
-
-ESTIMATE INTAKE — USE THIS ORDER
-Collect any missing fields in this exact order:
-1. Ask: "Can I please have your first and last name?"
-2. Ask exactly: "Would you like to add your email? Yes or no."
-   - If the caller says no, say: "Okay." Save email as an empty string and move directly to question 3.
-   - If the caller says yes, ask: "What would your email be?" Then wait for the complete email address.
-   - If the caller declined email but later chooses email as the best contact method, ask for the email address then.
-3. Ask: "What service would you like? We specialize in {{services}}."
-4. Ask: "What town or city is the project located in?"
-5. Ask: "What is the street address of the project?"
-6. Ask for the best contact method based on the information actually available.
-   - If no email was provided, ask exactly: "What is the best way we can contact you: call or text?" Do not offer email.
-   - If an email was provided, ask exactly: "What is the best way we can contact you: call, text, or email?"
-7. Ask: "What day would work best for the estimate? We schedule estimates {{estimate_days}}."
-8. After the caller gives a valid day, ask: "What time would work best? We accept estimate times from {{earliest_estimate_time}} to {{latest_estimate_time}}."
-9. Ask: "Is there anything else you would like {{owner_first_name}} to know?"
-
-DAY AND TIME RULES
-- Accept only the configured estimate weekdays.
-- If the caller gives a day outside that schedule, explain the available estimate days and ask for another day.
-- Accept times only from {{earliest_estimate_time}} through {{latest_estimate_time}}, inclusive.
-- Normalize the time clearly, such as 9:00 AM, 1:30 PM, or 4:30 PM.
-- Never say the estimate is booked. Say {{owner_first_name}} will confirm the requested day and time.
-
-SERVICE CLASSIFICATION
-- Collect one configured service category.
-- Do not ask about project size, scope, number of rooms, surfaces, measurements, condition, colors, or other job details.
-- When you infer the category, confirm it naturally before continuing.
-- If the description could fit more than one category, ask one short clarifying question.
-- Retain volunteered project details as additional notes.
-
-CONFIRMATION
-- After the intake is complete, summarize once: full name, email only when provided, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything {{owner_first_name}} should know.
-- Never say or repeat the caller-ID phone number.
-- Ask: "Is all of that correct?" Then stop and listen.
-- Correct only what the caller changes, then summarize the corrected details and confirm again.`;
-
-const customScript = cleanText(process.env.RECEPTIONIST_SCRIPT);
-export const receptionistScript = renderTemplate((customScript || DEFAULT_SCRIPT)
-  .replaceAll('{{opening_line}}', openingLine)
-  .replaceAll('{{closing_line}}', closingLine));
 
 function currentBusinessDateLabel(now = new Date()) {
   return new Intl.DateTimeFormat('en-US', {
