@@ -7,23 +7,30 @@ import {
   BUSINESS,
   REALTIME_MODEL,
   REALTIME_VOICE,
+  SAFETY_IDENTIFIER,
+  SILENCE_DURATION_MS,
+  SPEECH_SPEED,
+  TRANSCRIPTION_PROMPT,
+  afterSaveQuestion,
   buildOcmPayload,
   closingLine,
   getCallerPhone,
   instructions,
   openingLine,
+  saveFailureLine,
   tools,
-  validateLead
+  validateLead,
 } from './receptionist-core.js';
 
 const PORT = Number(process.env.PORT || 3000);
-const PUBLIC_URL = (process.env.PUBLIC_URL || 'https://tabor-painting-receptionist-production.up.railway.app').replace(/\/$/, '');
+const PUBLIC_URL = resolvePublicUrl();
 const STREAM_URL = PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
-const OCM_WEBHOOK_URL = process.env.OCM_WEBHOOK_URL || 'https://ark-websites-ocm.vercel.app/api/intake';
-const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`;
+const OCM_WEBHOOK_URL = String(process.env.OCM_WEBHOOK_URL || '').trim();
+const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
 const BARGE_IN_CONFIRM_MS = 450;
 const MIN_USER_TURN_MS = 250;
+const TRANSCRIPT_WAIT_MS = 1800;
 const AUDIO_FRAME_MS = 20;
 const PCMU_BYTES_PER_MS = 8;
 const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
@@ -32,6 +39,41 @@ const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
 const MAX_OUTPUT_TOKENS = 800;
 const activeCalls = new Map();
 const callMetadata = new Map();
+
+const HOLD_PATTERN = /\b(?:hold on|wait(?: a moment)?|one second|one sec|give me (?:a|one) (?:second|sec|minute|moment)|just a (?:second|sec|minute|moment)|hang on|pause for a (?:second|minute|moment))\b/i;
+
+function resolvePublicUrl() {
+  const configured = String(process.env.PUBLIC_URL || '').trim();
+  const railwayDomain = String(process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+  const raw = configured || (railwayDomain ? `https://${railwayDomain}` : 'https://tabor-painting-receptionist-production.up.railway.app');
+
+  let url;
+  try {
+    url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+  } catch {
+    throw new Error('PUBLIC_URL must be a complete public HTTP or HTTPS URL.');
+  }
+
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('PUBLIC_URL must use HTTP or HTTPS.');
+  }
+
+  return `${url.origin}${url.pathname}`.replace(/\/$/, '');
+}
+
+function assertRuntimeConfiguration() {
+  const missing = [
+    ['TELNYX_API_KEY', process.env.TELNYX_API_KEY],
+    ['OPENAI_API_KEY', process.env.OPENAI_API_KEY],
+    ['OCM_WEBHOOK_URL', OCM_WEBHOOK_URL],
+  ].filter(([, value]) => !String(value || '').trim()).map(([name]) => name);
+
+  if (missing.length) {
+    throw new Error(`Missing required runtime configuration: ${missing.join(', ')}`);
+  }
+}
+
+assertRuntimeConfiguration();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -55,19 +97,18 @@ function rememberCall(body) {
   const previous = callMetadata.get(id) || {};
   callMetadata.set(id, {
     callerPhone: getCallerPhone(body) || previous.callerPhone || '',
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
   });
 }
 
 async function telnyxCommand(id, action, body = {}) {
-  if (!process.env.TELNYX_API_KEY) throw new Error('TELNYX_API_KEY is missing');
   const response = await fetch(`${TELNYX_API_BASE}/calls/${encodeURIComponent(id)}/actions/${action}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`Telnyx ${action} failed: ${response.status} ${await response.text()}`);
 }
@@ -99,18 +140,18 @@ function flushResponse(ctx) {
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        instructions: next.instructionsText
-      }
+        instructions: next.instructionsText,
+      },
     });
     return ctx.responseActive;
   }
 
-  if (!ctx.pendingNaturalResponse) return false;
+  if (!ctx.pendingNaturalResponse || ctx.holdMode) return false;
   ctx.pendingNaturalResponse = false;
   ctx.hangupAfterResponse = false;
   ctx.responseActive = sendJson(ctx.openai, {
     type: 'response.create',
-    response: { output_modalities: ['audio'] }
+    response: { output_modalities: ['audio'] },
   });
   return ctx.responseActive;
 }
@@ -127,8 +168,8 @@ function sendToolOutput(ctx, callId, output) {
     item: {
       type: 'function_call_output',
       call_id: callId,
-      output: JSON.stringify(output)
-    }
+      output: JSON.stringify(output),
+    },
   });
 }
 
@@ -155,7 +196,7 @@ async function saveLead(ctx, call) {
 
   if (ctx.leadSaved) {
     sendToolOutput(ctx, call.callId, { ok: true, alreadySaved: true });
-    queueResponse(ctx, 'Ask exactly: "Do you have any questions about Tabor Painting?" Then stop and wait.');
+    queueResponse(ctx, `Ask exactly: "${afterSaveQuestion}" Then stop and wait.`);
     return;
   }
 
@@ -166,13 +207,13 @@ async function saveLead(ctx, call) {
       const response = await fetch(OCM_WEBHOOK_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
       const body = await response.text();
       if (!response.ok) throw new Error(`OCM ${response.status}: ${body}`);
       ctx.leadSaved = true;
-      sendToolOutput(ctx, call.callId, { ok: true });
-      queueResponse(ctx, 'Ask exactly: "Do you have any questions about Tabor Painting?" Say nothing else, then stop and wait.');
+      sendToolOutput(ctx, call.callId, { ok: true, preferredDate: payload.EstimateDate || '' });
+      queueResponse(ctx, `Ask exactly: "${afterSaveQuestion}" Say nothing else, then stop and wait.`);
       return;
     } catch (error) {
       lastError = error;
@@ -183,7 +224,7 @@ async function saveLead(ctx, call) {
   ctx.leadSaveFailed = true;
   console.error('[OCM save failed]', lastError?.message || 'unknown error');
   sendToolOutput(ctx, call.callId, { ok: false, error: 'save_failed' });
-  queueResponse(ctx, 'Say briefly: "I could not save that just now, but Jason can still follow up." Then ask: "Do you have any questions about Tabor Painting?" and wait.');
+  queueResponse(ctx, `Say briefly: "${saveFailureLine}" Then ask: "${afterSaveQuestion}" and wait.`);
 }
 
 function finishCall(ctx, call) {
@@ -207,6 +248,12 @@ async function handleTool(ctx, call) {
 function cancelBargeInTimer(ctx) {
   if (ctx.bargeInTimer) clearTimeout(ctx.bargeInTimer);
   ctx.bargeInTimer = null;
+}
+
+function clearTranscriptTimer(ctx) {
+  if (ctx.transcriptTimer) clearTimeout(ctx.transcriptTimer);
+  ctx.transcriptTimer = null;
+  ctx.awaitingTranscript = false;
 }
 
 function stopAudioPump(ctx) {
@@ -251,7 +298,7 @@ function sendPlaybackMark(ctx) {
   ctx.playbackMarkName = `assistant-playback-${ctx.responseSequence}`;
   ctx.waitingForPlaybackMark = sendTelnyx(ctx, {
     event: 'mark',
-    mark: { name: ctx.playbackMarkName }
+    mark: { name: ctx.playbackMarkName },
   });
 
   if (!ctx.waitingForPlaybackMark) completeAssistantPlayback(ctx);
@@ -276,7 +323,7 @@ function pumpAudio(ctx) {
     ctx.assistantAudioSentMs += AUDIO_FRAME_MS;
     sendTelnyx(ctx, {
       event: 'media',
-      media: { payload: frame.toString('base64') }
+      media: { payload: frame.toString('base64') },
     });
     ctx.audioPumpTimer = setTimeout(() => pumpAudio(ctx), AUDIO_FRAME_MS);
     return;
@@ -330,7 +377,7 @@ function confirmBargeIn(ctx) {
       type: 'conversation.item.truncate',
       item_id: ctx.assistantItemId,
       content_index: 0,
-      audio_end_ms: audioEndMs
+      audio_end_ms: audioEndMs,
     });
   }
 
@@ -346,13 +393,58 @@ function startBargeInTimer(ctx) {
   ctx.bargeInTimer = setTimeout(() => confirmBargeIn(ctx), BARGE_IN_CONFIRM_MS);
 }
 
+function cancelResponseForHold(ctx) {
+  ctx.pendingNaturalResponse = false;
+  if (!ctx.responseActive) return;
+  ctx.hangupAfterResponse = false;
+  if (ctx.openAiGenerating) sendJson(ctx.openai, { type: 'response.cancel' });
+  clearLocalAudio(ctx);
+  sendTelnyx(ctx, { event: 'clear' });
+  ctx.responseActive = false;
+  ctx.openAiGenerating = false;
+}
+
+function isHoldRequest(transcript) {
+  return HOLD_PATTERN.test(String(transcript || '').trim());
+}
+
+function scheduleResponseAfterTranscript(ctx) {
+  clearTranscriptTimer(ctx);
+  ctx.awaitingTranscript = true;
+  ctx.transcriptTimer = setTimeout(() => {
+    ctx.transcriptTimer = null;
+    ctx.awaitingTranscript = false;
+    if (!ctx.holdMode) requestNaturalResponse(ctx);
+  }, TRANSCRIPT_WAIT_MS);
+}
+
+function handleCallerTranscript(ctx, transcript) {
+  const text = String(transcript || '').trim();
+  if (!text) return;
+  ctx.lastCallerTranscript = text;
+  clearTranscriptTimer(ctx);
+
+  if (isHoldRequest(text)) {
+    ctx.holdMode = true;
+    cancelResponseForHold(ctx);
+    console.log('[Caller requested silence]', { callId: ctx.callControlId || ctx.id, transcript: text });
+    return;
+  }
+
+  if (ctx.holdMode) {
+    ctx.holdMode = false;
+    console.log('[Caller resumed]', { callId: ctx.callControlId || ctx.id, transcript: text });
+  }
+
+  requestNaturalResponse(ctx);
+}
+
 function createOpenAiSocket(ctx) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
   const ws = new WebSocket(OPENAI_URL, {
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'OpenAI-Safety-Identifier': `tabor-${ctx.id}`
-    }
+      'OpenAI-Safety-Identifier': `${SAFETY_IDENTIFIER}-${ctx.id}`,
+    },
   });
 
   ws.on('open', () => {
@@ -368,18 +460,27 @@ function createOpenAiSocket(ctx) {
         audio: {
           input: {
             format: AUDIO_FORMAT,
+            transcription: {
+              model: 'gpt-4o-mini-transcribe',
+              language: 'en',
+              prompt: TRANSCRIPTION_PROMPT,
+            },
             turn_detection: {
               type: 'server_vad',
               threshold: 0.7,
-              prefix_padding_ms: 250,
-              silence_duration_ms: 650,
+              prefix_padding_ms: 300,
+              silence_duration_ms: SILENCE_DURATION_MS,
               create_response: false,
-              interrupt_response: false
-            }
+              interrupt_response: false,
+            },
           },
-          output: { format: AUDIO_FORMAT, voice: REALTIME_VOICE }
-        }
-      }
+          output: {
+            format: AUDIO_FORMAT,
+            voice: REALTIME_VOICE,
+            speed: SPEECH_SPEED,
+          },
+        },
+      },
     });
   });
 
@@ -398,9 +499,9 @@ function attachCallerContext(ctx) {
       role: 'system',
       content: [{
         type: 'input_text',
-        text: `Caller ID phone number: ${ctx.callerPhone}. Never ask for a phone number. Include it only in the final confirmation.`
-      }]
-    }
+        text: `Caller ID phone number: ${ctx.callerPhone}. This is private internal data. Never ask for it, say it, repeat it, confirm it, or include it in a spoken summary. Use it only in the saved lead record.`,
+      }],
+    },
   });
 }
 
@@ -420,7 +521,7 @@ function handleOpenAiMessage(ctx, raw) {
   if (message.type === 'session.updated') {
     ctx.sessionReady = true;
     attachCallerContext(ctx);
-    queueResponse(ctx, `Say exactly this and nothing else: "${openingLine}" Then stop and wait.`);
+    queueResponse(ctx, `Say exactly this and nothing else, at a calm measured pace: "${openingLine}" Then stop and wait.`);
     return;
   }
 
@@ -454,10 +555,22 @@ function handleOpenAiMessage(ctx, raw) {
     return;
   }
 
+  if (message.type === 'conversation.item.input_audio_transcription.completed') {
+    handleCallerTranscript(ctx, message.transcript);
+    return;
+  }
+
+  if (message.type === 'conversation.item.input_audio_transcription.failed') {
+    clearTranscriptTimer(ctx);
+    if (!ctx.holdMode) requestNaturalResponse(ctx);
+    return;
+  }
+
   if (message.type === 'input_audio_buffer.speech_started') {
     ctx.userSpeechStartedAt = Date.now();
     ctx.userSpeechStartedWhileAssistant = ctx.responseActive;
     ctx.bargeInConfirmed = false;
+    clearTranscriptTimer(ctx);
     startBargeInTimer(ctx);
     return;
   }
@@ -470,7 +583,7 @@ function handleOpenAiMessage(ctx, raw) {
     cancelBargeInTimer(ctx);
     if (speechMs < MIN_USER_TURN_MS) return;
     if (interruptedAssistant && !ctx.bargeInConfirmed) return;
-    requestNaturalResponse(ctx);
+    scheduleResponseAfterTranscript(ctx);
     return;
   }
 
@@ -492,7 +605,7 @@ function handleOpenAiMessage(ctx, raw) {
       responseId: response.id || message.response_id || '',
       status,
       reason,
-      outputTokens: response.usage?.output_tokens ?? null
+      outputTokens: response.usage?.output_tokens ?? null,
     });
 
     ctx.openAiGenerating = false;
@@ -516,20 +629,31 @@ app.get('/', (req, res) => {
     business: BUSINESS.name,
     provider: 'Telnyx',
     model: REALTIME_MODEL,
+    voice: REALTIME_VOICE,
     codec: 'PCMU 8 kHz',
+    speechSpeed: SPEECH_SPEED,
+    silenceDurationMs: SILENCE_DURATION_MS,
     voiceWebhook: `${PUBLIC_URL}/voice-api-webhook`,
-    mediaStream: STREAM_URL
+    mediaStream: STREAM_URL,
   });
 });
 
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
+    business: BUSINESS.name,
+    clientId: process.env.OCM_CLIENT_ID,
     model: REALTIME_MODEL,
+    voice: REALTIME_VOICE,
     codec: 'PCMU',
+    speechSpeed: SPEECH_SPEED,
+    silenceDurationMs: SILENCE_DURATION_MS,
+    hasBusinessInfo: Boolean(String(process.env.BUSINESS_INFO || '').trim()),
+    hasCustomScript: Boolean(String(process.env.RECEPTIONIST_SCRIPT || '').trim()),
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
-    activeCalls: activeCalls.size
+    hasOcmConnection: Boolean(process.env.OCM_CONNECTION_KEY),
+    activeCalls: activeCalls.size,
   });
 });
 
@@ -549,7 +673,7 @@ app.post('/voice-api-webhook', async (req, res) => {
         stream_codec: 'PCMU',
         stream_bidirectional_mode: 'rtp',
         stream_bidirectional_codec: 'PCMU',
-        stream_bidirectional_sampling_rate: 8000
+        stream_bidirectional_sampling_rate: 8000,
       });
     }
     if (type === 'call.hangup' || type === 'streaming.stopped') callMetadata.delete(id);
@@ -597,9 +721,13 @@ wss.on('connection', (telnyx) => {
     userSpeechStartedWhileAssistant: false,
     bargeInTimer: null,
     bargeInConfirmed: false,
+    transcriptTimer: null,
+    awaitingTranscript: false,
+    holdMode: false,
+    lastCallerTranscript: '',
     leadSaved: false,
     leadSaveFailed: false,
-    handledCalls: new Set()
+    handledCalls: new Set(),
   };
 
   try {
@@ -642,9 +770,7 @@ wss.on('connection', (telnyx) => {
 
     if (event === 'mark') {
       const name = message.mark?.name || '';
-      if (ctx.waitingForPlaybackMark && name === ctx.playbackMarkName) {
-        completeAssistantPlayback(ctx);
-      }
+      if (ctx.waitingForPlaybackMark && name === ctx.playbackMarkName) completeAssistantPlayback(ctx);
       return;
     }
 
@@ -653,10 +779,12 @@ wss.on('connection', (telnyx) => {
 
   const cleanup = () => {
     cancelBargeInTimer(ctx);
+    clearTranscriptTimer(ctx);
     clearLocalAudio(ctx);
     if (ctx.openai?.readyState === WebSocket.OPEN) ctx.openai.close();
     activeCalls.delete(ctx.id);
   };
+
   telnyx.on('close', cleanup);
   telnyx.on('error', (error) => {
     console.error('[Telnyx websocket]', error.message);
@@ -665,7 +793,8 @@ wss.on('connection', (telnyx) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Tabor Painting receptionist listening on ${PORT}`);
-  console.log(`Model: ${REALTIME_MODEL}`);
-  console.log('Codec: PCMU 8 kHz');
+  console.log(`${BUSINESS.name} receptionist listening on ${PORT}`);
+  console.log(`Model: ${REALTIME_MODEL}; voice: ${REALTIME_VOICE}`);
+  console.log(`Codec: PCMU 8 kHz; speech speed: ${SPEECH_SPEED}; silence: ${SILENCE_DURATION_MS}ms`);
+  console.log(`Webhook: ${PUBLIC_URL}/voice-api-webhook`);
 });
