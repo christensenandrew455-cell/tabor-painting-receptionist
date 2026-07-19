@@ -1,58 +1,49 @@
 import 'dotenv/config';
 
-const DEFAULT_OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';
-const LEGACY_PREVIEW_HOSTS = new Set([
-  'ark-websites-c1380rl48-andrews-projects-8d08c0b9.vercel.app'
-]);
+const OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';
+
+function clean(value) {
+  return String(value || '').trim();
+}
 
 function cleanClientId(value) {
-  return String(value || 'tabor-painting')
-    .trim()
+  return clean(value)
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, '-')
     .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '') || 'tabor-painting';
+    .replace(/^-|-$/g, '');
 }
 
-const connectionKey = String(process.env.OCM_CONNECTION_KEY || '').trim();
+const connectionKey = clean(process.env.OCM_CONNECTION_KEY);
 const clientId = cleanClientId(process.env.OCM_CLIENT_ID);
-const source = String(process.env.OCM_SOURCE || `${clientId}-receptionist`).trim();
-const configuredEndpoint = String(process.env.OCM_WEBHOOK_URL || DEFAULT_OCM_ENDPOINT).trim();
+
+if (!clientId) {
+  throw new Error('OCM_CLIENT_ID is missing. Add the client account ID to the Railway service variables.');
+}
 
 if (!connectionKey) {
-  throw new Error(
-    'OCM_CONNECTION_KEY is missing. Add the business connection key to the Railway service variables.'
-  );
+  throw new Error('OCM_CONNECTION_KEY is missing. Add the private client connection key to the Railway service variables.');
 }
 
-let ocmUrl;
-try {
-  ocmUrl = new URL(configuredEndpoint);
-} catch {
-  throw new Error('OCM_WEBHOOK_URL must be a complete HTTPS URL.');
-}
-
-if (LEGACY_PREVIEW_HOSTS.has(ocmUrl.hostname)) {
-  console.warn('[OCM configuration] Replacing the retired protected preview URL with the production OCM URL.');
-  ocmUrl = new URL(DEFAULT_OCM_ENDPOINT);
-}
-
-if (ocmUrl.protocol !== 'https:' && ocmUrl.hostname !== 'localhost') {
-  throw new Error('OCM_WEBHOOK_URL must use HTTPS outside local development.');
-}
-
+const source = `${clientId}-receptionist`;
+const ocmUrl = new URL(OCM_ENDPOINT);
 ocmUrl.searchParams.set('clientId', clientId);
 ocmUrl.searchParams.set('key', connectionKey);
 ocmUrl.searchParams.set('source', source);
 
-process.env.OCM_WEBHOOK_URL = ocmUrl.toString();
 process.env.OCM_CLIENT_ID = clientId;
 process.env.OCM_SOURCE = source;
+process.env.OCM_WEBHOOK_URL = ocmUrl.toString();
 
-console.log('[OCM configuration]', {
-  endpoint: `${ocmUrl.origin}${ocmUrl.pathname}`,
+console.log('[Receptionist configuration]', {
   clientId,
   source,
+  endpoint: `${ocmUrl.origin}${ocmUrl.pathname}`,
   hasConnectionKey: true,
-  hasBusinessInfo: Boolean(String(process.env.BUSINESS_INFO || '').trim())
+  hasBusinessInfo: Boolean(clean(process.env.BUSINESS_INFO)),
+  hasCustomScript: Boolean(clean(process.env.RECEPTIONIST_SCRIPT)),
+  model: clean(process.env.AI_MODEL) || 'gpt-realtime-mini',
+  voice: clean(process.env.AI_VOICE) || 'alloy',
+  speechSpeed: clean(process.env.AI_SPEECH_SPEED) || '0.94',
+  silenceMs: clean(process.env.AI_SILENCE_MS) || '1200',
 });
