@@ -13,6 +13,7 @@ import {
   instructions,
   normalizePreferredTime,
   openingLine,
+  receptionistScript,
   resolvePreferredDate,
   tools,
   validateLead,
@@ -23,7 +24,7 @@ function completeLead(overrides = {}) {
     fullName: 'Taylor Morgan',
     email: 'taylor@example.com',
     serviceType: 'interior painting',
-    townOrCity: 'Berlin',
+    townOrCity: 'Example City',
     streetAddress: '12 Main Street',
     contactMethod: 'text',
     preferredDay: 'Tuesday',
@@ -33,11 +34,30 @@ function completeLead(overrides = {}) {
   };
 }
 
-test('keeps the current Tabor behavior as the safe default', () => {
-  assert.equal(BUSINESS.name, 'Tabor Painting');
+function completeRuntimeEnv(overrides = {}) {
+  return {
+    ...process.env,
+    AI_MODEL: 'gpt-realtime-mini',
+    AI_SILENCE_MS: '1200',
+    AI_SPEECH_SPEED: '0.94',
+    AI_VOICE: 'alloy',
+    BUSINESS_INFO: process.env.BUSINESS_INFO,
+    OCM_CLIENT_ID: 'example-painting',
+    OCM_CONNECTION_KEY: 'test-connection-value',
+    OPENAI_API_KEY: 'test-openai-value',
+    PUBLIC_URL: 'https://example-receptionist.example.com',
+    RECEPTIONIST_SCRIPT: process.env.RECEPTIONIST_SCRIPT,
+    TELNYX_API_KEY: 'test-telnyx-value',
+    ...overrides,
+  };
+}
+
+test('reads business, script, model, voice, speed, and silence only from variables', () => {
+  assert.equal(BUSINESS.name, 'Example Painting');
   assert.equal(BUSINESS.receptionist, 'Alex');
-  assert.match(openingLine, /Tabor Painting/);
-  assert.match(afterSaveQuestion, /Tabor Painting/);
+  assert.match(openingLine, /Example Painting/);
+  assert.match(afterSaveQuestion, /Example Painting/);
+  assert.match(receptionistScript, /configured service they need/i);
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
   assert.equal(REALTIME_VOICE, 'alloy');
   assert.equal(SPEECH_SPEED, 0.94);
@@ -60,44 +80,35 @@ test('allows callers to decline email unless email is their contact method', () 
   assert.match(emailContact.errors.join(' '), /complete email address/i);
 });
 
-test('makes email optional in the OpenAI lead tool schema', () => {
+test('builds the OpenAI tool choices from BUSINESS_INFO services', () => {
   const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
   assert.ok(submitTool);
   assert.equal(submitTool.parameters.required.includes('email'), false);
-  assert.match(submitTool.parameters.properties.email.description, /optional/i);
+  assert.deepEqual(submitTool.parameters.properties.serviceType.enum, [
+    'interior painting',
+    'exterior painting',
+  ]);
 });
 
-test('resolves the requested weekday in the business timezone', () => {
+test('resolves the requested weekday in the configured business timezone', () => {
   const friday = new Date('2026-07-17T16:00:00.000Z');
   assert.equal(resolvePreferredDate('Monday', friday), '2026-07-20');
   assert.equal(resolvePreferredDate('Friday', friday), '2026-07-17');
 });
 
-test('builds OCM payloads from the client ID and derives the source', () => {
-  const previousClientId = process.env.OCM_CLIENT_ID;
-  const previousSource = process.env.OCM_SOURCE;
-  process.env.OCM_CLIENT_ID = 'sample-business';
-  process.env.OCM_SOURCE = 'this-old-variable-is-ignored';
+test('builds OCM payloads from OCM_CLIENT_ID and derives the source', () => {
+  const result = validateLead(completeLead());
+  assert.equal(result.valid, true);
 
-  try {
-    const result = validateLead(completeLead());
-    assert.equal(result.valid, true);
-
-    const payload = buildOcmPayload('+17745550123', result.lead);
-    assert.equal(payload.clientId, 'sample-business');
-    assert.equal(payload.source, 'sample-business-receptionist');
-    assert.equal(payload.sectionKey, 'contactedMe');
-    assert.equal(payload.Phone, '+17745550123');
-    assert.equal(payload.Job, 'interior painting');
-    assert.equal(payload.Address, '12 Main Street, Berlin');
-    assert.match(payload.Notes, /Please call before arriving/);
-    assert.match(payload.EstimateDate, /^\d{4}-\d{2}-\d{2}$/);
-  } finally {
-    if (previousClientId === undefined) delete process.env.OCM_CLIENT_ID;
-    else process.env.OCM_CLIENT_ID = previousClientId;
-    if (previousSource === undefined) delete process.env.OCM_SOURCE;
-    else process.env.OCM_SOURCE = previousSource;
-  }
+  const payload = buildOcmPayload('+17745550123', result.lead);
+  assert.equal(payload.clientId, 'example-painting');
+  assert.equal(payload.source, 'example-painting-receptionist');
+  assert.equal(payload.sectionKey, 'contactedMe');
+  assert.equal(payload.Phone, '+17745550123');
+  assert.equal(payload.Job, 'interior painting');
+  assert.equal(payload.Address, '12 Main Street, Example City');
+  assert.match(payload.Notes, /Please call before arriving/);
+  assert.match(payload.EstimateDate, /^\d{4}-\d{2}-\d{2}$/);
 });
 
 test('pulls the caller phone number from a Telnyx webhook', () => {
@@ -107,19 +118,18 @@ test('pulls the caller phone number from a Telnyx webhook', () => {
   );
 });
 
-test('default instructions preserve the intake, phone privacy, save, and silent-pause behavior', () => {
+test('keeps shared safety and save behavior hardcoded around the variable script', () => {
   const prompt = instructions();
-  assert.match(prompt, /Would you like to add your email\? Yes or no/i);
-  assert.match(prompt, /If no email was provided[\s\S]*call or text\?/i);
+  assert.match(prompt, /configured service they need/i);
   assert.match(prompt, /Never ask for, say, confirm, or repeat the caller’s phone number/i);
   assert.match(prompt, /give me one second to save that/i);
   assert.match(prompt, /Silence is mandatory/i);
   assert.match(prompt, /take your time[\s\S]*forbidden/i);
   assert.match(prompt, /standalone filler/i);
-  assert.match(prompt, /natural, measured pace/i);
+  assert.doesNotMatch(prompt, /Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
 });
 
-test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebrand a clone', () => {
+test('BUSINESS_INFO and RECEPTIONIST_SCRIPT fully rebrand a cloned receptionist', () => {
   const businessInfo = {
     name: 'Sample Roofing',
     receptionist: 'Morgan',
@@ -141,9 +151,9 @@ test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebr
     about: ['Sample Roofing serves residential customers.'],
     openingLine: 'Thanks for calling {{business_name}}. This is {{receptionist_name}}. Are you calling about an estimate?',
     closingLine: '{{owner_first_name}} will contact you soon. Goodbye.',
+    extraInformation: 'Final pricing is provided after inspection.',
   };
   const customScript = 'Ask what roofing service they need. Use only {{services}}. The owner is {{owner_first_name}}.';
-
   const code = `
     const core = await import('./receptionist-core.js');
     console.log(JSON.stringify({
@@ -161,8 +171,7 @@ test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebr
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: new URL('..', import.meta.url),
     encoding: 'utf8',
-    env: {
-      ...process.env,
+    env: completeRuntimeEnv({
       BUSINESS_INFO: JSON.stringify(businessInfo),
       RECEPTIONIST_SCRIPT: customScript,
       OCM_CLIENT_ID: 'sample-roofing',
@@ -170,7 +179,7 @@ test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebr
       AI_VOICE: 'marin',
       AI_SPEECH_SPEED: '1.08',
       AI_SILENCE_MS: '900',
-    },
+    }),
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -181,7 +190,7 @@ test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebr
   assert.equal(output.closingLine, 'Casey will contact you soon. Goodbye.');
   assert.match(output.instructions, /Ask what roofing service they need/i);
   assert.match(output.instructions, /roof repair, or roof replacement/i);
-  assert.doesNotMatch(output.instructions, /Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
+  assert.doesNotMatch(output.instructions, /Example Painting|Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
   assert.deepEqual(output.services, ['roof repair', 'roof replacement']);
   assert.equal(output.model, 'gpt-realtime');
   assert.equal(output.voice, 'marin');
@@ -189,7 +198,19 @@ test('one BUSINESS_INFO variable and one RECEPTIONIST_SCRIPT variable fully rebr
   assert.equal(output.silence, 900);
 });
 
-test('bootstrap hardcodes the shared OCM endpoint and derives the source', () => {
+test('the core refuses to start without RECEPTIONIST_SCRIPT', () => {
+  const env = completeRuntimeEnv();
+  delete env.RECEPTIONIST_SCRIPT;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', "await import('./receptionist-core.js')"], {
+    cwd: new URL('..', import.meta.url),
+    encoding: 'utf8',
+    env,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RECEPTIONIST_SCRIPT is required/i);
+});
+
+test('bootstrap requires the exact variable list, hardcodes the shared endpoint, and derives the source', () => {
   const code = `
     await import('./ocm-bootstrap.js');
     const url = new URL(process.env.OCM_WEBHOOK_URL);
@@ -204,13 +225,12 @@ test('bootstrap hardcodes the shared OCM endpoint and derives the source', () =>
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: new URL('..', import.meta.url),
     encoding: 'utf8',
-    env: {
-      ...process.env,
+    env: completeRuntimeEnv({
       OCM_CLIENT_ID: 'sample-business',
-      OCM_CONNECTION_KEY: 'private-test-key',
+      OCM_CONNECTION_KEY: 'private-test-value',
       OCM_WEBHOOK_URL: 'https://wrong.example.com/old',
       OCM_SOURCE: 'old-source',
-    },
+    }),
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -219,6 +239,6 @@ test('bootstrap hardcodes the shared OCM endpoint and derives the source', () =>
   assert.equal(output.origin, 'https://ark-websites-ocm.vercel.app');
   assert.equal(output.pathname, '/api/intake');
   assert.equal(output.clientId, 'sample-business');
-  assert.equal(output.key, 'private-test-key');
+  assert.equal(output.key, 'private-test-value');
   assert.equal(output.source, 'sample-business-receptionist');
 });
