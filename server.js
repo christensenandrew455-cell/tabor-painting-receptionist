@@ -117,6 +117,7 @@ function rememberCall(body) {
   if (!id) return;
   const previous = callMetadata.get(id) || {};
   callMetadata.set(id, {
+    ...previous,
     callerPhone: getCallerPhone(body) || previous.callerPhone || '',
     updatedAt: Date.now(),
   });
@@ -271,7 +272,7 @@ function queuePolicyEnding(ctx, reason, spokenLine) {
 function evaluateCallPolicy(ctx) {
   if (!ctx.startedAt || ctx.cleanedUp || ctx.ending) return;
   const now = Date.now();
-  if (now - ctx.lastSpeechAt >= SILENCE_LIMIT_MS) {
+  if (!ctx.callerSpeaking && now - ctx.lastSpeechAt >= SILENCE_LIMIT_MS) {
     queuePolicyEnding(ctx, 'silence', "I'm sorry, but I haven't heard a response, so I have to end this call now. Goodbye.");
     return;
   }
@@ -470,6 +471,8 @@ function completeAssistantPlayback(ctx) {
   ctx.waitingForPlaybackMark = false;
   ctx.playbackMarkName = '';
 
+  if (!ctx.ending) ctx.lastSpeechAt = Date.now();
+
   if (ctx.hangupAfterResponse) {
     ctx.hangupAfterResponse = false;
     if (ctx.callControlId) {
@@ -615,6 +618,7 @@ function handleCallerTranscript(ctx, transcript) {
   const text = String(transcript || '').trim();
   if (!text) return;
   ctx.lastCallerTranscript = text;
+  ctx.callerSpeaking = false;
   noteCallerActivity(ctx, text);
   clearTranscriptTimer(ctx);
   if (ctx.ending) return;
@@ -756,6 +760,7 @@ function handleOpenAiMessage(ctx, raw) {
   }
 
   if (message.type === 'conversation.item.input_audio_transcription.failed') {
+    ctx.callerSpeaking = false;
     clearTranscriptTimer(ctx);
     if (!ctx.holdMode) requestNaturalResponse(ctx);
     return;
@@ -763,6 +768,7 @@ function handleOpenAiMessage(ctx, raw) {
 
   if (message.type === 'input_audio_buffer.speech_started') {
     if (ctx.ending) return;
+    ctx.callerSpeaking = true;
     ctx.userSpeechStartedAt = Date.now();
     ctx.userSpeechStartedWhileAssistant = ctx.responseActive;
     ctx.bargeInConfirmed = false;
@@ -772,6 +778,7 @@ function handleOpenAiMessage(ctx, raw) {
   }
 
   if (message.type === 'input_audio_buffer.speech_stopped') {
+    ctx.callerSpeaking = false;
     const speechMs = ctx.userSpeechStartedAt ? Date.now() - ctx.userSpeechStartedAt : 0;
     const interruptedAssistant = ctx.userSpeechStartedWhileAssistant;
     ctx.userSpeechStartedAt = 0;
@@ -919,6 +926,7 @@ wss.on('connection', (telnyx) => {
     callerPhone: '',
     startedAt: 0,
     lastSpeechAt: 0,
+    callerSpeaking: false,
     lastProgressAt: 0,
     progressTokens: new Set(),
     policyTimer: null,
