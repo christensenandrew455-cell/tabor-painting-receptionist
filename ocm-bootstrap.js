@@ -1,6 +1,19 @@
 import 'dotenv/config';
 
 const OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';
+const REQUIRED_VARIABLES = Object.freeze([
+  'AI_MODEL',
+  'AI_SILENCE_MS',
+  'AI_SPEECH_SPEED',
+  'AI_VOICE',
+  'BUSINESS_INFO',
+  'OCM_CLIENT_ID',
+  'OCM_CONNECTION_KEY',
+  'OPENAI_API_KEY',
+  'PUBLIC_URL',
+  'RECEPTIONIST_SCRIPT',
+  'TELNYX_API_KEY',
+]);
 
 function clean(value) {
   return String(value || '').trim();
@@ -14,15 +27,55 @@ function cleanClientId(value) {
     .replace(/^-|-$/g, '');
 }
 
-const connectionKey = clean(process.env.OCM_CONNECTION_KEY);
-const clientId = cleanClientId(process.env.OCM_CLIENT_ID);
-
-if (!clientId) {
-  throw new Error('OCM_CLIENT_ID is missing. Add the client account ID to the Railway service variables.');
+function requireExactVariables() {
+  const missing = REQUIRED_VARIABLES.filter((name) => !clean(process.env[name]));
+  if (missing.length) {
+    throw new Error(`Missing required Railway variables: ${missing.join(', ')}`);
+  }
 }
 
-if (!connectionKey) {
-  throw new Error('OCM_CONNECTION_KEY is missing. Add the private client connection key to the Railway service variables.');
+function validateNumber(name, minimum, maximum) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a number from ${minimum} through ${maximum}.`);
+  }
+}
+
+function validatePublicUrl() {
+  let url;
+  try {
+    url = new URL(clean(process.env.PUBLIC_URL));
+  } catch {
+    throw new Error('PUBLIC_URL must be a complete HTTP or HTTPS URL.');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('PUBLIC_URL must use HTTP or HTTPS.');
+  }
+  process.env.PUBLIC_URL = `${url.origin}${url.pathname}`.replace(/\/$/, '');
+}
+
+function validateBusinessInfo() {
+  let info;
+  try {
+    info = JSON.parse(process.env.BUSINESS_INFO);
+  } catch {
+    throw new Error('BUSINESS_INFO must be valid JSON.');
+  }
+  if (!info || typeof info !== 'object' || Array.isArray(info)) {
+    throw new Error('BUSINESS_INFO must be one JSON object.');
+  }
+}
+
+requireExactVariables();
+validateNumber('AI_SPEECH_SPEED', 0.25, 1.5);
+validateNumber('AI_SILENCE_MS', 300, 3000);
+validatePublicUrl();
+validateBusinessInfo();
+
+const connectionKey = clean(process.env.OCM_CONNECTION_KEY);
+const clientId = cleanClientId(process.env.OCM_CLIENT_ID);
+if (!clientId) {
+  throw new Error('OCM_CLIENT_ID must contain letters, numbers, hyphens, or underscores.');
 }
 
 const source = `${clientId}-receptionist`;
@@ -39,11 +92,12 @@ console.log('[Receptionist configuration]', {
   clientId,
   source,
   endpoint: `${ocmUrl.origin}${ocmUrl.pathname}`,
+  publicUrl: process.env.PUBLIC_URL,
   hasConnectionKey: true,
-  hasBusinessInfo: Boolean(clean(process.env.BUSINESS_INFO)),
-  hasCustomScript: Boolean(clean(process.env.RECEPTIONIST_SCRIPT)),
-  model: clean(process.env.AI_MODEL) || 'gpt-realtime-mini',
-  voice: clean(process.env.AI_VOICE) || 'alloy',
-  speechSpeed: clean(process.env.AI_SPEECH_SPEED) || '0.94',
-  silenceMs: clean(process.env.AI_SILENCE_MS) || '1200',
+  hasBusinessInfo: true,
+  hasReceptionistScript: true,
+  model: process.env.AI_MODEL,
+  voice: process.env.AI_VOICE,
+  speechSpeed: process.env.AI_SPEECH_SPEED,
+  silenceMs: process.env.AI_SILENCE_MS,
 });
