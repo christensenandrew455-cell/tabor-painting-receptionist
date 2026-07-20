@@ -1,0 +1,270 @@
+name: Apply Five Minute Only Call Policy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-five-minute-only.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Remove every automatic cutoff except five minutes
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("server.js")
+          source = path.read_text(encoding="utf-8")
+
+          def replace_once(old, new, label):
+              global source
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one {label} block, found {count}")
+              source = source.replace(old, new, 1)
+
+          replace_once(
+          """import {
+            CALL_HARD_LIMIT_MS,
+            CALL_MAX_MS,
+            NO_PROGRESS_LIMIT_MS,
+            POLICY_CHECK_MS,
+            SILENCE_LIMIT_MS,
+            callUsageOutcome,
+            durationSeconds,
+            noteTranscriptProgress,
+          } from './call-policy.js';""",
+          """import {
+            CALL_MAX_MS,
+            callUsageOutcome,
+            durationSeconds,
+          } from './call-policy.js';""",
+          "call-policy import",
+          )
+
+          source, count = re.subn(
+              r"\nasync function callerIsBlocked\(callerPhone\) \{.*?\n\}\n\nasync function reportCallUsage",
+              "\nasync function reportCallUsage",
+              source,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one caller blocking function, found {count}")
+
+          replace_once(
+          """  ctx.usageReportPromise = postUsageAction(payload, 3)
+            .then((result) => {
+              ctx.usageReported = true;
+              console.log('[Call usage saved]', {
+                callId: ctx.callControlId || ctx.id,
+                durationSeconds: payload.durationSeconds,
+                outcome: payload.outcome,
+                blocked: result.blocked === true,
+              });
+            })""",
+          """  ctx.usageReportPromise = postUsageAction(payload, 3)
+            .then(() => {
+              ctx.usageReported = true;
+              console.log('[Call usage saved]', {
+                callId: ctx.callControlId || ctx.id,
+                durationSeconds: payload.durationSeconds,
+                outcome: payload.outcome,
+              });
+            })""",
+          "usage result logging",
+          )
+
+          source, count = re.subn(
+              r"function clearCallPolicyTimers\(ctx\) \{.*?\nfunction sendJson",
+              """function clearCallPolicyTimers(ctx) {
+            if (ctx.maxCallTimer) clearTimeout(ctx.maxCallTimer);
+            ctx.maxCallTimer = null;
+          }
+
+          function endCallAtFiveMinutes(ctx) {
+            if (ctx.cleanedUp || ctx.ending) return;
+            ctx.ending = true;
+            ctx.endReason = 'max-duration';
+            ctx.pendingNaturalResponse = false;
+            ctx.pendingResponse = null;
+            ctx.hangupAfterResponse = false;
+            if (ctx.openAiGenerating) sendJson(ctx.openai, { type: 'response.cancel' });
+            clearLocalAudio(ctx);
+            sendTelnyx(ctx, { event: 'clear' });
+            if (ctx.callControlId) {
+              telnyxCommand(ctx.callControlId, 'hangup').catch((error) => console.error('[Five minute hangup]', error.message));
+            } else {
+              ctx.telnyx?.close();
+            }
+          }
+
+          function startCallPolicy(ctx) {
+            if (ctx.startedAt) return;
+            ctx.startedAt = Date.now();
+            ctx.maxCallTimer = setTimeout(() => endCallAtFiveMinutes(ctx), CALL_MAX_MS);
+          }
+
+          function sendJson""",
+              source,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one call policy implementation block, found {count}")
+
+          replace_once(
+              "\n  if (!ctx.ending) ctx.lastSpeechAt = Date.now();\n",
+              "\n",
+              "assistant playback activity line",
+          )
+
+          replace_once(
+          """  ctx.lastCallerTranscript = text;
+            ctx.callerSpeaking = false;
+            noteCallerActivity(ctx, text);
+            clearTranscriptTimer(ctx);""",
+          """  ctx.lastCallerTranscript = text;
+            clearTranscriptTimer(ctx);""",
+          "transcript activity tracking",
+          )
+
+          replace_once(
+          """  if (message.type === 'conversation.item.input_audio_transcription.failed') {
+            ctx.callerSpeaking = false;
+            clearTranscriptTimer(ctx);""",
+          """  if (message.type === 'conversation.item.input_audio_transcription.failed') {
+            clearTranscriptTimer(ctx);""",
+          "failed transcription tracking",
+          )
+
+          replace_once(
+          """  if (message.type === 'input_audio_buffer.speech_started') {
+            if (ctx.ending) return;
+            ctx.callerSpeaking = true;
+            ctx.userSpeechStartedAt = Date.now();""",
+          """  if (message.type === 'input_audio_buffer.speech_started') {
+            if (ctx.ending) return;
+            ctx.userSpeechStartedAt = Date.now();""",
+          "speech started tracking",
+          )
+
+          replace_once(
+          """  if (message.type === 'input_audio_buffer.speech_stopped') {
+            ctx.callerSpeaking = false;
+            const speechMs = ctx.userSpeechStartedAt ? Date.now() - ctx.userSpeechStartedAt : 0;""",
+          """  if (message.type === 'input_audio_buffer.speech_stopped') {
+            const speechMs = ctx.userSpeechStartedAt ? Date.now() - ctx.userSpeechStartedAt : 0;""",
+          "speech stopped tracking",
+          )
+
+          replace_once(
+          """    activeCalls: activeCalls.size,
+              callMaximumSeconds: CALL_MAX_MS / 1000,
+              hardCallMaximumSeconds: CALL_HARD_LIMIT_MS / 1000,
+              silenceMaximumSeconds: SILENCE_LIMIT_MS / 1000,
+              noProgressMaximumSeconds: NO_PROGRESS_LIMIT_MS / 1000,""",
+          """    activeCalls: activeCalls.size,
+              callMaximumSeconds: CALL_MAX_MS / 1000,""",
+          "health policy fields",
+          )
+
+          source, count = re.subn(
+              r"    const metadata = callMetadata.get\(id\) \|\| \{\};\n    if \(type === 'call.initiated'\) \{.*?\n    \}\n    if \(type === 'call.answered' && !metadata.rejected\) \{",
+              """    if (type === 'call.initiated') await telnyxCommand(id, 'answer');
+              if (type === 'call.answered') {""",
+              source,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one inbound caller blocking block, found {count}")
+
+          replace_once(
+          """    startedAt: 0,
+              lastSpeechAt: 0,
+              callerSpeaking: false,
+              lastProgressAt: 0,
+              progressTokens: new Set(),
+              policyTimer: null,
+              maxCallTimer: null,
+              hardCallTimer: null,""",
+          """    startedAt: 0,
+              maxCallTimer: null,""",
+          "call context policy fields",
+          )
+
+          path.write_text(source, encoding="utf-8")
+
+          test_path = Path("test/receptionist.test.js")
+          tests = test_path.read_text(encoding="utf-8")
+          old_import = """import {
+            callUsageOutcome,
+            durationSeconds,
+            noteTranscriptProgress,
+          } from '../call-policy.js';"""
+          new_import = """import {
+            CALL_MAX_MS,
+            callUsageOutcome,
+            durationSeconds,
+          } from '../call-policy.js';"""
+          if tests.count(old_import) != 1:
+              raise SystemExit("Could not find the old call-policy test import")
+          tests = tests.replace(old_import, new_import, 1)
+
+          tests, count = re.subn(
+              r"\n\ntest\('tracks substantive progress but ignores repeated filler'.*?\n\}\);",
+              "",
+              tests,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one progress test, found {count}")
+
+          old_outcome_test = """test('classifies call outcomes and rounds connected seconds up', () => {
+            assert.equal(callUsageOutcome({ leadSaved: true, endReason: 'max-duration' }), 'lead-saved');
+            assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'max-duration' }), 'max-duration-no-lead');
+            assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'silence' }), 'silence-no-lead');
+            assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'no-progress' }), 'no-progress-no-lead');
+            assert.equal(durationSeconds(1000, 61001), 61);
+          });"""
+          new_outcome_test = """test('uses one five minute cutoff and records call usage', () => {
+            assert.equal(CALL_MAX_MS, 5 * 60 * 1000);
+            assert.equal(callUsageOutcome({ leadSaved: true, endReason: 'max-duration' }), 'lead-saved');
+            assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'max-duration' }), 'max-duration-no-lead');
+            assert.equal(callUsageOutcome({ leadSaved: false, endReason: 'remote-hangup' }), 'ended-no-lead');
+            assert.equal(durationSeconds(1000, 61001), 61);
+          });"""
+          if tests.count(old_outcome_test) != 1:
+              raise SystemExit("Could not find the old outcome test")
+          tests = tests.replace(old_outcome_test, new_outcome_test, 1)
+          test_path.write_text(tests, encoding="utf-8")
+          PY
+
+      - name: Verify receptionist
+        run: |
+          npm install
+          npm run check
+          npm test
+
+      - name: Commit five minute only policy
+        run: |
+          rm .github/workflows/apply-five-minute-only.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Use only the five minute call cutoff"
+          git push
