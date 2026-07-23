@@ -321,7 +321,7 @@ export function createTenantProfile(raw = {}) {
     source,
     ocmWebhookUrl: text(raw.ocmWebhookUrl),
     ocmUsageUrl: text(raw.ocmUsageUrl),
-    model: text(raw.ai?.model || raw.model || 'gpt-realtime'),
+    model: text(process.env.AI_MODEL || 'gpt-realtime'),
     voice: text(raw.ai?.voice || raw.voice || 'alloy'),
     speechSpeed: numberBetween(raw.ai?.speechSpeed ?? raw.speechSpeed, 1, 0.25, 1.5),
     silenceDurationMs: Math.round(numberBetween(raw.ai?.silenceMs ?? raw.silenceDurationMs, 900, 300, 3000)),

@@ -8,7 +8,7 @@ const profileInput = {
   ocmWebhookUrl: 'https://example.com/api/intake?clientId=example-client&key=private-key',
   ocmUsageUrl: 'https://example.com/api/receptionist/call-usage?clientId=example-client&key=private-key',
   receptionistScript: 'Collect the caller details and confirm them before saving.',
-  ai: { model: 'gpt-realtime', voice: 'alloy', speechSpeed: 1, silenceMs: 900 },
+  ai: { voice: 'alloy', speechSpeed: 1, silenceMs: 900 },
   business: {
     name: 'Example Business',
     receptionist: 'Alex',
@@ -39,6 +39,7 @@ test('builds one isolated tenant profile', () => {
   const profile = createTenantProfile(profileInput);
   assert.equal(profile.clientId, 'example-client');
   assert.equal(profile.business.name, 'Example Business');
+  assert.equal(profile.model, process.env.AI_MODEL || 'gpt-realtime');
   assert.equal(profile.openingLine, 'Hi, this is Alex with Example Business.');
   assert.equal(profile.tools[0].parameters.properties.serviceType.enum[0], 'painting');
 });

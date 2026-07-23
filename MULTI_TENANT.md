@@ -6,6 +6,7 @@ This branch changes the receptionist from one Railway clone per business to one 
 
 ```text
 OPENAI_API_KEY
+AI_MODEL
 TELNYX_API_KEY
 PUBLIC_URL
 RECEPTIONIST_CONFIG_URL
@@ -50,3 +51,5 @@ A call becomes a qualified lead only when the `submit_estimate_lead` tool valida
 6. Move remaining Telnyx numbers to the shared webhook after the pilot succeeds.
 
 The old single-client files remain in the repository during migration, but `npm start` uses `multi-tenant-server.js` on this branch.
+
+The AI model is Railway-owned. Set `AI_MODEL` on Railway; the Vercel control plane never needs or returns that variable. Client-specific voice, pacing, scripts, and business information still come from the protected profile endpoint.
