@@ -1,0 +1,83 @@
+name: Apply Railway AI Model
+
+on:
+  push:
+    branches:
+      - agent/multi-tenant-receptionist
+    paths:
+      - .github/workflows/apply-railway-ai-model.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/multi-tenant-receptionist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Make Railway own the AI model
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              file = Path(path)
+              source = file.read_text(encoding="utf-8")
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one {label} in {path}, found {count}")
+              file.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "tenant-profile.js",
+              "    model: text(raw.ai?.model || raw.model || 'gpt-realtime'),",
+              "    model: text(process.env.AI_MODEL || 'gpt-realtime'),",
+              "tenant model source",
+          )
+          replace_once(
+              "test/multi-tenant.test.js",
+              "  ai: { model: 'gpt-realtime', voice: 'alloy', speechSpeed: 1, silenceMs: 900 },",
+              "  ai: { voice: 'alloy', speechSpeed: 1, silenceMs: 900 },",
+              "test profile AI settings",
+          )
+          replace_once(
+              "test/multi-tenant.test.js",
+              "  assert.equal(profile.business.name, 'Example Business');",
+              "  assert.equal(profile.business.name, 'Example Business');\n  assert.equal(profile.model, process.env.AI_MODEL || 'gpt-realtime');",
+              "Railway model assertion",
+          )
+
+          docs = Path("MULTI_TENANT.md")
+          text = docs.read_text(encoding="utf-8")
+          if "AI_MODEL" not in text:
+              text = text.replace(
+                  "OPENAI_API_KEY\n",
+                  "OPENAI_API_KEY\nAI_MODEL\n",
+                  1,
+              )
+          if "The AI model is Railway-owned" not in text:
+              text += "\nThe AI model is Railway-owned. Set `AI_MODEL` on Railway; the Vercel control plane never needs or returns that variable. Client-specific voice, pacing, scripts, and business information still come from the protected profile endpoint.\n"
+          docs.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Verify shared receptionist
+        run: |
+          npm install
+          npm run check
+          npm test
+
+      - name: Commit Railway model ownership
+        run: |
+          rm .github/workflows/apply-railway-ai-model.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tenant-profile.js test/multi-tenant.test.js MULTI_TENANT.md .github/workflows/apply-railway-ai-model.yml
+          git commit -m "Keep the AI model on Railway"
+          git push origin HEAD:agent/multi-tenant-receptionist
