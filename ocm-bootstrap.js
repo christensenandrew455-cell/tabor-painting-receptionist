@@ -1,8 +1,8 @@
 import 'dotenv/config';
+import { HARD_CODED_RECEPTIONIST_SCRIPT } from './receptionist-script.js';
 
 const OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';
 const REQUIRED_VARIABLES = Object.freeze([
-  'AI_MODEL',
   'AI_SILENCE_MS',
   'AI_SPEECH_SPEED',
   'AI_VOICE',
@@ -11,7 +11,6 @@ const REQUIRED_VARIABLES = Object.freeze([
   'OCM_CONNECTION_KEY',
   'OPENAI_API_KEY',
   'PUBLIC_URL',
-  'RECEPTIONIST_SCRIPT',
   'TELNYX_API_KEY',
 ]);
 
@@ -72,6 +71,9 @@ validateNumber('AI_SILENCE_MS', 300, 3000);
 validatePublicUrl();
 validateBusinessInfo();
 
+process.env.AI_MODEL = 'gpt-realtime-mini';
+process.env.RECEPTIONIST_SCRIPT = HARD_CODED_RECEPTIONIST_SCRIPT;
+
 const connectionKey = clean(process.env.OCM_CONNECTION_KEY);
 const clientId = cleanClientId(process.env.OCM_CLIENT_ID);
 if (!clientId) {
@@ -95,7 +97,7 @@ console.log('[Receptionist configuration]', {
   publicUrl: process.env.PUBLIC_URL,
   hasConnectionKey: true,
   hasBusinessInfo: true,
-  hasReceptionistScript: true,
+  hasHardcodedReceptionistScript: true,
   model: process.env.AI_MODEL,
   voice: process.env.AI_VOICE,
   speechSpeed: process.env.AI_SPEECH_SPEED,
