@@ -40,9 +40,8 @@ function completeLead(overrides = {}) {
 }
 
 function completeRuntimeEnv(overrides = {}) {
-  return {
+  const env = {
     ...process.env,
-    AI_MODEL: 'gpt-realtime-mini',
     AI_SILENCE_MS: '1200',
     AI_SPEECH_SPEED: '0.94',
     AI_VOICE: 'alloy',
@@ -51,18 +50,21 @@ function completeRuntimeEnv(overrides = {}) {
     OCM_CONNECTION_KEY: 'test-connection-value',
     OPENAI_API_KEY: 'test-openai-value',
     PUBLIC_URL: 'https://example-receptionist.example.com',
-    RECEPTIONIST_SCRIPT: process.env.RECEPTIONIST_SCRIPT,
     TELNYX_API_KEY: 'test-telnyx-value',
     ...overrides,
   };
+  env.AI_MODEL = 'gpt-realtime-mini';
+  env.RECEPTIONIST_SCRIPT = process.env.RECEPTIONIST_SCRIPT;
+  return env;
 }
 
-test('reads business, script, model, voice, speed, and silence only from variables', () => {
+test('uses business fill-ins with the fixed script and model', () => {
   assert.equal(BUSINESS.name, 'Example Painting');
   assert.equal(BUSINESS.receptionist, 'Alex');
   assert.match(openingLine, /Example Painting/);
   assert.match(afterSaveQuestion, /Example Painting/);
-  assert.match(receptionistScript, /configured service they need/i);
+  assert.match(receptionistScript, /Would you like to add your email\? Yes or no\./i);
+  assert.match(receptionistScript, /interior painting, or exterior painting/i);
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
   assert.equal(REALTIME_VOICE, 'alloy');
   assert.equal(SPEECH_SPEED, 0.94);
@@ -123,9 +125,9 @@ test('pulls the caller phone number from a Telnyx webhook', () => {
   );
 });
 
-test('keeps shared safety and save behavior hardcoded around the variable script', () => {
+test('keeps shared safety and save behavior hardcoded around the fixed script', () => {
   const prompt = instructions();
-  assert.match(prompt, /configured service they need/i);
+  assert.match(prompt, /Would you like to add your email\? Yes or no\./i);
   assert.match(prompt, /Never ask for, say, confirm, or repeat the caller’s phone number/i);
   assert.match(prompt, /give me one second to save that/i);
   assert.match(prompt, /Silence is mandatory/i);
@@ -134,7 +136,7 @@ test('keeps shared safety and save behavior hardcoded around the variable script
   assert.doesNotMatch(prompt, /Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
 });
 
-test('BUSINESS_INFO and RECEPTIONIST_SCRIPT fully rebrand a cloned receptionist', () => {
+test('BUSINESS_INFO rebrands every fill-in while script and model stay fixed', () => {
   const businessInfo = {
     name: 'Sample Roofing',
     receptionist: 'Morgan',
@@ -158,7 +160,6 @@ test('BUSINESS_INFO and RECEPTIONIST_SCRIPT fully rebrand a cloned receptionist'
     closingLine: '{{owner_first_name}} will contact you soon. Goodbye.',
     extraInformation: 'Final pricing is provided after inspection.',
   };
-  const customScript = 'Ask what roofing service they need. Use only {{services}}. The owner is {{owner_first_name}}.';
   const code = `
     const core = await import('./receptionist-core.js');
     console.log(JSON.stringify({
@@ -178,9 +179,9 @@ test('BUSINESS_INFO and RECEPTIONIST_SCRIPT fully rebrand a cloned receptionist'
     encoding: 'utf8',
     env: completeRuntimeEnv({
       BUSINESS_INFO: JSON.stringify(businessInfo),
-      RECEPTIONIST_SCRIPT: customScript,
       OCM_CLIENT_ID: 'sample-roofing',
-      AI_MODEL: 'gpt-realtime',
+      AI_MODEL: 'this-must-be-ignored',
+      RECEPTIONIST_SCRIPT: 'this must also be ignored',
       AI_VOICE: 'marin',
       AI_SPEECH_SPEED: '1.08',
       AI_SILENCE_MS: '900',
@@ -193,29 +194,38 @@ test('BUSINESS_INFO and RECEPTIONIST_SCRIPT fully rebrand a cloned receptionist'
   assert.equal(output.business.timeZone, 'America/Chicago');
   assert.equal(output.openingLine, 'Thanks for calling Sample Roofing. This is Morgan. Are you calling about an estimate?');
   assert.equal(output.closingLine, 'Casey will contact you soon. Goodbye.');
-  assert.match(output.instructions, /Ask what roofing service they need/i);
   assert.match(output.instructions, /roof repair, or roof replacement/i);
+  assert.match(output.instructions, /Would you like to add your email\? Yes or no\./i);
+  assert.doesNotMatch(output.instructions, /this must also be ignored/i);
   assert.doesNotMatch(output.instructions, /Example Painting|Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
   assert.deepEqual(output.services, ['roof repair', 'roof replacement']);
-  assert.equal(output.model, 'gpt-realtime');
+  assert.equal(output.model, 'gpt-realtime-mini');
   assert.equal(output.voice, 'marin');
   assert.equal(output.speed, 1.08);
   assert.equal(output.silence, 900);
 });
 
-test('the core refuses to start without RECEPTIONIST_SCRIPT', () => {
+test('bootstrap supplies the fixed model and script when Railway variables are absent', () => {
   const env = completeRuntimeEnv();
+  delete env.AI_MODEL;
   delete env.RECEPTIONIST_SCRIPT;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', "await import('./receptionist-core.js')"], {
+  const code = `
+    await import('./ocm-bootstrap.js');
+    const core = await import('./receptionist-core.js');
+    console.log(JSON.stringify({ model: core.REALTIME_MODEL, script: core.receptionistScript }));
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: new URL('..', import.meta.url),
     encoding: 'utf8',
     env,
   });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /RECEPTIONIST_SCRIPT is required/i);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
+  assert.equal(output.model, 'gpt-realtime-mini');
+  assert.match(output.script, /Would you like to add your email\? Yes or no\./i);
 });
 
-test('bootstrap requires the exact variable list, hardcodes the shared endpoint, and derives the source', () => {
+test('bootstrap hardcodes the shared endpoint and derives the source', () => {
   const code = `
     await import('./ocm-bootstrap.js');
     const url = new URL(process.env.OCM_WEBHOOK_URL);
@@ -247,7 +257,6 @@ test('bootstrap requires the exact variable list, hardcodes the shared endpoint,
   assert.equal(output.key, 'private-test-value');
   assert.equal(output.source, 'sample-business-receptionist');
 });
-
 
 test('tracks substantive progress but ignores repeated filler', () => {
   const seen = new Set();
