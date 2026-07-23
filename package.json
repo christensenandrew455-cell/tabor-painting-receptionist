@@ -1,14 +1,14 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "2.1.0",
-  "description": "Clone-ready Telnyx and OpenAI Realtime receptionist that sends confirmed leads to ARK OCM.",
-  "main": "server.js",
+  "version": "3.0.0",
+  "description": "Multi-tenant Telnyx and OpenAI Realtime receptionist that resolves each business by its inbound phone number.",
+  "main": "multi-tenant-server.js",
   "type": "module",
   "scripts": {
-    "start": "node --import ./ocm-bootstrap.js server.js",
-    "dev": "node --watch --import ./ocm-bootstrap.js server.js",
-    "check": "node --check ocm-bootstrap.js && node --check call-policy.js && node --check receptionist-core.js && node --check server.js",
-    "test": "node --import ./test/test-env.js --test test/receptionist.test.js"
+    "start": "node multi-tenant-server.js",
+    "dev": "node --watch multi-tenant-server.js",
+    "check": "node --check call-policy.js && node --check receptionist-core.js && node --check server.js && node --check tenant-profile.js && node --check multi-tenant-server.js",
+    "test": "node --import ./test/test-env.js --test test/*.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
