@@ -1,14 +1,14 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "Telnyx and OpenAI Realtime receptionist that loads each business profile from ARK OCM by dialed phone number.",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node --import ./ocm-bootstrap.js --import ./stream-call-link.js --import ./silence-turn-guard.js server.js",
-    "dev": "node --watch --import ./ocm-bootstrap.js --import ./stream-call-link.js --import ./silence-turn-guard.js server.js",
-    "check": "node --check ocm-bootstrap.js && node --check stream-call-link.js && node --check silence-turn-guard.js && node --check runtime-loader.js && node --check receptionist-script.js && node --check call-policy.js && node --check receptionist-core.js && node --check server.js",
-    "test": "node --import ./test/test-env.js --test test/receptionist.test.js test/silence-turn-guard.test.js"
+    "start": "node --import ./ocm-bootstrap.js --import ./stream-call-link.js --import ./silence-turn-guard.js --import ./caller-email-guard.js server.js",
+    "dev": "node --watch --import ./ocm-bootstrap.js --import ./stream-call-link.js --import ./silence-turn-guard.js --import ./caller-email-guard.js server.js",
+    "check": "node --check ocm-bootstrap.js && node --check stream-call-link.js && node --check silence-turn-guard.js && node --check caller-email-guard.js && node --check runtime-loader.js && node --check receptionist-script.js && node --check call-policy.js && node --check receptionist-core.js && node --check server.js",
+    "test": "node --import ./test/test-env.js --test test/receptionist.test.js test/silence-turn-guard.test.js test/caller-email-guard.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
