@@ -153,6 +153,9 @@ export function renderTemplate(value = '') {
 export const openingLine = renderTemplate(BUSINESS.openingLine);
 export const closingLine = renderTemplate(BUSINESS.closingLine);
 export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
+export const contactConsentQuestion = `Do you agree to be contacted by ${BUSINESS.name}?`;
+export const contactConsentRefusalLine = `I'm sorry, I cannot send in this lead unless you agree to be contacted by ${BUSINESS.name}.`;
+export const contactConsentFinalLine = `${contactConsentRefusalLine} Goodbye.`;
 export const saveFailureLine = `I could not save that just now, but ${OWNER_FIRST_NAME} can still follow up.`;
 export const SAFETY_IDENTIFIER = CLIENT_ID || 'ark-receptionist';
 export const TRANSCRIPTION_PROMPT = `Natural phone calls for ${BUSINESS.name}: names, email addresses, service requests, towns or cities, street addresses, dates, and times.`;
@@ -230,6 +233,7 @@ export function validateLead(args = {}) {
     preferredDay: WEEKDAYS.includes(preferredDay) ? preferredDay[0].toUpperCase() + preferredDay.slice(1) : '',
     preferredTime,
     additionalNotes: cleanText(args.additionalNotes),
+    contactConsent: args.contactConsent === true,
   };
 
   const errors = [];
@@ -247,6 +251,7 @@ export function validateLead(args = {}) {
   if (!lead.preferredTime) {
     errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
   }
+  if (!lead.contactConsent) errors.push('clear contact consent');
 
   return { valid: errors.length === 0, errors, lead };
 }
@@ -321,6 +326,10 @@ export function buildOcmPayload(callerPhone, lead) {
     RequestedWeekday: requestedWeekday,
     PreferredTime: requestedTime,
     Notes: notes,
+    ContactConsent: lead.contactConsent === true,
+    ContactConsentMethod: 'voice-call',
+    ContactConsentText: contactConsentQuestion,
+    ContactConsentAt: new Date().toISOString(),
     source,
     rawSubmission: {
       ...lead,
@@ -355,11 +364,25 @@ export const tools = Object.freeze([
           description: `Preferred estimate time from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}.`,
         },
         additionalNotes: { type: 'string' },
+        contactConsent: {
+          type: 'boolean',
+          description: 'Must be true only after the caller clearly agrees to be contacted by the business.',
+        },
       },
       required: [
         'fullName', 'serviceType', 'townOrCity', 'streetAddress',
-        'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes',
+        'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes', 'contactConsent',
       ],
+    },
+  },
+  {
+    type: 'function',
+    name: 'record_contact_consent',
+    description: 'Record one clear yes or no answer to the required contact-consent question. Call once for every clear answer.',
+    parameters: {
+      type: 'object',
+      properties: { agreed: { type: 'boolean' } },
+      required: ['agreed'],
     },
   },
   {
@@ -423,10 +446,13 @@ RECEPTIONIST SCRIPT
 ${receptionistScript}
 
 SAVE AND END WORKFLOW
-- Only after the caller clearly confirms the final summary, say exactly: "Great, give me one second to save that."
-- In the same turn, immediately call submit_estimate_lead with every field. Send email as an empty string when the caller declined it.
+- After the caller clearly confirms the final summary, ask exactly: "${contactConsentQuestion}" Then stop and listen.
+- For each clear yes or no, immediately call record_contact_consent with the caller's answer. Do not speak before calling it.
+- The server counts refusals. On the first and second refusal, it supplies the refusal line and asks the same consent question again. On the third refusal, it ends the call.
+- Only after the server confirms contact consent was granted, say exactly: "Great, give me one second to save that."
+- In the same turn, immediately call submit_estimate_lead with every field and contactConsent set to true. Send email as an empty string when the caller declined it.
 - If there are no additional notes, send additionalNotes as an empty string.
-- Never call submit_estimate_lead twice.
+- Never call submit_estimate_lead before consent is granted, and never call it twice.
 - After the server confirms the lead was saved, it will direct you to ask exactly: "${afterSaveQuestion}"
 - Answer questions only from BUSINESS INFORMATION.
 - After answering, ask: "Do you have any other questions about ${BUSINESS.name}?" and wait.

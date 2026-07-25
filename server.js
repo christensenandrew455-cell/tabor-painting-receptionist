@@ -14,6 +14,9 @@ import {
   afterSaveQuestion,
   buildOcmPayload,
   closingLine,
+  contactConsentFinalLine,
+  contactConsentQuestion,
+  contactConsentRefusalLine,
   getCallerPhone,
   instructions,
   openingLine,
@@ -379,6 +382,12 @@ function parseToolCall(message) {
 }
 
 async function saveLead(ctx, call) {
+  if (!ctx.contactConsentGranted || call.args?.contactConsent !== true) {
+    sendToolOutput(ctx, call.callId, { ok: false, error: 'contact_consent_required' });
+    queueResponse(ctx, `Ask exactly: "${contactConsentQuestion}" Then stop and wait. Do not save the lead yet.`);
+    return;
+  }
+
   const validation = validateLead(call.args);
   if (!validation.valid) {
     sendToolOutput(ctx, call.callId, { ok: false, missingOrInvalid: validation.errors });
@@ -419,6 +428,29 @@ async function saveLead(ctx, call) {
   queueResponse(ctx, `Say briefly: "${saveFailureLine}" Then ask: "${afterSaveQuestion}" and wait.`);
 }
 
+function recordContactConsent(ctx, call) {
+  const agreed = call.args?.agreed === true;
+  if (agreed) {
+    ctx.contactConsentGranted = true;
+    sendToolOutput(ctx, call.callId, { ok: true, agreed: true, refusals: ctx.contactConsentRefusals });
+    queueResponse(ctx, 'Say exactly: "Great, give me one second to save that." In the same turn, immediately call submit_estimate_lead with every collected field and contactConsent set to true. Say nothing else.');
+    return;
+  }
+
+  ctx.contactConsentGranted = false;
+  ctx.contactConsentRefusals += 1;
+  if (ctx.contactConsentRefusals >= 3) {
+    sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals, ending: true });
+    ctx.endReason = 'contact-consent-refused';
+    ctx.ending = true;
+    queueResponse(ctx, `Say exactly this and nothing else: "${contactConsentFinalLine}"`, true);
+    return;
+  }
+
+  sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals });
+  queueResponse(ctx, `Say exactly: "${contactConsentRefusalLine} ${contactConsentQuestion}" Then stop and wait.`);
+}
+
 function finishCall(ctx, call) {
   if (!ctx.leadSaved && !ctx.leadSaveFailed) {
     sendToolOutput(ctx, call.callId, { ok: false, error: 'lead_not_saved' });
@@ -435,6 +467,7 @@ async function handleTool(ctx, call) {
   const key = call.callId || `${call.name}:${JSON.stringify(call.args)}`;
   if (ctx.handledCalls.has(key)) return;
   ctx.handledCalls.add(key);
+  if (call.name === 'record_contact_consent') recordContactConsent(ctx, call);
   if (call.name === 'submit_estimate_lead') await saveLead(ctx, call);
   if (call.name === 'finish_call') finishCall(ctx, call);
 }
@@ -965,6 +998,8 @@ wss.on('connection', (telnyx) => {
     lastCallerTranscript: '',
     leadSaved: false,
     leadSaveFailed: false,
+    contactConsentGranted: false,
+    contactConsentRefusals: 0,
     handledCalls: new Set(),
   };
 

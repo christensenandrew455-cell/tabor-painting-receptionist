@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { HARD_CODED_RECEPTIONIST_SCRIPT } from './receptionist-script.js';
 
-const OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';
+const OCM_ENDPOINT = 'https://ark-websites-ocm-xi.vercel.app/api/intake';
 const REQUIRED_VARIABLES = Object.freeze([
   'AI_SILENCE_MS',
   'AI_SPEECH_SPEED',

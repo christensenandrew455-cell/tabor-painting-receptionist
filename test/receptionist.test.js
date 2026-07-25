@@ -35,6 +35,7 @@ function completeLead(overrides = {}) {
     preferredDay: 'Tuesday',
     preferredTime: '4:30 PM',
     additionalNotes: 'Please call before arriving',
+    contactConsent: true,
     ...overrides,
   };
 }
@@ -65,6 +66,7 @@ test('uses business fill-ins with the fixed script and model', () => {
   assert.match(afterSaveQuestion, /Example Painting/);
   assert.match(receptionistScript, /Would you like to add your email\? Yes or no\./i);
   assert.match(receptionistScript, /interior painting, or exterior painting/i);
+  assert.match(receptionistScript, /Do you agree to be contacted by Example Painting\?/i);
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
   assert.equal(REALTIME_VOICE, 'alloy');
   assert.equal(SPEECH_SPEED, 0.94);
@@ -87,10 +89,18 @@ test('allows callers to decline email unless email is their contact method', () 
   assert.match(emailContact.errors.join(' '), /complete email address/i);
 });
 
+test('requires contact consent before a lead is valid', () => {
+  const missingConsent = validateLead(completeLead({ contactConsent: false }));
+  assert.equal(missingConsent.valid, false);
+  assert.match(missingConsent.errors.join(' '), /contact consent/i);
+});
+
 test('builds the OpenAI tool choices from BUSINESS_INFO services', () => {
   const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
   assert.ok(submitTool);
   assert.equal(submitTool.parameters.required.includes('email'), false);
+  assert.equal(submitTool.parameters.required.includes('contactConsent'), true);
+  assert.ok(tools.find((tool) => tool.name === 'record_contact_consent'));
   assert.deepEqual(submitTool.parameters.properties.serviceType.enum, [
     'interior painting',
     'exterior painting',
@@ -113,6 +123,9 @@ test('builds OCM payloads from OCM_CLIENT_ID and derives the source', () => {
   assert.equal(payload.sectionKey, 'contactedMe');
   assert.equal(payload.Phone, '+17745550123');
   assert.equal(payload.Job, 'interior painting');
+  assert.equal(payload.ContactConsent, true);
+  assert.equal(payload.ContactConsentMethod, 'voice-call');
+  assert.match(payload.ContactConsentText, /Example Painting/);
   assert.equal(payload.Address, '12 Main Street, Example City');
   assert.match(payload.Notes, /Please call before arriving/);
   assert.match(payload.EstimateDate, /^\d{4}-\d{2}-\d{2}$/);
@@ -130,6 +143,8 @@ test('keeps shared safety and save behavior hardcoded around the fixed script', 
   assert.match(prompt, /Would you like to add your email\? Yes or no\./i);
   assert.match(prompt, /Never ask for, say, confirm, or repeat the caller’s phone number/i);
   assert.match(prompt, /give me one second to save that/i);
+  assert.match(prompt, /record_contact_consent/i);
+  assert.match(prompt, /third refusal[\s\S]*ends the call/i);
   assert.match(prompt, /Silence is mandatory/i);
   assert.match(prompt, /take your time[\s\S]*forbidden/i);
   assert.match(prompt, /standalone filler/i);
@@ -251,7 +266,7 @@ test('bootstrap hardcodes the shared endpoint and derives the source', () => {
   assert.equal(result.status, 0, result.stderr);
   const lines = result.stdout.trim().split('\n');
   const output = JSON.parse(lines.at(-1));
-  assert.equal(output.origin, 'https://ark-websites-ocm.vercel.app');
+  assert.equal(output.origin, 'https://ark-websites-ocm-xi.vercel.app');
   assert.equal(output.pathname, '/api/intake');
   assert.equal(output.clientId, 'sample-business');
   assert.equal(output.key, 'private-test-value');
