@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  HOLD_ACKNOWLEDGEMENT,
+  HOLD_CHECK_DELAY_MS,
+  HOLD_CHECK_IN,
   buildSilenceReask,
   extractOpeningQuestion,
   hasMeaningfulTranscript,
+  holdCheckDelayMs,
   identifyReceptionistInOpeningInstructions,
+  isHoldRequest,
+  isLikelyIncompleteTranscript,
   openingReaskDelayMs,
 } from '../silence-turn-guard.js';
 
@@ -16,10 +22,28 @@ test('treats silence, static labels, and filler as no answer', () => {
   assert.equal(hasMeaningfulTranscript('uh hmm'), false);
 });
 
-test('accepts actual spoken answers', () => {
+test('waits instead of responding to an unfinished caller thought', () => {
+  assert.equal(isLikelyIncompleteTranscript('Uh, I, uh, wha- where'), true);
+  assert.equal(isLikelyIncompleteTranscript('My street address is'), true);
+  assert.equal(hasMeaningfulTranscript('Uh, I, uh, wha- where'), false);
+  assert.equal(hasMeaningfulTranscript('My street address is'), false);
+});
+
+test('accepts actual completed spoken answers', () => {
   assert.equal(hasMeaningfulTranscript('yes'), true);
   assert.equal(hasMeaningfulTranscript('no'), true);
   assert.equal(hasMeaningfulTranscript('I would like an estimate'), true);
+  assert.equal(hasMeaningfulTranscript('12 Main Street'), true);
+});
+
+test('recognizes hold request variations and uses fixed wording', () => {
+  assert.equal(isHoldRequest('Hold on one second'), true);
+  assert.equal(isHoldRequest('Wait one sec'), true);
+  assert.equal(isHoldRequest('Give me a minute'), true);
+  assert.equal(isHoldRequest('Hang on a moment'), true);
+  assert.equal(HOLD_ACKNOWLEDGEMENT, "Okay, I'll wait.");
+  assert.equal(HOLD_CHECK_IN, 'Are you still there?');
+  assert.equal(HOLD_CHECK_DELAY_MS, 30000);
 });
 
 test('identifies the opening speaker as the receptionist without hard-coding names', () => {
@@ -58,4 +82,9 @@ test('builds deterministic simplified silence re-asks', () => {
 test('waits five seconds after estimated playback ends', () => {
   assert.equal(openingReaskDelayMs({ audioBytes: 16000, audioStartedAt: 1000, now: 2000 }), 6000);
   assert.equal(openingReaskDelayMs({ audioBytes: 8000, audioStartedAt: 1000, now: 3000 }), 5000);
+});
+
+test('waits thirty seconds after hold acknowledgement playback ends', () => {
+  assert.equal(holdCheckDelayMs({ audioBytes: 16000, audioStartedAt: 1000, now: 2000 }), 31000);
+  assert.equal(holdCheckDelayMs({ audioBytes: 8000, audioStartedAt: 1000, now: 3000 }), 30000);
 });
