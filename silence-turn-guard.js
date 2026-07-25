@@ -1,10 +1,26 @@
 import { WebSocket } from 'ws';
 
 const SILENCE_REASK_DELAY_MS = 5000;
+export const HOLD_CHECK_DELAY_MS = 30000;
+export const HOLD_ACKNOWLEDGEMENT = "Okay, I'll wait.";
+export const HOLD_CHECK_IN = 'Are you still there?';
 const PCMU_BYTES_PER_MS = 8;
+const HOLD_PATTERN = /\b(?:hold on|wait(?: a moment)?|wait (?:one|a) (?:second|sec|minute|moment)|one second|one sec|give me (?:a|one) (?:second|sec|minute|moment)|just a (?:second|sec|minute|moment)|hang on|pause for a (?:second|sec|minute|moment)|stop for a (?:second|sec|minute|moment))\b/i;
 const NOISE_ONLY_TOKENS = new Set([
   'ah', 'er', 'erm', 'hm', 'hmm', 'hmmm', 'mm', 'mmm', 'mhm', 'uh', 'uhh', 'um', 'umm',
   'noise', 'silence', 'static', 'breathing', 'inaudible',
+]);
+const INCOMPLETE_ENDING_TOKENS = new Set([
+  'a', 'an', 'and', 'are', 'at', 'because', 'but', 'can', 'could', 'did', 'do', 'does',
+  'for', 'from', 'how', 'i', "i'd", "i'll", "i'm", "i've", 'if', 'in', 'is', 'it',
+  'like', 'my', 'of', 'on', 'or', 'our', 'so', 'that', 'the', 'their', 'then', 'they',
+  'this', 'to', 'was', 'we', "we're", 'were', 'what', 'when', 'where', 'which', 'who',
+  'why', 'will', 'with', 'would', 'you', "you're", 'your',
+]);
+const FRAGMENT_ONLY_TOKENS = new Set([
+  ...NOISE_ONLY_TOKENS,
+  ...INCOMPLETE_ENDING_TOKENS,
+  'okay', 'well', 'wha', 'whe', 'wait',
 ]);
 
 const originalSend = WebSocket.prototype.send;
@@ -37,20 +53,51 @@ function stateFor(socket) {
       awaitingCaller: false,
       speechInProgress: false,
       reaskTimer: null,
+      holdCheckTimer: null,
+      holdMode: false,
       lastAssistantText: '',
     });
   }
   return socketState.get(socket);
 }
 
-export function hasMeaningfulTranscript(value) {
-  const normalized = clean(value)
+function transcriptTokens(value) {
+  return clean(value)
     .toLowerCase()
     .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/[^a-z0-9'\s]/g, ' ');
-  const tokens = normalized.split(/\s+/).filter(Boolean);
+    .replace(/[^a-z0-9'\-\s]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.replace(/^-+|-+$/g, ''))
+    .filter(Boolean);
+}
+
+export function isHoldRequest(value) {
+  return HOLD_PATTERN.test(clean(value));
+}
+
+export function isLikelyIncompleteTranscript(value) {
+  const raw = clean(value).toLowerCase();
+  if (!raw) return false;
+  if (/[.!?]["']?$/.test(raw)) return false;
+  if (/[-–—]\s*$/.test(raw) || /,\s*$/.test(raw)) return true;
+
+  const tokens = transcriptTokens(raw);
   if (!tokens.length) return false;
-  return tokens.some((token) => !NOISE_ONLY_TOKENS.has(token));
+  const lastToken = tokens.at(-1);
+  const hasCutOffWord = /\b[a-z]{1,4}-\s*(?:[a-z]+\b)?/i.test(raw);
+  const fragmentOnly = tokens.every((token) => FRAGMENT_ONLY_TOKENS.has(token));
+
+  if (fragmentOnly) return true;
+  if (INCOMPLETE_ENDING_TOKENS.has(lastToken)) return true;
+  return hasCutOffWord && INCOMPLETE_ENDING_TOKENS.has(lastToken);
+}
+
+export function hasMeaningfulTranscript(value) {
+  const tokens = transcriptTokens(value).map((token) => token.replace(/-/g, ''));
+  if (!tokens.length) return false;
+  if (!tokens.some((token) => !NOISE_ONLY_TOKENS.has(token))) return false;
+  if (isLikelyIncompleteTranscript(value)) return false;
+  return true;
 }
 
 export function identifyReceptionistInOpeningInstructions(instructions) {
@@ -119,11 +166,18 @@ export function buildSilenceReask(value) {
   return `I'm sorry, I didn't get that. ${simplified}`;
 }
 
-export function responseReaskDelayMs({ audioBytes = 0, audioStartedAt = 0, now = Date.now() } = {}) {
+function playbackRemainingMs({ audioBytes = 0, audioStartedAt = 0, now = Date.now() } = {}) {
   const totalAudioMs = Math.max(0, Number(audioBytes) || 0) / PCMU_BYTES_PER_MS;
   const elapsedSinceAudioStarted = audioStartedAt ? Math.max(0, now - audioStartedAt) : 0;
-  const remainingPlaybackMs = Math.max(0, totalAudioMs - elapsedSinceAudioStarted);
-  return Math.ceil(remainingPlaybackMs + SILENCE_REASK_DELAY_MS);
+  return Math.max(0, totalAudioMs - elapsedSinceAudioStarted);
+}
+
+export function responseReaskDelayMs(options = {}) {
+  return Math.ceil(playbackRemainingMs(options) + SILENCE_REASK_DELAY_MS);
+}
+
+export function holdCheckDelayMs(options = {}) {
+  return Math.ceil(playbackRemainingMs(options) + HOLD_CHECK_DELAY_MS);
 }
 
 export const openingReaskDelayMs = responseReaskDelayMs;
@@ -131,6 +185,11 @@ export const openingReaskDelayMs = responseReaskDelayMs;
 function clearReask(state) {
   if (state.reaskTimer) clearTimeout(state.reaskTimer);
   state.reaskTimer = null;
+}
+
+function clearHoldCheck(state) {
+  if (state.holdCheckTimer) clearTimeout(state.holdCheckTimer);
+  state.holdCheckTimer = null;
 }
 
 function syntheticCancelled(socket) {
@@ -161,6 +220,27 @@ function assistantTextFromResponse(message) {
   return clean(parts.join(' '));
 }
 
+function controlledInstructions(spokenLine) {
+  return `Say exactly this and nothing else: ${JSON.stringify(spokenLine)} Then stop and wait. Do not add reassurance, filler, or another question.`;
+}
+
+function sendControlledResponse(socket, state, spokenLine, controlKind) {
+  if (socket.readyState !== WebSocket.OPEN) return false;
+  state.nextResponse = {
+    instructions: controlledInstructions(spokenLine),
+    isSilenceReask: false,
+    controlKind,
+  };
+  originalSend.call(socket, JSON.stringify({
+    type: 'response.create',
+    response: {
+      output_modalities: ['audio'],
+      instructions: state.nextResponse.instructions,
+    },
+  }));
+  return true;
+}
+
 function shouldScheduleReask(text, instructions) {
   const combined = clean(`${text} ${instructions}`);
   if (!combined || /\bgoodbye\b|\bend (?:this|the) call\b/i.test(combined)) return false;
@@ -169,7 +249,7 @@ function shouldScheduleReask(text, instructions) {
 
 function scheduleReask(socket, state, response) {
   clearReask(state);
-  if (!response || response.isSilenceReask || response.callerAnswered || state.speechInProgress) return;
+  if (!response || response.isSilenceReask || response.controlKind || response.callerAnswered || state.speechInProgress) return;
 
   const assistantText = clean(
     response.transcript
@@ -188,13 +268,14 @@ function scheduleReask(socket, state, response) {
 
   state.reaskTimer = setTimeout(() => {
     state.reaskTimer = null;
-    if (!state.awaitingCaller || state.speechInProgress || socket.readyState !== WebSocket.OPEN) return;
+    if (!state.awaitingCaller || state.speechInProgress || state.holdMode || socket.readyState !== WebSocket.OPEN) return;
 
     const spokenLine = buildSilenceReask(state.lastAssistantText);
     state.awaitingCaller = false;
     state.nextResponse = {
       instructions: `Say exactly this and nothing else: ${JSON.stringify(spokenLine)} Then stop and wait. Do not add reassurance, filler, or the next intake question.`,
       isSilenceReask: true,
+      controlKind: '',
     };
     originalSend.call(socket, JSON.stringify({
       type: 'response.create',
@@ -219,9 +300,43 @@ function rescheduleAfterNoise(socket, state) {
     audioBytes: 0,
     audioStartedAt: 0,
     isSilenceReask: false,
+    controlKind: '',
     callerAnswered: false,
   };
   scheduleReask(socket, state, response);
+}
+
+function scheduleHoldCheck(socket, state, response) {
+  clearHoldCheck(state);
+  const delay = holdCheckDelayMs({
+    audioBytes: response.audioBytes,
+    audioStartedAt: response.audioStartedAt,
+  });
+
+  state.holdCheckTimer = setTimeout(() => {
+    state.holdCheckTimer = null;
+    if (!state.holdMode || state.speechInProgress || socket.readyState !== WebSocket.OPEN) return;
+    sendControlledResponse(socket, state, HOLD_CHECK_IN, 'hold-check');
+    console.log('[Silence turn guard]', {
+      action: 'sent hold check-in',
+      delayMs: delay,
+      line: HOLD_CHECK_IN,
+    });
+  }, delay);
+}
+
+function beginHold(socket, state, transcript) {
+  clearReask(state);
+  clearHoldCheck(state);
+  state.freshMeaningfulTranscript = false;
+  state.awaitingCaller = false;
+  state.holdMode = true;
+  sendControlledResponse(socket, state, HOLD_ACKNOWLEDGEMENT, 'hold-acknowledgement');
+  console.log('[Silence turn guard]', {
+    action: 'acknowledged hold request',
+    transcript: clean(transcript),
+    line: HOLD_ACKNOWLEDGEMENT,
+  });
 }
 
 WebSocket.prototype.send = function guardedSend(data, ...args) {
@@ -236,7 +351,7 @@ WebSocket.prototype.send = function guardedSend(data, ...args) {
   if (!responseInstructions) {
     if (!state.freshMeaningfulTranscript) {
       console.log('[Silence turn guard]', {
-        action: 'blocked response without transcribed words',
+        action: 'blocked response without a complete caller thought',
       });
       acknowledgeBlockedSend(args);
       syntheticCancelled(this);
@@ -265,6 +380,7 @@ WebSocket.prototype.send = function guardedSend(data, ...args) {
   state.nextResponse = {
     instructions: responseInstructions,
     isSilenceReask: false,
+    controlKind: '',
   };
   return originalSend.call(this, outgoingData, ...args);
 };
@@ -277,6 +393,7 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
     if (message?.type === 'input_audio_buffer.speech_started') {
       state.speechInProgress = true;
       clearReask(state);
+      clearHoldCheck(state);
     }
 
     if (message?.type === 'input_audio_buffer.speech_stopped') {
@@ -284,18 +401,37 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
     }
 
     if (message?.type === 'conversation.item.input_audio_transcription.completed') {
+      const transcript = clean(message.transcript);
       state.speechInProgress = false;
-      if (hasMeaningfulTranscript(message.transcript)) {
-        state.freshMeaningfulTranscript = true;
-        state.awaitingCaller = false;
-        if (state.currentResponse) state.currentResponse.callerAnswered = true;
-        clearReask(state);
+
+      if (isHoldRequest(transcript)) {
+        beginHold(this, state, transcript);
       } else {
-        console.log('[Silence turn guard]', {
-          action: 'ignored empty or filler-only transcription',
-          transcript: clean(message.transcript),
-        });
-        rescheduleAfterNoise(this, state);
+        const wasHolding = state.holdMode;
+        if (wasHolding) {
+          state.holdMode = false;
+          clearHoldCheck(state);
+          state.awaitingCaller = Boolean(state.lastAssistantText);
+          console.log('[Silence turn guard]', {
+            action: 'caller resumed after hold',
+            transcript,
+          });
+        }
+
+        if (hasMeaningfulTranscript(transcript)) {
+          state.freshMeaningfulTranscript = true;
+          state.awaitingCaller = false;
+          if (state.currentResponse) state.currentResponse.callerAnswered = true;
+          clearReask(state);
+        } else {
+          console.log('[Silence turn guard]', {
+            action: isLikelyIncompleteTranscript(transcript)
+              ? 'waited for caller to finish incomplete thought'
+              : 'ignored empty or filler-only transcription',
+            transcript,
+          });
+          rescheduleAfterNoise(this, state);
+        }
       }
     }
 
@@ -311,6 +447,7 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
       state.currentResponse = {
         instructions: state.nextResponse?.instructions || '',
         isSilenceReask: state.nextResponse?.isSilenceReask === true,
+        controlKind: state.nextResponse?.controlKind || '',
         transcript: '',
         audioBytes: 0,
         audioStartedAt: 0,
@@ -330,7 +467,7 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
         try {
           state.currentResponse.audioBytes += Buffer.from(audio, 'base64').length;
         } catch {
-          // The five-second wait still applies if audio accounting fails.
+          // The configured wait still applies if audio accounting fails.
         }
       }
     }
@@ -353,12 +490,16 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
       const completed = state.currentResponse;
       completed.doneMessage = message;
       state.currentResponse = null;
-      scheduleReask(this, state, completed);
+      if (completed.controlKind === 'hold-acknowledgement') {
+        scheduleHoldCheck(this, state, completed);
+      } else {
+        scheduleReask(this, state, completed);
+      }
     }
 
     if (message?.type === 'response.cancelled') {
       state.currentResponse = null;
-      clearReask(state);
+      if (message.reason !== 'no-transcribed-words') clearReask(state);
     }
   }
 
@@ -368,5 +509,6 @@ WebSocket.prototype.emit = function guardedEmit(eventName, ...args) {
 console.log('[Silence turn guard]', {
   enabled: true,
   reaskSeconds: SILENCE_REASK_DELAY_MS / 1000,
-  behavior: 'blocks empty turns and uses one deterministic re-ask after unanswered questions',
+  holdCheckSeconds: HOLD_CHECK_DELAY_MS / 1000,
+  behavior: 'waits for complete caller thoughts, blocks improvised empty turns, and handles hold requests deterministically',
 });
