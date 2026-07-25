@@ -1,0 +1,336 @@
+name: Apply Contact Consent Gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-contact-consent.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Apply consent gate
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one match in {path}, found {count}: {old[:100]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "receptionist-script.js",
+              '''CONFIRMATION
+          - After the intake is complete, summarize once: full name, email only when provided, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything {{owner_first_name}} should know.
+          - Never say or repeat the caller-ID phone number.
+          - Ask: "Is all of that correct?" Then stop and listen.
+          - Correct only what the caller changes, then summarize the corrected details and confirm again.`;''',
+              '''CONFIRMATION
+          - After the intake is complete, summarize once: full name, email only when provided, service category, town or city, street address, best contact method, preferred estimate day, preferred estimate time, and anything {{owner_first_name}} should know.
+          - Never say or repeat the caller-ID phone number.
+          - Ask: "Is all of that correct?" Then stop and listen.
+          - Correct only what the caller changes, then summarize the corrected details and confirm again.
+
+          CONTACT CONSENT — REQUIRED BEFORE SAVING
+          - After the caller confirms the final summary, ask exactly: "Do you agree to be contacted by {{business_name}}?"
+          - Stop and listen. Do not save the lead until the caller clearly says yes.
+          - For every clear yes, immediately call record_contact_consent with agreed as true.
+          - For every clear no, immediately call record_contact_consent with agreed as false.
+          - The server counts refusals and supplies the exact next line. Do not count refusals yourself and do not improvise.
+          - Never call submit_estimate_lead until the server confirms contact consent was granted.`;'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
+          export const saveFailureLine = `I could not save that just now, but ${OWNER_FIRST_NAME} can still follow up.`;''',
+              '''export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
+          export const contactConsentQuestion = `Do you agree to be contacted by ${BUSINESS.name}?`;
+          export const contactConsentRefusalLine = `I'm sorry, I cannot send in this lead unless you agree to be contacted by ${BUSINESS.name}.`;
+          export const contactConsentFinalLine = `${contactConsentRefusalLine} Goodbye.`;
+          export const saveFailureLine = `I could not save that just now, but ${OWNER_FIRST_NAME} can still follow up.`;'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''    additionalNotes: cleanText(args.additionalNotes),
+            };''',
+              '''    additionalNotes: cleanText(args.additionalNotes),
+              contactConsent: args.contactConsent === true,
+            };'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''  if (!lead.preferredTime) {
+              errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
+            }
+
+            return { valid: errors.length === 0, errors, lead };''',
+              '''  if (!lead.preferredTime) {
+              errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
+            }
+            if (!lead.contactConsent) errors.push('clear contact consent');
+
+            return { valid: errors.length === 0, errors, lead };'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''    PreferredTime: requestedTime,
+              Notes: notes,
+              source,''',
+              '''    PreferredTime: requestedTime,
+              Notes: notes,
+              ContactConsent: lead.contactConsent === true,
+              ContactConsentMethod: 'voice-call',
+              ContactConsentText: contactConsentQuestion,
+              ContactConsentAt: new Date().toISOString(),
+              source,'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''        additionalNotes: { type: 'string' },
+                    },
+                    required: [
+                      'fullName', 'serviceType', 'townOrCity', 'streetAddress',
+                      'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes',
+                    ],''',
+              '''        additionalNotes: { type: 'string' },
+                      contactConsent: {
+                        type: 'boolean',
+                        description: 'Must be true only after the caller clearly agrees to be contacted by the business.',
+                      },
+                    },
+                    required: [
+                      'fullName', 'serviceType', 'townOrCity', 'streetAddress',
+                      'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes', 'contactConsent',
+                    ],'''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''  },
+              {
+                type: 'function',
+                name: 'finish_call',''',
+              '''  },
+              {
+                type: 'function',
+                name: 'record_contact_consent',
+                description: 'Record one clear yes or no answer to the required contact-consent question. Call once for every clear answer.',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    agreed: { type: 'boolean' },
+                  },
+                  required: ['agreed'],
+                },
+              },
+              {
+                type: 'function',
+                name: 'finish_call','''
+          )
+
+          replace_once(
+              "receptionist-core.js",
+              '''SAVE AND END WORKFLOW
+          - Only after the caller clearly confirms the final summary, say exactly: "Great, give me one second to save that."
+          - In the same turn, immediately call submit_estimate_lead with every field. Send email as an empty string when the caller declined it.
+          - If there are no additional notes, send additionalNotes as an empty string.
+          - Never call submit_estimate_lead twice.''',
+              '''SAVE AND END WORKFLOW
+          - After the caller clearly confirms the final summary, ask exactly: "${contactConsentQuestion}" Then stop and listen.
+          - For each clear yes or no, immediately call record_contact_consent with the caller's answer. Do not speak before calling it.
+          - The server counts refusals. On the first and second refusal, it supplies the refusal line and asks the same consent question again. On the third refusal, it ends the call.
+          - Only after the server confirms contact consent was granted, say exactly: "Great, give me one second to save that."
+          - In the same turn, immediately call submit_estimate_lead with every field and contactConsent set to true. Send email as an empty string when the caller declined it.
+          - If there are no additional notes, send additionalNotes as an empty string.
+          - Never call submit_estimate_lead before consent is granted, and never call it twice.'''
+          )
+
+          replace_once(
+              "server.js",
+              '''  afterSaveQuestion,
+              buildOcmPayload,
+              closingLine,''',
+              '''  afterSaveQuestion,
+              buildOcmPayload,
+              closingLine,
+              contactConsentFinalLine,
+              contactConsentQuestion,
+              contactConsentRefusalLine,'''
+          )
+
+          replace_once(
+              "server.js",
+              '''async function saveLead(ctx, call) {
+              const validation = validateLead(call.args);''',
+              '''async function saveLead(ctx, call) {
+              if (!ctx.contactConsentGranted || call.args?.contactConsent !== true) {
+                sendToolOutput(ctx, call.callId, { ok: false, error: 'contact_consent_required' });
+                queueResponse(ctx, `Ask exactly: "${contactConsentQuestion}" Then stop and wait. Do not save the lead yet.`);
+                return;
+              }
+
+              const validation = validateLead(call.args);'''
+          )
+
+          replace_once(
+              "server.js",
+              '''function finishCall(ctx, call) {''',
+              '''function recordContactConsent(ctx, call) {
+              const agreed = call.args?.agreed === true;
+              if (agreed) {
+                ctx.contactConsentGranted = true;
+                sendToolOutput(ctx, call.callId, { ok: true, agreed: true, refusals: ctx.contactConsentRefusals });
+                queueResponse(ctx, 'Say exactly: "Great, give me one second to save that." In the same turn, immediately call submit_estimate_lead with every collected field and contactConsent set to true. Say nothing else.');
+                return;
+              }
+
+              ctx.contactConsentGranted = false;
+              ctx.contactConsentRefusals += 1;
+              if (ctx.contactConsentRefusals >= 3) {
+                sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals, ending: true });
+                ctx.endReason = 'contact-consent-refused';
+                ctx.ending = true;
+                queueResponse(ctx, `Say exactly this and nothing else: "${contactConsentFinalLine}"`, true);
+                return;
+              }
+
+              sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals });
+              queueResponse(ctx, `Say exactly: "${contactConsentRefusalLine} ${contactConsentQuestion}" Then stop and wait.`);
+            }
+
+            function finishCall(ctx, call) {'''
+          )
+
+          replace_once(
+              "server.js",
+              '''  if (call.name === 'submit_estimate_lead') await saveLead(ctx, call);
+              if (call.name === 'finish_call') finishCall(ctx, call);''',
+              '''  if (call.name === 'record_contact_consent') recordContactConsent(ctx, call);
+              if (call.name === 'submit_estimate_lead') await saveLead(ctx, call);
+              if (call.name === 'finish_call') finishCall(ctx, call);'''
+          )
+
+          replace_once(
+              "server.js",
+              '''    leadSaved: false,
+                leadSaveFailed: false,
+                handledCalls: new Set(),''',
+              '''    leadSaved: false,
+                leadSaveFailed: false,
+                contactConsentGranted: false,
+                contactConsentRefusals: 0,
+                handledCalls: new Set(),'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''    additionalNotes: 'Please call before arriving',
+                ...overrides,''',
+              '''    additionalNotes: 'Please call before arriving',
+                contactConsent: true,
+                ...overrides,'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''  assert.match(receptionistScript, /interior painting, or exterior painting/i);
+              assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');''',
+              '''  assert.match(receptionistScript, /interior painting, or exterior painting/i);
+              assert.match(receptionistScript, /Do you agree to be contacted by Example Painting\?/i);
+              assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''  assert.equal(submitTool.parameters.required.includes('email'), false);
+              assert.deepEqual(submitTool.parameters.properties.serviceType.enum,''',
+              '''  assert.equal(submitTool.parameters.required.includes('email'), false);
+              assert.equal(submitTool.parameters.required.includes('contactConsent'), true);
+              assert.ok(tools.find((tool) => tool.name === 'record_contact_consent'));
+              assert.deepEqual(submitTool.parameters.properties.serviceType.enum,'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''test('builds the OpenAI tool choices from BUSINESS_INFO services', () => {''',
+              '''test('requires contact consent before a lead is valid', () => {
+              const missingConsent = validateLead(completeLead({ contactConsent: false }));
+              assert.equal(missingConsent.valid, false);
+              assert.match(missingConsent.errors.join(' '), /contact consent/i);
+            });
+
+            test('builds the OpenAI tool choices from BUSINESS_INFO services', () => {'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''  assert.equal(payload.Job, 'interior painting');
+              assert.equal(payload.Address, '12 Main Street, Example City');''',
+              '''  assert.equal(payload.Job, 'interior painting');
+              assert.equal(payload.ContactConsent, true);
+              assert.equal(payload.ContactConsentMethod, 'voice-call');
+              assert.match(payload.ContactConsentText, /Example Painting/);
+              assert.equal(payload.Address, '12 Main Street, Example City');'''
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              '''  assert.match(prompt, /give me one second to save that/i);
+              assert.match(prompt, /Silence is mandatory/i);''',
+              '''  assert.match(prompt, /give me one second to save that/i);
+              assert.match(prompt, /record_contact_consent/i);
+              assert.match(prompt, /third refusal[\s\S]*ends the call/i);
+              assert.match(prompt, /Silence is mandatory/i);'''
+          )
+
+          replace_once(
+              "ocm-bootstrap.js",
+              "const OCM_ENDPOINT = 'https://ark-websites-ocm.vercel.app/api/intake';",
+              "const OCM_ENDPOINT = 'https://ark-websites-ocm-xi.vercel.app/api/intake';"
+          )
+
+          replace_once(
+              "test/receptionist.test.js",
+              "assert.equal(output.origin, 'https://ark-websites-ocm.vercel.app');",
+              "assert.equal(output.origin, 'https://ark-websites-ocm-xi.vercel.app');"
+          )
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate receptionist
+        run: |
+          npm run check
+          npm test
+
+      - name: Commit consent gate
+        run: |
+          git config user.name "ARK GitHub Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add receptionist-script.js receptionist-core.js server.js test/receptionist.test.js ocm-bootstrap.js
+          git commit -m "Require caller consent before saving leads"
+          git push origin main
