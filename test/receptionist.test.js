@@ -64,7 +64,8 @@ test('uses business fill-ins with the fixed script and model', () => {
   assert.equal(BUSINESS.receptionist, 'Alex');
   assert.match(openingLine, /Example Painting/);
   assert.match(afterSaveQuestion, /Example Painting/);
-  assert.match(receptionistScript, /Would you like to add your email\? Yes or no\./i);
+  assert.doesNotMatch(receptionistScript, /Would you like to add your email|What would your email be/i);
+  assert.match(receptionistScript, /What is the best way we can contact you: call or text\?/i);
   assert.match(receptionistScript, /interior painting, or exterior painting/i);
   assert.match(receptionistScript, /Do you agree to be contacted by Example Painting\?/i);
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
@@ -140,7 +141,8 @@ test('pulls the caller phone number from a Telnyx webhook', () => {
 
 test('keeps shared safety and save behavior hardcoded around the fixed script', () => {
   const prompt = instructions();
-  assert.match(prompt, /Would you like to add your email\? Yes or no\./i);
+  assert.doesNotMatch(prompt, /Would you like to add your email|What would your email be/i);
+  assert.match(prompt, /What is the best way we can contact you: call or text\?/i);
   assert.match(prompt, /Never ask for, say, confirm, or repeat the caller’s phone number/i);
   assert.match(prompt, /give me one second to save that/i);
   assert.match(prompt, /record_contact_consent/i);
@@ -210,7 +212,8 @@ test('BUSINESS_INFO rebrands every fill-in while script and model stay fixed', (
   assert.equal(output.openingLine, 'Thanks for calling Sample Roofing. This is Morgan. Are you calling about an estimate?');
   assert.equal(output.closingLine, 'Casey will contact you soon. Goodbye.');
   assert.match(output.instructions, /roof repair, or roof replacement/i);
-  assert.match(output.instructions, /Would you like to add your email\? Yes or no\./i);
+  assert.doesNotMatch(output.instructions, /Would you like to add your email|What would your email be/i);
+  assert.match(output.instructions, /What is the best way we can contact you: call or text\?/i);
   assert.doesNotMatch(output.instructions, /this must also be ignored/i);
   assert.doesNotMatch(output.instructions, /Example Painting|Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
   assert.deepEqual(output.services, ['roof repair', 'roof replacement']);
@@ -237,7 +240,8 @@ test('bootstrap supplies the fixed model and script when Railway variables are a
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
   assert.equal(output.model, 'gpt-realtime-mini');
-  assert.match(output.script, /Would you like to add your email\? Yes or no\./i);
+  assert.doesNotMatch(output.script, /Would you like to add your email|What would your email be/i);
+  assert.match(output.script, /What is the best way we can contact you: call or text\?/i);
 });
 
 test('bootstrap uses the signed per-call ARK OCM runtime endpoint', () => {
