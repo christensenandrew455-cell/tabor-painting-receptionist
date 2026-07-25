@@ -240,37 +240,35 @@ test('bootstrap supplies the fixed model and script when Railway variables are a
   assert.match(output.script, /Would you like to add your email\? Yes or no\./i);
 });
 
-test('bootstrap hardcodes the shared endpoint and derives the source', () => {
+test('bootstrap uses the signed per-call ARK OCM runtime endpoint', () => {
   const code = `
     await import('./ocm-bootstrap.js');
-    const url = new URL(process.env.OCM_WEBHOOK_URL);
+    const loader = await import('./runtime-loader.js');
     console.log(JSON.stringify({
-      origin: url.origin,
-      pathname: url.pathname,
-      clientId: url.searchParams.get('clientId'),
-      key: url.searchParams.get('key'),
-      source: url.searchParams.get('source'),
+      endpoint: loader.runtimeEndpoint(),
+      model: process.env.AI_MODEL,
+      hasScript: Boolean(process.env.RECEPTIONIST_SCRIPT),
     }));
   `;
+  const env = completeRuntimeEnv({
+    OCM_CLIENT_ID: '',
+    OCM_CONNECTION_KEY: '',
+    BUSINESS_INFO: '',
+    AI_VOICE: '',
+    AI_SPEECH_SPEED: '',
+    AI_SILENCE_MS: '',
+  });
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
     cwd: new URL('..', import.meta.url),
     encoding: 'utf8',
-    env: completeRuntimeEnv({
-      OCM_CLIENT_ID: 'sample-business',
-      OCM_CONNECTION_KEY: 'private-test-value',
-      OCM_WEBHOOK_URL: 'https://wrong.example.com/old',
-      OCM_SOURCE: 'old-source',
-    }),
+    env,
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const lines = result.stdout.trim().split('\n');
-  const output = JSON.parse(lines.at(-1));
-  assert.equal(output.origin, 'https://ark-websites-ocm-xi.vercel.app');
-  assert.equal(output.pathname, '/api/intake');
-  assert.equal(output.clientId, 'sample-business');
-  assert.equal(output.key, 'private-test-value');
-  assert.equal(output.source, 'sample-business-receptionist');
+  const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
+  assert.equal(output.endpoint, 'https://ark-websites-ocm-xi.vercel.app/api/receptionist/runtime');
+  assert.equal(output.model, 'gpt-realtime-mini');
+  assert.equal(output.hasScript, true);
 });
 
 test('tracks substantive progress but ignores repeated filler', () => {
