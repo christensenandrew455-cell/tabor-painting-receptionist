@@ -1,12 +1,31 @@
-# Tabor Painting AI Receptionist
+# ARK AI Receptionist Bridge
 
-This Railway service answers Telnyx calls, runs a fixed estimate-intake workflow through OpenAI Realtime, and sends caller-confirmed leads to ARK OCM.
+This Railway service answers Telnyx calls, runs the fixed estimate-intake workflow through OpenAI Realtime, and saves caller-confirmed leads into ARK OCM.
 
-The intake script and model are hard-coded in the receptionist. Business-specific wording is filled from `BUSINESS_INFO`.
+## Call flow
+
+1. A customer calls a Telnyx number.
+2. Telnyx sends the signed call event to Railway.
+3. Railway forwards that signed event to ARK OCM.
+4. ARK OCM verifies the Telnyx signature and matches the dialed number to the correct business account.
+5. ARK OCM returns that account's business information, services, schedule, AI voice settings, and private lead destination.
+6. Railway starts the receptionist using those settings for that call.
+7. A confirmed lead is saved into the matched business workspace.
+
+The receptionist script and model remain hard-coded in this repository. Business-specific information is never required as a Railway variable.
 
 ## Railway variables
 
-Railway must contain these nine variables:
+Railway needs only:
+
+```text
+OPENAI_API_KEY
+TELNYX_API_KEY
+```
+
+`PUBLIC_URL` is optional when Railway supplies `RAILWAY_PUBLIC_DOMAIN`. Railway supplies `PORT` automatically.
+
+Do not add these old per-business variables:
 
 ```text
 AI_SILENCE_MS
@@ -15,104 +34,38 @@ AI_VOICE
 BUSINESS_INFO
 OCM_CLIENT_ID
 OCM_CONNECTION_KEY
-OPENAI_API_KEY
-PUBLIC_URL
-TELNYX_API_KEY
+RECEPTIONIST_SCRIPT
 ```
 
-Railway supplies `PORT` automatically.
+ARK OCM now supplies those settings per call by matching the dialed Telnyx phone number.
 
-Do not add `AI_MODEL` or `RECEPTIONIST_SCRIPT`. The model is fixed to `gpt-realtime-mini`, and the full intake script is stored in `receptionist-script.js`.
+## Settings managed in ARK OCM
 
-## Voice settings
+Each connected account stores:
 
-- `AI_VOICE`: the Realtime voice used for the call.
-- `AI_SPEECH_SPEED`: output speed from `0.25` through `1.5`.
-- `AI_SILENCE_MS`: pause detection from `300` through `3000` milliseconds.
+- Connected receptionist phone number
+- Business name and owner name
+- Business phone and email
+- Business hours and time zone
+- Estimate days and time range
+- Service areas and services
+- About and additional business information
+- Opening and closing lines
+- AI voice, speech speed, and silence timing
 
-Suggested baseline values:
+The connected phone number must be unique and must match the number receiving the Telnyx call.
 
-```text
-AI_VOICE=alloy
-AI_SPEECH_SPEED=1
-AI_SILENCE_MS=900
-```
-
-## BUSINESS_INFO
-
-`BUSINESS_INFO` must be one JSON object with these fields:
-
-```json
-{
-  "name": "Example Business",
-  "receptionist": "Alex",
-  "owner": "Example Owner",
-  "phone": "(555) 555-0100",
-  "email": "hello@example.com",
-  "hours": "Monday through Friday. Holiday schedules may affect availability.",
-  "timeZone": "America/New_York",
-  "estimateDays": "Monday through Friday",
-  "estimateWeekdays": [
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday"
-  ],
-  "earliestEstimateStart": "9:00 AM",
-  "latestEstimateStart": "4:30 PM",
-  "base": "Example City, Massachusetts",
-  "serviceAreas": [
-    "Massachusetts"
-  ],
-  "services": {
-    "interior painting": "Interior painting for walls, ceilings, trim, doors, rooms, and other indoor surfaces.",
-    "exterior painting": "Exterior painting for homes, buildings, trim, and other outdoor surfaces."
-  },
-  "about": [
-    "Short business description."
-  ],
-  "openingLine": "Hi, this is {{receptionist_name}} with {{business_name}}. Can I set you up with an estimate today?",
-  "closingLine": "{{owner_first_name}} will follow up with you shortly. Thanks for calling {{business_name}}. Goodbye.",
-  "extraInformation": "Additional facts, policies, scheduling details, and answers the receptionist may provide."
-}
-```
-
-The fixed script automatically fills:
-
-```text
-{{business_name}}
-{{receptionist_name}}
-{{owner_name}}
-{{owner_first_name}}
-{{services}}
-{{estimate_days}}
-{{earliest_estimate_time}}
-{{latest_estimate_time}}
-{{opening_line}}
-{{closing_line}}
-```
-
-Configured services become the only service categories accepted by the lead-saving tool. Estimate weekdays and estimate times are validated before a lead can be saved.
-
-## Call behavior
+## Fixed receptionist workflow
 
 The hard-coded workflow:
 
-1. Delivers the configured opening line.
+1. Delivers the business's configured opening line.
 2. Collects name, optional email, service, city, street address, contact method, estimate day, estimate time, and additional notes.
 3. Confirms the completed information once.
-4. Saves only after the caller confirms it is correct.
-5. Never reads or repeats the caller-ID phone number.
-6. Never quotes pricing or promises appointment availability.
-
-## ARK routing
-
-The production intake endpoint is shared. The receptionist sends the configured `OCM_CLIENT_ID` and `OCM_CONNECTION_KEY`, and derives its source as:
-
-```text
-OCM_CLIENT_ID-receptionist
-```
+4. Asks for permission to be contacted before saving.
+5. Saves only after the caller agrees.
+6. Never reads or repeats the caller-ID phone number.
+7. Never quotes pricing or promises appointment availability.
 
 ## Telnyx
 
@@ -137,4 +90,4 @@ npm test
 npm start
 ```
 
-Never commit real provider credentials or a private ARK connection value.
+Never commit real provider credentials or private ARK connection values.
