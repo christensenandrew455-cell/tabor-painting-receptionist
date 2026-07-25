@@ -3,28 +3,6 @@ import http from 'http';
 import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
-  AUDIO_FORMAT,
-  BUSINESS,
-  REALTIME_MODEL,
-  REALTIME_VOICE,
-  SAFETY_IDENTIFIER,
-  SILENCE_DURATION_MS,
-  SPEECH_SPEED,
-  TRANSCRIPTION_PROMPT,
-  afterSaveQuestion,
-  buildOcmPayload,
-  closingLine,
-  contactConsentFinalLine,
-  contactConsentQuestion,
-  contactConsentRefusalLine,
-  getCallerPhone,
-  instructions,
-  openingLine,
-  saveFailureLine,
-  tools,
-  validateLead,
-} from './receptionist-core.js';
-import {
   CALL_HARD_LIMIT_MS,
   CALL_MAX_MS,
   NO_PROGRESS_LIMIT_MS,
@@ -34,12 +12,15 @@ import {
   durationSeconds,
   noteTranscriptProgress,
 } from './call-policy.js';
+import {
+  loadRuntimeFromSignedTelnyxEvent,
+  prepareCallRuntime,
+  runtimeEndpoint,
+} from './runtime-loader.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = resolvePublicUrl();
 const STREAM_URL = PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
-const OCM_WEBHOOK_URL = String(process.env.OCM_WEBHOOK_URL || '').trim();
-const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`;
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
 const BARGE_IN_CONFIRM_MS = 450;
 const MIN_USER_TURN_MS = 250;
@@ -50,16 +31,20 @@ const AUDIO_FRAME_BYTES = AUDIO_FRAME_MS * PCMU_BYTES_PER_MS;
 const AUDIO_PREBUFFER_MS = 60;
 const AUDIO_PREBUFFER_BYTES = AUDIO_PREBUFFER_MS * PCMU_BYTES_PER_MS;
 const MAX_OUTPUT_TOKENS = 800;
-const OCM_USAGE_URL = resolveOcmUsageUrl();
+const MAX_PENDING_INPUT_CHUNKS = 250;
 const activeCalls = new Map();
 const activeCallsByControlId = new Map();
 const callMetadata = new Map();
 
 const HOLD_PATTERN = /\b(?:hold on|wait(?: a moment)?|one second|one sec|give me (?:a|one) (?:second|sec|minute|moment)|just a (?:second|sec|minute|moment)|hang on|pause for a (?:second|minute|moment))\b/i;
 
+function clean(value) {
+  return String(value || '').trim();
+}
+
 function resolvePublicUrl() {
-  const configured = String(process.env.PUBLIC_URL || '').trim();
-  const railwayDomain = String(process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+  const configured = clean(process.env.PUBLIC_URL);
+  const railwayDomain = clean(process.env.RAILWAY_PUBLIC_DOMAIN);
   const raw = configured || (railwayDomain ? `https://${railwayDomain}` : 'https://tabor-painting-receptionist-production.up.railway.app');
 
   let url;
@@ -76,32 +61,58 @@ function resolvePublicUrl() {
   return `${url.origin}${url.pathname}`.replace(/\/$/, '');
 }
 
-function resolveOcmUsageUrl() {
-  const url = new URL(OCM_WEBHOOK_URL);
-  url.pathname = '/api/receptionist/call-usage';
-  url.searchParams.set('clientId', String(process.env.OCM_CLIENT_ID || url.searchParams.get('clientId') || '').trim());
-  url.searchParams.set('key', String(process.env.OCM_CONNECTION_KEY || url.searchParams.get('key') || '').trim());
-  url.searchParams.delete('source');
-  return url.toString();
-}
-
 function assertRuntimeConfiguration() {
   const missing = [
     ['TELNYX_API_KEY', process.env.TELNYX_API_KEY],
     ['OPENAI_API_KEY', process.env.OPENAI_API_KEY],
-    ['OCM_WEBHOOK_URL', OCM_WEBHOOK_URL],
-  ].filter(([, value]) => !String(value || '').trim()).map(([name]) => name);
+  ].filter(([, value]) => !clean(value)).map(([name]) => name);
 
   if (missing.length) {
     throw new Error(`Missing required runtime configuration: ${missing.join(', ')}`);
   }
 }
 
-assertRuntimeConfiguration();
+function normalizePhone(value) {
+  const raw = clean(value).replace(/^tel:/i, '');
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  if (raw.startsWith('+')) return `+${digits}`;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return `+${digits}`;
+}
 
-const app = express();
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: false }));
+function phoneValue(candidate) {
+  if (Array.isArray(candidate)) return phoneValue(candidate[0]);
+  if (candidate && typeof candidate === 'object') {
+    return candidate.phone_number || candidate.number || candidate.phone || '';
+  }
+  return candidate || '';
+}
+
+function getCallerPhone(payload = {}) {
+  const candidates = [
+    payload?.data?.payload?.from,
+    payload?.payload?.from,
+    payload?.start?.from,
+    payload?.start?.caller_id_number,
+    payload?.from,
+    payload?.caller_id_number,
+  ];
+  return normalizePhone(phoneValue(candidates.find((value) => clean(phoneValue(value)))));
+}
+
+function getCalledPhone(payload = {}) {
+  const candidates = [
+    payload?.data?.payload?.to,
+    payload?.payload?.to,
+    payload?.start?.to,
+    payload?.start?.called_number,
+    payload?.to,
+    payload?.called_number,
+  ];
+  return normalizePhone(phoneValue(candidates.find((value) => clean(phoneValue(value)))));
+}
 
 function eventType(body) {
   return body?.data?.event_type || body?.event_type || '';
@@ -122,6 +133,7 @@ function rememberCall(body) {
   callMetadata.set(id, {
     ...previous,
     callerPhone: getCallerPhone(body) || previous.callerPhone || '',
+    calledPhone: getCalledPhone(body) || previous.calledPhone || '',
     updatedAt: Date.now(),
   });
 }
@@ -138,26 +150,23 @@ async function telnyxCommand(id, action, body = {}) {
   if (!response.ok) throw new Error(`Telnyx ${action} failed: ${response.status} ${await response.text()}`);
 }
 
-async function postUsageAction(payload, attempts = 3) {
+async function postUsageAction(ctx, payload, attempts = 3) {
+  const usageUrl = clean(ctx.runtimeData?.usageUrl);
+  if (!usageUrl) throw new Error('The call has no ARK OCM usage URL.');
+
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const response = await fetch(OCM_USAGE_URL, {
+      const response = await fetch(usageUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ARK-Connection-Key': String(process.env.OCM_CONNECTION_KEY || ''),
-        },
-        body: JSON.stringify({
-          clientId: process.env.OCM_CLIENT_ID,
-          ...payload,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: ctx.runtimeData.clientId, ...payload }),
         signal: AbortSignal.timeout(4000),
       });
-      const body = await response.text();
+      const raw = await response.text();
       let data = {};
       try {
-        data = body ? JSON.parse(body) : {};
+        data = raw ? JSON.parse(raw) : {};
       } catch {
         throw new Error(`ARK OCM returned non-JSON: ${response.status}`);
       }
@@ -173,19 +182,8 @@ async function postUsageAction(payload, attempts = 3) {
   throw lastError || new Error('ARK OCM usage request failed.');
 }
 
-async function callerIsBlocked(callerPhone) {
-  if (!String(callerPhone || '').trim()) return false;
-  try {
-    const data = await postUsageAction({ action: 'check', callerPhone }, 1);
-    return data.blocked === true;
-  } catch (error) {
-    console.error('[Call block check failed open]', error.message);
-    return false;
-  }
-}
-
 async function reportCallUsage(ctx) {
-  if (!ctx.startedAt || ctx.usageReported) return;
+  if (!ctx.startedAt || ctx.usageReported || !ctx.runtime?.core) return;
   if (ctx.usageReportPromise) return ctx.usageReportPromise;
 
   const endedAt = Date.now();
@@ -197,15 +195,16 @@ async function reportCallUsage(ctx) {
     leadSaved: ctx.leadSaved,
     outcome: callUsageOutcome({ leadSaved: ctx.leadSaved, endReason: ctx.endReason }),
     endReason: ctx.endReason || 'remote-hangup',
-    timeZone: BUSINESS.timeZone,
+    timeZone: ctx.runtime.core.BUSINESS.timeZone,
     startedAt: new Date(ctx.startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
   };
 
-  ctx.usageReportPromise = postUsageAction(payload, 3)
+  ctx.usageReportPromise = postUsageAction(ctx, payload, 3)
     .then((result) => {
       ctx.usageReported = true;
       console.log('[Call usage saved]', {
+        clientId: ctx.runtimeData.clientId,
         callId: ctx.callControlId || ctx.id,
         durationSeconds: payload.durationSeconds,
         outcome: payload.outcome,
@@ -382,13 +381,14 @@ function parseToolCall(message) {
 }
 
 async function saveLead(ctx, call) {
+  const core = ctx.runtime.core;
   if (!ctx.contactConsentGranted || call.args?.contactConsent !== true) {
     sendToolOutput(ctx, call.callId, { ok: false, error: 'contact_consent_required' });
-    queueResponse(ctx, `Ask exactly: "${contactConsentQuestion}" Then stop and wait. Do not save the lead yet.`);
+    queueResponse(ctx, `Ask exactly: "${core.contactConsentQuestion}" Then stop and wait. Do not save the lead yet.`);
     return;
   }
 
-  const validation = validateLead(call.args);
+  const validation = core.validateLead(call.args);
   if (!validation.valid) {
     sendToolOutput(ctx, call.callId, { ok: false, missingOrInvalid: validation.errors });
     queueResponse(ctx, `Ask only for ${validation.errors.join(', ')}. Ask one question, then wait. Do not restart the intake.`);
@@ -397,24 +397,25 @@ async function saveLead(ctx, call) {
 
   if (ctx.leadSaved) {
     sendToolOutput(ctx, call.callId, { ok: true, alreadySaved: true });
-    queueResponse(ctx, `Ask exactly: "${afterSaveQuestion}" Then stop and wait.`);
+    queueResponse(ctx, `Ask exactly: "${core.afterSaveQuestion}" Then stop and wait.`);
     return;
   }
 
-  const payload = buildOcmPayload(ctx.callerPhone, validation.lead);
+  const payload = core.buildOcmPayload(ctx.callerPhone, validation.lead);
   let lastError;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      const response = await fetch(OCM_WEBHOOK_URL, {
+      const response = await fetch(ctx.runtimeData.intakeUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(7000),
       });
       const body = await response.text();
       if (!response.ok) throw new Error(`OCM ${response.status}: ${body}`);
       ctx.leadSaved = true;
       sendToolOutput(ctx, call.callId, { ok: true, preferredDate: payload.EstimateDate || '' });
-      queueResponse(ctx, `Ask exactly: "${afterSaveQuestion}" Say nothing else, then stop and wait.`);
+      queueResponse(ctx, `Ask exactly: "${core.afterSaveQuestion}" Say nothing else, then stop and wait.`);
       return;
     } catch (error) {
       lastError = error;
@@ -425,10 +426,11 @@ async function saveLead(ctx, call) {
   ctx.leadSaveFailed = true;
   console.error('[OCM save failed]', lastError?.message || 'unknown error');
   sendToolOutput(ctx, call.callId, { ok: false, error: 'save_failed' });
-  queueResponse(ctx, `Say briefly: "${saveFailureLine}" Then ask: "${afterSaveQuestion}" and wait.`);
+  queueResponse(ctx, `Say briefly: "${core.saveFailureLine}" Then ask: "${core.afterSaveQuestion}" and wait.`);
 }
 
 function recordContactConsent(ctx, call) {
+  const core = ctx.runtime.core;
   const agreed = call.args?.agreed === true;
   if (agreed) {
     ctx.contactConsentGranted = true;
@@ -443,15 +445,16 @@ function recordContactConsent(ctx, call) {
     sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals, ending: true });
     ctx.endReason = 'contact-consent-refused';
     ctx.ending = true;
-    queueResponse(ctx, `Say exactly this and nothing else: "${contactConsentFinalLine}"`, true);
+    queueResponse(ctx, `Say exactly this and nothing else: "${core.contactConsentFinalLine}"`, true);
     return;
   }
 
   sendToolOutput(ctx, call.callId, { ok: true, agreed: false, refusals: ctx.contactConsentRefusals });
-  queueResponse(ctx, `Say exactly: "${contactConsentRefusalLine} ${contactConsentQuestion}" Then stop and wait.`);
+  queueResponse(ctx, `Say exactly: "${core.contactConsentRefusalLine} ${core.contactConsentQuestion}" Then stop and wait.`);
 }
 
 function finishCall(ctx, call) {
+  const core = ctx.runtime.core;
   if (!ctx.leadSaved && !ctx.leadSaveFailed) {
     sendToolOutput(ctx, call.callId, { ok: false, error: 'lead_not_saved' });
     queueResponse(ctx, 'Do not end the call yet. Finish confirming and saving the estimate request first.');
@@ -460,7 +463,7 @@ function finishCall(ctx, call) {
   sendToolOutput(ctx, call.callId, { ok: true });
   ctx.endReason = 'completed';
   ctx.ending = true;
-  queueResponse(ctx, `Say exactly this and nothing else: "${closingLine}"`, true);
+  queueResponse(ctx, `Say exactly this and nothing else: "${core.closingLine}"`, true);
 }
 
 async function handleTool(ctx, call) {
@@ -634,7 +637,7 @@ function cancelResponseForHold(ctx) {
 }
 
 function isHoldRequest(transcript) {
-  return HOLD_PATTERN.test(String(transcript || '').trim());
+  return HOLD_PATTERN.test(clean(transcript));
 }
 
 function scheduleResponseAfterTranscript(ctx) {
@@ -648,7 +651,7 @@ function scheduleResponseAfterTranscript(ctx) {
 }
 
 function handleCallerTranscript(ctx, transcript) {
-  const text = String(transcript || '').trim();
+  const text = clean(transcript);
   if (!text) return;
   ctx.lastCallerTranscript = text;
   ctx.callerSpeaking = false;
@@ -671,11 +674,19 @@ function handleCallerTranscript(ctx, transcript) {
   requestNaturalResponse(ctx);
 }
 
+function flushPendingInputAudio(ctx) {
+  if (!ctx.openai || ctx.openai.readyState !== WebSocket.OPEN) return;
+  const pending = ctx.pendingInputAudio.splice(0);
+  pending.forEach((audio) => sendJson(ctx.openai, { type: 'input_audio_buffer.append', audio }));
+}
+
 function createOpenAiSocket(ctx) {
-  const ws = new WebSocket(OPENAI_URL, {
+  const core = ctx.runtime.core;
+  const openAiUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(core.REALTIME_MODEL)}`;
+  const ws = new WebSocket(openAiUrl, {
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'OpenAI-Safety-Identifier': `${SAFETY_IDENTIFIER}-${ctx.id}`,
+      'OpenAI-Safety-Identifier': `${core.SAFETY_IDENTIFIER}-${ctx.id}`,
     },
   });
 
@@ -684,36 +695,37 @@ function createOpenAiSocket(ctx) {
       type: 'session.update',
       session: {
         type: 'realtime',
-        instructions: instructions(),
+        instructions: core.instructions(),
         output_modalities: ['audio'],
         max_output_tokens: MAX_OUTPUT_TOKENS,
-        tools,
+        tools: core.tools,
         tool_choice: 'auto',
         audio: {
           input: {
-            format: AUDIO_FORMAT,
+            format: core.AUDIO_FORMAT,
             transcription: {
               model: 'gpt-4o-mini-transcribe',
               language: 'en',
-              prompt: TRANSCRIPTION_PROMPT,
+              prompt: core.TRANSCRIPTION_PROMPT,
             },
             turn_detection: {
               type: 'server_vad',
               threshold: 0.7,
               prefix_padding_ms: 300,
-              silence_duration_ms: SILENCE_DURATION_MS,
+              silence_duration_ms: core.SILENCE_DURATION_MS,
               create_response: false,
               interrupt_response: false,
             },
           },
           output: {
-            format: AUDIO_FORMAT,
-            voice: REALTIME_VOICE,
-            speed: SPEECH_SPEED,
+            format: core.AUDIO_FORMAT,
+            voice: core.REALTIME_VOICE,
+            speed: core.SPEECH_SPEED,
           },
         },
       },
     });
+    flushPendingInputAudio(ctx);
   });
 
   ws.on('message', (raw) => handleOpenAiMessage(ctx, raw));
@@ -753,7 +765,7 @@ function handleOpenAiMessage(ctx, raw) {
   if (message.type === 'session.updated') {
     ctx.sessionReady = true;
     attachCallerContext(ctx);
-    queueResponse(ctx, `Say exactly this and nothing else, at a calm measured pace: "${openingLine}" Then stop and wait.`);
+    queueResponse(ctx, `Say exactly this and nothing else, at a calm measured pace: "${ctx.runtime.core.openingLine}" Then stop and wait.`);
     return;
   }
 
@@ -859,37 +871,40 @@ function handleOpenAiMessage(ctx, raw) {
   }
 }
 
-app.get('/', (req, res) => {
+assertRuntimeConfiguration();
+
+const app = express();
+app.use(express.json({
+  limit: '2mb',
+  verify: (request, _response, buffer) => {
+    request.rawBody = buffer.toString('utf8');
+  },
+}));
+app.use(express.urlencoded({ extended: false }));
+
+app.get('/', (_req, res) => {
   res.json({
     ok: true,
-    business: BUSINESS.name,
     provider: 'Telnyx',
-    model: REALTIME_MODEL,
-    voice: REALTIME_VOICE,
+    configuration: 'ARK OCM phone-number lookup per call',
+    model: 'gpt-realtime-mini',
     codec: 'PCMU 8 kHz',
-    speechSpeed: SPEECH_SPEED,
-    silenceDurationMs: SILENCE_DURATION_MS,
     voiceWebhook: `${PUBLIC_URL}/voice-api-webhook`,
     mediaStream: STREAM_URL,
+    runtimeEndpoint: runtimeEndpoint(),
   });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    business: BUSINESS.name,
-    clientId: process.env.OCM_CLIENT_ID,
-    model: REALTIME_MODEL,
-    voice: REALTIME_VOICE,
+    configuration: 'dynamic-by-dialed-number',
+    model: 'gpt-realtime-mini',
     codec: 'PCMU',
-    speechSpeed: SPEECH_SPEED,
-    silenceDurationMs: SILENCE_DURATION_MS,
-    hasBusinessInfo: Boolean(String(process.env.BUSINESS_INFO || '').trim()),
-    hasCustomScript: Boolean(String(process.env.RECEPTIONIST_SCRIPT || '').trim()),
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
-    hasOcmConnection: Boolean(process.env.OCM_CONNECTION_KEY),
     activeCalls: activeCalls.size,
+    mappedCalls: [...callMetadata.values()].filter((entry) => entry.runtimeData).length,
     callMaximumSeconds: CALL_MAX_MS / 1000,
     hardCallMaximumSeconds: CALL_HARD_LIMIT_MS / 1000,
     silenceMaximumSeconds: SILENCE_LIMIT_MS / 1000,
@@ -905,19 +920,35 @@ app.post('/voice-api-webhook', async (req, res) => {
   if (!id) return;
 
   try {
-    const metadata = callMetadata.get(id) || {};
+    const previous = callMetadata.get(id) || {};
     if (type === 'call.initiated') {
-      if (metadata.rejected) return;
-      const callerPhone = getCallerPhone(req.body) || metadata.callerPhone || '';
-      if (await callerIsBlocked(callerPhone)) {
-        callMetadata.set(id, { ...metadata, callerPhone, rejected: true, updatedAt: Date.now() });
-        await telnyxCommand(id, 'reject', { cause: 'CALL_REJECTED' });
-        console.log('[Caller rejected for repeated max-duration calls]', { callId: id });
-        return;
-      }
+      if (previous.rejected) return;
+      const rawBody = clean(req.rawBody) || JSON.stringify(req.body || {});
+      const runtimeData = await loadRuntimeFromSignedTelnyxEvent({
+        rawBody,
+        signature: clean(req.headers['telnyx-signature-ed25519']),
+        timestamp: clean(req.headers['telnyx-timestamp']),
+      });
+      callMetadata.set(id, {
+        ...previous,
+        callerPhone: getCallerPhone(req.body) || previous.callerPhone || '',
+        calledPhone: runtimeData.calledPhone || getCalledPhone(req.body) || previous.calledPhone || '',
+        runtimeData,
+        updatedAt: Date.now(),
+      });
+      console.log('[Receptionist matched]', {
+        callId: id,
+        calledPhone: runtimeData.calledPhone,
+        clientId: runtimeData.clientId,
+        business: runtimeData.profile?.businessName,
+      });
       await telnyxCommand(id, 'answer');
+      return;
     }
+
+    const metadata = callMetadata.get(id) || previous;
     if (type === 'call.answered' && !metadata.rejected) {
+      if (!metadata.runtimeData) throw new Error('No ARK OCM receptionist profile was loaded for this call.');
       await telnyxCommand(id, 'streaming_start', {
         stream_url: STREAM_URL,
         stream_track: 'inbound_track',
@@ -927,6 +958,7 @@ app.post('/voice-api-webhook', async (req, res) => {
         stream_bidirectional_sampling_rate: 8000,
       });
     }
+
     if (type === 'call.hangup' || type === 'streaming.stopped') {
       const ctx = activeCallsByControlId.get(id);
       if (ctx) {
@@ -937,6 +969,11 @@ app.post('/voice-api-webhook', async (req, res) => {
     }
   } catch (error) {
     console.error('[Telnyx webhook]', type, error.message);
+    const metadata = callMetadata.get(id) || {};
+    callMetadata.set(id, { ...metadata, rejected: true, error: error.message, updatedAt: Date.now() });
+    if (type === 'call.initiated') {
+      telnyxCommand(id, 'reject', { cause: 'CALL_REJECTED' }).catch((rejectError) => console.error('[Telnyx reject]', rejectError.message));
+    }
   }
 });
 
@@ -954,9 +991,15 @@ wss.on('connection', (telnyx) => {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     telnyx,
     openai: null,
+    runtime: null,
+    runtimeData: null,
+    initializing: null,
+    initialized: false,
     streamId: '',
     callControlId: '',
     callerPhone: '',
+    calledPhone: '',
+    pendingInputAudio: [],
     startedAt: 0,
     lastSpeechAt: 0,
     callerSpeaking: false,
@@ -1003,15 +1046,44 @@ wss.on('connection', (telnyx) => {
     handledCalls: new Set(),
   };
 
-  try {
-    ctx.openai = createOpenAiSocket(ctx);
-  } catch (error) {
-    console.error('[Call setup]', error.message);
-    telnyx.close();
-    return;
-  }
-
   activeCalls.set(ctx.id, ctx);
+
+  async function initializeFromStart(message) {
+    if (ctx.initialized) return;
+    if (ctx.initializing) return ctx.initializing;
+
+    ctx.initializing = (async () => {
+      ctx.streamId = message.stream_id || message.start?.stream_id || ctx.streamId;
+      ctx.streamReady = true;
+      ctx.callControlId = callControlId(message) || ctx.callControlId;
+      const remembered = callMetadata.get(ctx.callControlId) || {};
+      ctx.callerPhone = getCallerPhone(message) || remembered.callerPhone || ctx.callerPhone;
+      ctx.calledPhone = getCalledPhone(message) || remembered.calledPhone || ctx.calledPhone;
+      ctx.runtimeData = remembered.runtimeData || null;
+      if (!ctx.runtimeData) throw new Error('The media stream has no matched ARK OCM receptionist profile.');
+
+      ctx.runtime = await prepareCallRuntime(ctx.runtimeData);
+      ctx.openai = createOpenAiSocket(ctx);
+      ctx.initialized = true;
+      if (ctx.callControlId) activeCallsByControlId.set(ctx.callControlId, ctx);
+      startCallPolicy(ctx);
+      console.log('[Call runtime ready]', {
+        callId: ctx.callControlId || ctx.id,
+        clientId: ctx.runtimeData.clientId,
+        business: ctx.runtime.core.BUSINESS.name,
+        voice: ctx.runtime.core.REALTIME_VOICE,
+        speechSpeed: ctx.runtime.core.SPEECH_SPEED,
+        silenceMs: ctx.runtime.core.SILENCE_DURATION_MS,
+      });
+    })().catch((error) => {
+      ctx.endReason = 'configuration-error';
+      console.error('[Call setup]', error.message);
+      telnyx.close();
+      throw error;
+    });
+
+    return ctx.initializing;
+  }
 
   telnyx.on('message', (raw) => {
     let message;
@@ -1023,23 +1095,20 @@ wss.on('connection', (telnyx) => {
 
     const event = message.event || message.event_type || message.type;
     if (event === 'start' || event === 'connected' || event === 'streaming.started') {
-      ctx.streamId = message.stream_id || message.start?.stream_id || ctx.streamId;
-      ctx.streamReady = true;
-      ctx.callControlId = callControlId(message) || ctx.callControlId;
-      const remembered = callMetadata.get(ctx.callControlId) || {};
-      ctx.callerPhone = getCallerPhone(message) || remembered.callerPhone || ctx.callerPhone;
-      if (ctx.callControlId) activeCallsByControlId.set(ctx.callControlId, ctx);
-      startCallPolicy(ctx);
-      attachCallerContext(ctx);
-      flushResponse(ctx);
+      initializeFromStart(message).catch(() => null);
       return;
     }
 
     if (event === 'media') {
-      const track = String(message.media?.track || '').toLowerCase();
+      const track = clean(message.media?.track).toLowerCase();
       if (track.includes('outbound')) return;
       const audio = message.media?.payload || message.payload || message.audio;
-      if (audio) sendJson(ctx.openai, { type: 'input_audio_buffer.append', audio });
+      if (!audio) return;
+      if (ctx.openai?.readyState === WebSocket.OPEN) {
+        sendJson(ctx.openai, { type: 'input_audio_buffer.append', audio });
+      } else if (ctx.pendingInputAudio.length < MAX_PENDING_INPUT_CHUNKS) {
+        ctx.pendingInputAudio.push(audio);
+      }
       return;
     }
 
@@ -1060,10 +1129,16 @@ wss.on('connection', (telnyx) => {
     clearTranscriptTimer(ctx);
     clearCallPolicyTimers(ctx);
     clearLocalAudio(ctx);
-    if (ctx.openai?.readyState === WebSocket.OPEN) ctx.openai.close();
+    reportCallUsage(ctx).catch(() => null);
+    if (ctx.openai?.readyState === WebSocket.OPEN || ctx.openai?.readyState === WebSocket.CONNECTING) ctx.openai.close();
     if (ctx.callControlId) activeCallsByControlId.delete(ctx.callControlId);
     activeCalls.delete(ctx.id);
-    reportCallUsage(ctx).catch(() => null);
+    console.log('[Telnyx closed]', {
+      callId: ctx.callControlId || ctx.id,
+      clientId: ctx.runtimeData?.clientId || '',
+      endReason: ctx.endReason,
+      leadSaved: ctx.leadSaved,
+    });
   };
 
   telnyx.on('close', cleanup);
@@ -1073,9 +1148,9 @@ wss.on('connection', (telnyx) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`${BUSINESS.name} receptionist listening on ${PORT}`);
-  console.log(`Model: ${REALTIME_MODEL}; voice: ${REALTIME_VOICE}`);
-  console.log(`Codec: PCMU 8 kHz; speech speed: ${SPEECH_SPEED}; silence: ${SILENCE_DURATION_MS}ms`);
-  console.log(`Webhook: ${PUBLIC_URL}/voice-api-webhook`);
+server.listen(PORT, () => {
+  console.log(`AI receptionist listening on ${PORT}`);
+  console.log(`Voice webhook: ${PUBLIC_URL}/voice-api-webhook`);
+  console.log(`Media stream: ${STREAM_URL}`);
+  console.log(`ARK OCM runtime lookup: ${runtimeEndpoint()}`);
 });
