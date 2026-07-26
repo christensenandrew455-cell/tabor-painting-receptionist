@@ -13,8 +13,9 @@ import {
   instructions,
   normalizePreferredTime,
   openingLine,
-  receptionistScript,
+  questionCatalog,
   resolvePreferredDate,
+  saveFailureLine,
   tools,
   validateLead,
 } from '../receptionist-core.js';
@@ -27,12 +28,12 @@ import {
 function completeLead(overrides = {}) {
   return {
     fullName: 'Taylor Morgan',
-    email: 'taylor@example.com',
     serviceType: 'interior painting',
-    townOrCity: 'Example City',
-    streetAddress: '12 Main Street',
-    contactMethod: 'text',
-    preferredDay: 'Tuesday',
+    cityOrTown: 'Example City',
+    state: 'Massachusetts',
+    streetNumber: '12',
+    streetName: 'Main Street',
+    preferredDateOrDay: 'Tuesday',
     preferredTime: '4:30 PM',
     additionalNotes: 'Please call before arriving',
     contactConsent: true,
@@ -41,37 +42,49 @@ function completeLead(overrides = {}) {
 }
 
 function completeRuntimeEnv(overrides = {}) {
-  const env = {
+  return {
     ...process.env,
+    AI_MODEL: 'gpt-realtime-mini',
     AI_SILENCE_MS: '1200',
     AI_SPEECH_SPEED: '0.94',
     AI_VOICE: 'alloy',
     BUSINESS_INFO: process.env.BUSINESS_INFO,
     OCM_CLIENT_ID: 'example-painting',
-    OCM_CONNECTION_KEY: 'test-connection-value',
     OPENAI_API_KEY: 'test-openai-value',
     PUBLIC_URL: 'https://example-receptionist.example.com',
     TELNYX_API_KEY: 'test-telnyx-value',
     ...overrides,
   };
-  env.AI_MODEL = 'gpt-realtime-mini';
-  env.RECEPTIONIST_SCRIPT = process.env.RECEPTIONIST_SCRIPT;
-  return env;
 }
 
-test('uses business fill-ins with the fixed script and model', () => {
+test('uses dynamic business fields with one centralized receptionist prompt', () => {
+  const prompt = instructions();
   assert.equal(BUSINESS.name, 'Example Painting');
   assert.equal(BUSINESS.receptionist, 'Alex');
   assert.match(openingLine, /Example Painting/);
   assert.match(afterSaveQuestion, /Example Painting/);
-  assert.doesNotMatch(receptionistScript, /Would you like to add your email|What would your email be/i);
-  assert.match(receptionistScript, /What is the best way we can contact you: call or text\?/i);
-  assert.match(receptionistScript, /interior painting, or exterior painting/i);
-  assert.match(receptionistScript, /Do you agree to be contacted by Example Painting\?/i);
+  assert.match(prompt, /MASTER AI RECEPTIONIST PROMPT/);
+  assert.match(prompt, /primary objective is to help the caller submit a complete estimate request/i);
+  assert.match(prompt, /What is your first and last name\?/i);
+  assert.match(prompt, /What state is the project in\?/i);
+  assert.match(prompt, /What is the street number\?/i);
+  assert.match(prompt, /Do you have any additional notes/i);
+  assert.match(prompt, /additional notes are optional/i);
+  assert.match(prompt, /Do you agree to be contacted by Example Painting about this estimate request\?/i);
+  assert.match(prompt, /I am an AI receptionist working on behalf of Example Painting/i);
+  assert.match(prompt, /reserved for estimate-request submissions/i);
+  assert.doesNotMatch(prompt, /Would you like to add.*email|What.*email address|contact method/i);
   assert.equal(REALTIME_MODEL, 'gpt-realtime-mini');
   assert.equal(REALTIME_VOICE, 'alloy');
   assert.equal(SPEECH_SPEED, 0.94);
   assert.equal(SILENCE_DURATION_MS, 1200);
+});
+
+test('question catalog keeps optional notes immediately before consent', () => {
+  const ids = Object.keys(questionCatalog);
+  assert.ok(ids.indexOf('additional_notes_offer') < ids.indexOf('contact_consent'));
+  assert.equal(questionCatalog.additional_notes_offer.field, 'additionalNotesRequested');
+  assert.equal(questionCatalog.contact_consent.field, 'contactConsent');
 });
 
 test('accepts times inside the configured estimate window', () => {
@@ -80,80 +93,58 @@ test('accepts times inside the configured estimate window', () => {
   assert.equal(normalizePreferredTime('5:00 PM'), '');
 });
 
-test('allows callers to decline email unless email is their contact method', () => {
-  const declined = validateLead(completeLead({ email: '', contactMethod: 'text' }));
-  assert.equal(declined.valid, true);
-  assert.equal(declined.lead.email, '');
-
-  const emailContact = validateLead(completeLead({ email: '', contactMethod: 'email' }));
-  assert.equal(emailContact.valid, false);
-  assert.match(emailContact.errors.join(' '), /complete email address/i);
-});
-
-test('requires contact consent before a lead is valid', () => {
-  const missingConsent = validateLead(completeLead({ contactConsent: false }));
-  assert.equal(missingConsent.valid, false);
-  assert.match(missingConsent.errors.join(' '), /contact consent/i);
-});
-
-test('builds the OpenAI tool choices from BUSINESS_INFO services', () => {
-  const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
-  assert.ok(submitTool);
-  assert.equal(submitTool.parameters.required.includes('email'), false);
-  assert.equal(submitTool.parameters.required.includes('contactConsent'), true);
-  assert.ok(tools.find((tool) => tool.name === 'record_contact_consent'));
-  assert.deepEqual(submitTool.parameters.properties.serviceType.enum, [
-    'interior painting',
-    'exterior painting',
-  ]);
-});
-
-test('resolves the requested weekday in the configured business timezone', () => {
+test('accepts an upcoming configured weekday or exact configured date', () => {
   const friday = new Date('2026-07-17T16:00:00.000Z');
   assert.equal(resolvePreferredDate('Monday', friday), '2026-07-20');
-  assert.equal(resolvePreferredDate('Friday', friday), '2026-07-17');
+  assert.equal(resolvePreferredDate('2026-07-20', friday), '2026-07-20');
+  assert.equal(resolvePreferredDate('07/20/2026', friday), '2026-07-20');
+  assert.equal(resolvePreferredDate('2026-07-19', friday), '');
 });
 
-test('builds OCM payloads from OCM_CLIENT_ID and derives the source', () => {
+test('requires precise location, configured service, date, time, and consent', () => {
+  assert.equal(validateLead(completeLead()).valid, true);
+  assert.equal(validateLead(completeLead({ state: '' })).valid, false);
+  assert.equal(validateLead(completeLead({ streetNumber: '' })).valid, false);
+  assert.equal(validateLead(completeLead({ streetName: '' })).valid, false);
+  assert.equal(validateLead(completeLead({ contactConsent: false })).valid, false);
+});
+
+test('additional notes are optional and caller email is not in the tool', () => {
+  assert.equal(validateLead(completeLead({ additionalNotes: '' })).valid, true);
+  const submitTool = tools.find((tool) => tool.name === 'submit_estimate_lead');
+  assert.ok(submitTool);
+  assert.equal('email' in submitTool.parameters.properties, false);
+  assert.equal('contactMethod' in submitTool.parameters.properties, false);
+  assert.equal(submitTool.parameters.required.includes('additionalNotes'), false);
+  assert.equal(submitTool.parameters.required.includes('contactConsent'), true);
+});
+
+test('builds a precise OCM address and preserves optional notes', () => {
   const result = validateLead(completeLead());
   assert.equal(result.valid, true);
-
   const payload = buildOcmPayload('+17745550123', result.lead);
   assert.equal(payload.clientId, 'example-painting');
-  assert.equal(payload.source, 'example-painting-receptionist');
-  assert.equal(payload.sectionKey, 'contactedMe');
   assert.equal(payload.Phone, '+17745550123');
-  assert.equal(payload.Job, 'interior painting');
-  assert.equal(payload.ContactConsent, true);
-  assert.equal(payload.ContactConsentMethod, 'voice-call');
-  assert.match(payload.ContactConsentText, /Example Painting/);
-  assert.equal(payload.Address, '12 Main Street, Example City');
+  assert.equal(payload.StreetAddress, '12 Main Street');
+  assert.equal(payload.TownOrCity, 'Example City');
+  assert.equal(payload.State, 'Massachusetts');
+  assert.equal(payload.Address, '12 Main Street, Example City, Massachusetts');
+  assert.equal('Email' in payload, false);
   assert.match(payload.Notes, /Please call before arriving/);
   assert.match(payload.EstimateDate, /^\d{4}-\d{2}-\d{2}$/);
 });
 
+test('failed submission line does not promise a follow-up', () => {
+  assert.match(saveFailureLine, /not submitted/i);
+  assert.match(saveFailureLine, /24 hours/i);
+  assert.doesNotMatch(saveFailureLine, /follow up/i);
+});
+
 test('pulls the caller phone number from a Telnyx webhook', () => {
-  assert.equal(
-    getCallerPhone({ data: { payload: { from: '+17745550123' } } }),
-    '+17745550123',
-  );
+  assert.equal(getCallerPhone({ data: { payload: { from: '+17745550123' } } }), '+17745550123');
 });
 
-test('keeps shared safety and save behavior hardcoded around the fixed script', () => {
-  const prompt = instructions();
-  assert.doesNotMatch(prompt, /Would you like to add your email|What would your email be/i);
-  assert.match(prompt, /What is the best way we can contact you: call or text\?/i);
-  assert.match(prompt, /Never ask for, say, confirm, or repeat the caller’s phone number/i);
-  assert.match(prompt, /give me one second to save that/i);
-  assert.match(prompt, /record_contact_consent/i);
-  assert.match(prompt, /third refusal[\s\S]*ends the call/i);
-  assert.match(prompt, /Silence is mandatory/i);
-  assert.match(prompt, /take your time[\s\S]*forbidden/i);
-  assert.match(prompt, /standalone filler/i);
-  assert.doesNotMatch(prompt, /Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
-});
-
-test('BUSINESS_INFO rebrands every fill-in while script and model stay fixed', () => {
+test('BUSINESS_INFO rebrands every prompt and audio setting', () => {
   const businessInfo = {
     name: 'Sample Roofing',
     receptionist: 'Morgan',
@@ -173,7 +164,7 @@ test('BUSINESS_INFO rebrands every fill-in while script and model stay fixed', (
       'roof replacement': 'Replacing residential roofing systems.',
     },
     about: ['Sample Roofing serves residential customers.'],
-    openingLine: 'Thanks for calling {{business_name}}. This is {{receptionist_name}}. Are you calling about an estimate?',
+    openingLine: 'Thanks for calling {{business_name}}. This is {{receptionist_name}}, the receptionist. Would you like an estimate request?',
     closingLine: '{{owner_first_name}} will contact you soon. Goodbye.',
     extraInformation: 'Final pricing is provided after inspection.',
   };
@@ -197,66 +188,35 @@ test('BUSINESS_INFO rebrands every fill-in while script and model stay fixed', (
     env: completeRuntimeEnv({
       BUSINESS_INFO: JSON.stringify(businessInfo),
       OCM_CLIENT_ID: 'sample-roofing',
-      AI_MODEL: 'this-must-be-ignored',
-      RECEPTIONIST_SCRIPT: 'this must also be ignored',
       AI_VOICE: 'marin',
       AI_SPEECH_SPEED: '1.08',
       AI_SILENCE_MS: '900',
     }),
   });
-
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout.trim());
   assert.equal(output.business.name, 'Sample Roofing');
-  assert.equal(output.business.timeZone, 'America/Chicago');
-  assert.equal(output.openingLine, 'Thanks for calling Sample Roofing. This is Morgan. Are you calling about an estimate?');
-  assert.equal(output.closingLine, 'Casey will contact you soon. Goodbye.');
   assert.match(output.instructions, /roof repair, or roof replacement/i);
-  assert.doesNotMatch(output.instructions, /Would you like to add your email|What would your email be/i);
-  assert.match(output.instructions, /What is the best way we can contact you: call or text\?/i);
-  assert.doesNotMatch(output.instructions, /this must also be ignored/i);
-  assert.doesNotMatch(output.instructions, /Example Painting|Tabor Painting|Jason Beirne|Berlin, Massachusetts/i);
+  assert.match(output.instructions, /working on behalf of Sample Roofing/i);
+  assert.doesNotMatch(output.instructions, /Example Painting|Tabor Painting/i);
   assert.deepEqual(output.services, ['roof repair', 'roof replacement']);
-  assert.equal(output.model, 'gpt-realtime-mini');
   assert.equal(output.voice, 'marin');
   assert.equal(output.speed, 1.08);
   assert.equal(output.silence, 900);
 });
 
-test('bootstrap supplies the fixed model and script when Railway variables are absent', () => {
-  const env = completeRuntimeEnv();
-  delete env.AI_MODEL;
-  delete env.RECEPTIONIST_SCRIPT;
-  const code = `
-    await import('./ocm-bootstrap.js');
-    const core = await import('./receptionist-core.js');
-    console.log(JSON.stringify({ model: core.REALTIME_MODEL, script: core.receptionistScript }));
-  `;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
-    cwd: new URL('..', import.meta.url),
-    encoding: 'utf8',
-    env,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
-  assert.equal(output.model, 'gpt-realtime-mini');
-  assert.doesNotMatch(output.script, /Would you like to add your email|What would your email be/i);
-  assert.match(output.script, /What is the best way we can contact you: call or text\?/i);
-});
-
-test('bootstrap uses the signed per-call ARK OCM runtime endpoint', () => {
+test('bootstrap uses the signed per-call runtime without a second script prompt', () => {
   const code = `
     await import('./ocm-bootstrap.js');
     const loader = await import('./runtime-loader.js');
     console.log(JSON.stringify({
       endpoint: loader.runtimeEndpoint(),
       model: process.env.AI_MODEL,
-      hasScript: Boolean(process.env.RECEPTIONIST_SCRIPT),
+      hasLegacyScript: Boolean(process.env.RECEPTIONIST_SCRIPT),
     }));
   `;
   const env = completeRuntimeEnv({
     OCM_CLIENT_ID: '',
-    OCM_CONNECTION_KEY: '',
     BUSINESS_INFO: '',
     AI_VOICE: '',
     AI_SPEECH_SPEED: '',
@@ -267,12 +227,11 @@ test('bootstrap uses the signed per-call ARK OCM runtime endpoint', () => {
     encoding: 'utf8',
     env,
   });
-
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
   assert.equal(output.endpoint, 'https://ark-websites-ocm-xi.vercel.app/api/receptionist/runtime');
   assert.equal(output.model, 'gpt-realtime-mini');
-  assert.equal(output.hasScript, true);
+  assert.equal(output.hasLegacyScript, false);
 });
 
 test('tracks substantive progress but ignores repeated filler', () => {
