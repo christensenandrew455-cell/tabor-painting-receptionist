@@ -1,5 +1,3 @@
-import { HARD_CODED_RECEPTIONIST_SCRIPT } from '../receptionist-script.js';
-
 process.env.AI_MODEL = 'gpt-realtime-mini';
 process.env.AI_SILENCE_MS ||= '1200';
 process.env.AI_SPEECH_SPEED ||= '0.94';
@@ -25,8 +23,7 @@ process.env.BUSINESS_INFO ||= JSON.stringify({
     'exterior painting': 'Exterior painting services.',
   },
   about: ['Example Painting provides residential painting services.'],
-  openingLine: 'Hi, this is {{receptionist_name}} with {{business_name}}. Can I set you up with an estimate today?',
+  openingLine: 'Hi, this is {{receptionist_name}}, the receptionist with {{business_name}}. Would you like me to help you submit an estimate request today?',
   closingLine: '{{owner_first_name}} will follow up with you shortly. Thanks for calling {{business_name}}. Goodbye.',
   extraInformation: 'Project details are confirmed during the estimate.',
 });
-process.env.RECEPTIONIST_SCRIPT = HARD_CODED_RECEPTIONIST_SCRIPT;
