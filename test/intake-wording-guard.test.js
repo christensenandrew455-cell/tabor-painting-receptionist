@@ -55,40 +55,46 @@ Current field: serviceType`);
   assert.doesNotMatch(serviceState, /I'm sorry, I didn't get that[\s\S]*We specialize/i);
 });
 
-test('rewrites the first address and schedule questions into required spoken order', () => {
+test('rewrites the first address and schedule questions into the requested spoken order', () => {
   const result = rewritePrimaryIntakeQuestions(
-    'What is the project address? Please give me the city or town, state, street number, and street name.\n'
-    + 'Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 9:00 AM through 4:30 PM.',
+    '- Business name: Tabor Painting\n'
+    + 'What is the project address? Please give me the city or town, state, street number, and street name.\n'
+    + 'Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 8:00 AM through 5:00 PM.',
   );
 
   assert.match(result, /street number, street name, city or town, and state/i);
   assert.doesNotMatch(result, /city or town, state, street number, and street name/i);
   assert.match(
     result,
-    /We offer estimates Monday through Friday from 9:00 AM through 4:30 PM; what exact date or upcoming day and time works best for you\?/i,
+    /Next, we need a time for the estimate\. Tabor Painting schedules estimates Monday through Friday from 8:00 AM through 5:00 PM\. What exact date or upcoming day and time works best for you\?/i,
   );
 });
 
-test('session rules require estimate days and hours before the schedule choice', () => {
+test('session rules lock the requested scheduling sentence order', () => {
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
       instructions: `NATURAL ESTIMATE INTAKE
 Ask: "What is the project address? Please give me the city or town, state, street number, and street name."
-Ask: "Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 9:00 AM through 4:30 PM."
+Ask: "Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 8:00 AM through 5:00 PM."
 
 RESPONSIVE ACKNOWLEDGMENTS
 After a usable answer, you may say Nice to meet you, [first name].
 
 RESTRICTED OUTPUT
-Only approved output.`,
+Only approved output.
+
+- Business name: Tabor Painting`,
     },
   });
   assert.match(result.session.instructions, /Immediately after a valid full name only/i);
   assert.match(result.session.instructions, /first service question must include the complete configured service list/i);
   assert.match(result.session.instructions, /street number, street name, city or town, and state/i);
-  assert.match(result.session.instructions, /first combined scheduling question must always state the configured estimate days and estimate hours/i);
-  assert.match(result.session.instructions, /We offer estimates Monday through Friday from 9:00 AM through 4:30 PM; what exact date or upcoming day and time works best for you\?/i);
+  assert.match(result.session.instructions, /must say "Next, we need a time for the estimate," then state the business's configured estimate days and hours/i);
+  assert.match(
+    result.session.instructions,
+    /Next, we need a time for the estimate\. Tabor Painting schedules estimates Monday through Friday from 8:00 AM through 5:00 PM\. What exact date or upcoming day and time works best for you\?/i,
+  );
   assert.match(result.session.instructions, /There is no separate latency cue or secondary voice/i);
   assert.match(result.session.instructions, /While waiting, say nothing/i);
 });
