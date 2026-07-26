@@ -13,11 +13,11 @@ test('uses an eleven-hundred millisecond cue threshold', () => {
   assert.equal(thinkingCueDelayMs({ speechStoppedAt: 1000, now: 2500 }), 0);
 });
 
-test('rotates a small deterministic cue set without uncertain filler', () => {
-  assert.equal(thinkingCueForSequence(0), 'Okay...');
+test('rotates a small deterministic cue set without a loud okay cue', () => {
+  assert.equal(thinkingCueForSequence(0), 'Mm-hm...');
   assert.equal(thinkingCueForSequence(1), 'Hmm...');
-  assert.equal(thinkingCueForSequence(2), 'Okay...');
-  assert.equal(thinkingCueForSequence(3), 'Okay...');
+  assert.equal(thinkingCueForSequence(2), 'Mm-hm...');
+  assert.equal(thinkingCueForSequence(3), 'Mm-hm...');
 });
 
 test('holds only outbound media and marks while the cue is active', () => {
