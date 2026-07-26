@@ -1,3 +1,14 @@
+import {
+  buildQuestionCatalog,
+  buildReceptionistPrompt,
+  callMemorySummary,
+  createCallMemory,
+  rememberAssistant,
+  rememberCaller,
+  resetIntakeMemory,
+  serviceList as configuredServiceList,
+} from './receptionist-customization.js';
+
 function cleanText(value = '') {
   return String(value ?? '').trim();
 }
@@ -122,8 +133,7 @@ const WEEKDAY_INDEX = Object.freeze({
 });
 
 function serviceList() {
-  if (SERVICE_TYPES.length <= 1) return SERVICE_TYPES[0];
-  return `${SERVICE_TYPES.slice(0, -1).join(', ')}, or ${SERVICE_TYPES.at(-1)}`;
+  return configuredServiceList(BUSINESS.services);
 }
 
 function weekdayList() {
@@ -138,6 +148,7 @@ const TEMPLATE_VALUES = Object.freeze({
   owner_name: BUSINESS.owner,
   owner_first_name: OWNER_FIRST_NAME,
   services: serviceList(),
+  service_list: serviceList(),
   estimate_days: BUSINESS.estimateDays,
   earliest_estimate_time: BUSINESS.earliestEstimateStart,
   latest_estimate_time: BUSINESS.latestEstimateStart,
@@ -153,17 +164,24 @@ export function renderTemplate(value = '') {
 export const openingLine = renderTemplate(BUSINESS.openingLine);
 export const closingLine = renderTemplate(BUSINESS.closingLine);
 export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
-export const contactConsentQuestion = `Do you agree to be contacted by ${BUSINESS.name}?`;
-export const contactConsentRefusalLine = `I'm sorry, I cannot send in this lead unless you agree to be contacted by ${BUSINESS.name}.`;
+export const afterSaveFollowUpQuestion = `Do you have any other questions about ${BUSINESS.name}?`;
+export const saveSuccessLine = `Perfect. Your estimate request has been sent to ${BUSINESS.name}. They will follow up with you shortly. Before I go, ${afterSaveQuestion.toLowerCase()}`;
+export const contactConsentQuestion = `Do you agree to be contacted by ${BUSINESS.name} about this estimate request?`;
+export const contactConsentRefusalLine = `I'm sorry, I cannot submit the estimate request unless you agree to be contacted by ${BUSINESS.name}.`;
 export const contactConsentFinalLine = `${contactConsentRefusalLine} Goodbye.`;
-export const saveFailureLine = `I could not save that just now, but ${OWNER_FIRST_NAME} can still follow up.`;
+export const saveFailureLine = `I'm sorry, the estimate request was not submitted. Please try to submit a new estimate request in 24 hours.`;
+export const cancellationLine = `Okay, no problem. I've canceled the estimate request. Do you have any questions about ${BUSINESS.name} or its services?`;
 export const SAFETY_IDENTIFIER = CLIENT_ID || 'ark-receptionist';
-export const TRANSCRIPTION_PROMPT = `Natural phone calls for ${BUSINESS.name}: names, email addresses, service requests, towns or cities, street addresses, dates, and times.`;
+export const TRANSCRIPTION_PROMPT = `Natural phone calls for ${BUSINESS.name}: names, service requests, cities or towns, states, street numbers, street names, dates, times, and additional notes.`;
+export const questionCatalog = buildQuestionCatalog({ business: BUSINESS, ownerFirstName: OWNER_FIRST_NAME });
 
-const rawReceptionistScript = requireEnv('RECEPTIONIST_SCRIPT');
-export const receptionistScript = renderTemplate(rawReceptionistScript
-  .replaceAll('{{opening_line}}', openingLine)
-  .replaceAll('{{closing_line}}', closingLine));
+export {
+  callMemorySummary,
+  createCallMemory,
+  rememberAssistant,
+  rememberCaller,
+  resetIntakeMemory,
+};
 
 export function getCallerPhone(payload = {}) {
   const candidates = [
@@ -219,41 +237,25 @@ export function normalizePreferredTime(value = '') {
   return displayClock(minutesAfterMidnight);
 }
 
-export function validateLead(args = {}) {
-  const preferredDay = cleanText(args.preferredDay).toLowerCase();
-  const preferredTime = normalizePreferredTime(args.preferredTime);
-  const serviceType = cleanText(args.serviceType).toLowerCase();
-  const lead = {
-    fullName: cleanText(args.fullName),
-    email: cleanText(args.email),
-    serviceType,
-    townOrCity: cleanText(args.townOrCity),
-    streetAddress: cleanText(args.streetAddress),
-    contactMethod: cleanText(args.contactMethod).toLowerCase(),
-    preferredDay: WEEKDAYS.includes(preferredDay) ? preferredDay[0].toUpperCase() + preferredDay.slice(1) : '',
-    preferredTime,
-    additionalNotes: cleanText(args.additionalNotes),
-    contactConsent: args.contactConsent === true,
-  };
+function validIsoDate(value) {
+  const match = cleanText(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) return '';
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
 
-  const errors = [];
-  if (lead.fullName.split(/\s+/).filter(Boolean).length < 2) errors.push('the caller’s full first and last name');
-  if (lead.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) errors.push('a complete email address');
-  if (!lead.email && lead.contactMethod === 'email') errors.push('a complete email address');
-  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push(serviceList());
-  if (!lead.townOrCity) errors.push('the town or city');
-  if (!lead.streetAddress) errors.push('the street address');
-  const allowedContactMethods = lead.email ? ['call', 'text', 'email'] : ['call', 'text'];
-  if (!allowedContactMethods.includes(lead.contactMethod)) {
-    errors.push(lead.email ? 'call, text, or email as the best contact method' : 'call or text as the best contact method');
-  }
-  if (!lead.preferredDay) errors.push(`a preferred estimate day from ${weekdayList()}`);
-  if (!lead.preferredTime) {
-    errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
-  }
-  if (!lead.contactConsent) errors.push('clear contact consent');
-
-  return { valid: errors.length === 0, errors, lead };
+function parseUsDate(value) {
+  const match = cleanText(value).match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (!match) return '';
+  return validIsoDate(`${match[3]}-${String(match[1]).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}`);
 }
 
 function datePartsInBusinessTimeZone(date = new Date()) {
@@ -271,10 +273,20 @@ function datePartsInBusinessTimeZone(date = new Date()) {
   };
 }
 
-export function resolvePreferredDate(preferredDay, now = new Date()) {
-  const normalized = cleanText(preferredDay).toLowerCase();
+function weekdayAllowedForDate(isoDate) {
+  const date = new Date(`${isoDate}T12:00:00.000Z`);
+  const weekday = Object.keys(WEEKDAY_INDEX).find((name) => WEEKDAY_INDEX[name] === date.getUTCDay());
+  return Boolean(weekday && WEEKDAYS.includes(weekday));
+}
+
+export function resolvePreferredDate(preferredDateOrDay, now = new Date()) {
+  const raw = cleanText(preferredDateOrDay);
+  const exactDate = validIsoDate(raw) || parseUsDate(raw);
+  if (exactDate) return weekdayAllowedForDate(exactDate) ? exactDate : '';
+
+  const normalized = raw.toLowerCase();
   const targetDay = WEEKDAY_INDEX[normalized];
-  if (!Number.isInteger(targetDay)) return '';
+  if (!Number.isInteger(targetDay) || !WEEKDAYS.includes(normalized)) return '';
 
   const parts = datePartsInBusinessTimeZone(now);
   const base = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
@@ -287,22 +299,56 @@ export function resolvePreferredDate(preferredDay, now = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+export function validateLead(args = {}) {
+  const serviceType = cleanText(args.serviceType).toLowerCase();
+  const preferredDateOrDay = cleanText(args.preferredDateOrDay || args.preferredDay);
+  const preferredDate = resolvePreferredDate(preferredDateOrDay);
+  const preferredTime = normalizePreferredTime(args.preferredTime);
+  const lead = {
+    fullName: cleanText(args.fullName),
+    serviceType,
+    cityOrTown: cleanText(args.cityOrTown || args.townOrCity),
+    state: cleanText(args.state),
+    streetNumber: cleanText(args.streetNumber),
+    streetName: cleanText(args.streetName),
+    preferredDateOrDay,
+    preferredDate,
+    preferredTime,
+    additionalNotes: cleanText(args.additionalNotes),
+    contactConsent: args.contactConsent === true,
+  };
+
+  const errors = [];
+  if (lead.fullName.split(/\s+/).filter(Boolean).length < 2) errors.push('the caller’s full first and last name');
+  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push(serviceList());
+  if (!lead.cityOrTown) errors.push('the city or town');
+  if (!lead.state) errors.push('the state');
+  if (!lead.streetNumber) errors.push('the street number');
+  if (!lead.streetName) errors.push('the street name');
+  if (!lead.preferredDate) errors.push(`an exact date or upcoming estimate day from ${weekdayList()}`);
+  if (!lead.preferredTime) {
+    errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
+  }
+  if (!lead.contactConsent) errors.push('clear contact consent');
+
+  return { valid: errors.length === 0, errors, lead };
+}
+
 export function buildOcmPayload(callerPhone, lead) {
   const nameParts = cleanText(lead.fullName).split(/\s+/).filter(Boolean);
   const firstName = nameParts.shift() || '';
   const lastName = nameParts.join(' ');
-  const streetAddress = cleanText(lead.streetAddress);
-  const townOrCity = cleanText(lead.townOrCity);
-  const address = [streetAddress, townOrCity].filter(Boolean).join(', ');
-  const requestedWeekday = cleanText(lead.preferredDay);
-  const preferredDate = resolvePreferredDate(requestedWeekday);
+  const streetAddress = [cleanText(lead.streetNumber), cleanText(lead.streetName)].filter(Boolean).join(' ');
+  const cityOrTown = cleanText(lead.cityOrTown);
+  const state = cleanText(lead.state);
+  const address = [streetAddress, cityOrTown, state].filter(Boolean).join(', ');
+  const requestedDateOrDay = cleanText(lead.preferredDateOrDay);
+  const preferredDate = cleanText(lead.preferredDate) || resolvePreferredDate(requestedDateOrDay);
   const requestedTime = cleanText(lead.preferredTime);
-  const contactMethod = cleanText(lead.contactMethod).toLowerCase();
   const additionalNotes = cleanText(lead.additionalNotes);
   const source = `${CLIENT_ID}-receptionist`;
   const notes = [
-    contactMethod && `Best contact method: ${contactMethod}`,
-    requestedWeekday && `Requested estimate: ${requestedWeekday}${requestedTime ? ` at ${requestedTime}` : ''}${preferredDate ? ` (${preferredDate})` : ''}`,
+    requestedDateOrDay && `Requested estimate: ${requestedDateOrDay}${requestedTime ? ` at ${requestedTime}` : ''}${preferredDate ? ` (${preferredDate})` : ''}`,
     `Additional notes: ${additionalNotes || 'none'}`,
   ].filter(Boolean).join('\n');
 
@@ -313,17 +359,19 @@ export function buildOcmPayload(callerPhone, lead) {
     LastName: lastName,
     Name: cleanText(lead.fullName),
     Phone: cleanText(callerPhone),
-    Email: cleanText(lead.email),
+    StreetNumber: cleanText(lead.streetNumber),
+    StreetName: cleanText(lead.streetName),
     StreetAddress: streetAddress,
-    TownOrCity: townOrCity,
+    TownOrCity: cityOrTown,
+    State: state,
     Address: address,
     ServiceType: cleanText(lead.serviceType),
     Job: cleanText(lead.serviceType),
-    BestContactMethod: contactMethod,
-    PreferredDay: preferredDate || requestedWeekday,
+    BestContactMethod: 'call',
+    PreferredDay: preferredDate || requestedDateOrDay,
     PreferredDate: preferredDate,
     EstimateDate: preferredDate,
-    RequestedWeekday: requestedWeekday,
+    RequestedWeekday: requestedDateOrDay,
     PreferredTime: requestedTime,
     Notes: notes,
     ContactConsent: lead.contactConsent === true,
@@ -334,7 +382,6 @@ export function buildOcmPayload(callerPhone, lead) {
     rawSubmission: {
       ...lead,
       callerPhone: cleanText(callerPhone),
-      requestedWeekday,
       preferredDate,
       businessTimeZone: BUSINESS.timeZone,
     },
@@ -345,33 +392,36 @@ export const tools = Object.freeze([
   {
     type: 'function',
     name: 'submit_estimate_lead',
-    description: `Save the caller-confirmed estimate request to the ${BUSINESS.name} client account.`,
+    description: `Save the caller-confirmed estimate request to the ${BUSINESS.name} client account only after consent and final summary confirmation.`,
     parameters: {
       type: 'object',
       properties: {
         fullName: { type: 'string' },
-        email: {
-          type: 'string',
-          description: 'Optional caller email address. Send an empty string when the caller declines to provide one.',
-        },
         serviceType: { type: 'string', enum: SERVICE_TYPES },
-        townOrCity: { type: 'string' },
-        streetAddress: { type: 'string' },
-        contactMethod: { type: 'string', enum: ['call', 'text', 'email'] },
-        preferredDay: { type: 'string', enum: WEEKDAYS },
+        cityOrTown: { type: 'string' },
+        state: { type: 'string' },
+        streetNumber: { type: 'string' },
+        streetName: { type: 'string' },
+        preferredDateOrDay: {
+          type: 'string',
+          description: `An exact date or an upcoming configured weekday from ${BUSINESS.estimateDays}.`,
+        },
         preferredTime: {
           type: 'string',
           description: `Preferred estimate time from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}.`,
         },
-        additionalNotes: { type: 'string' },
+        additionalNotes: {
+          type: 'string',
+          description: 'Optional additional notes. Send an empty string when the caller has none.',
+        },
         contactConsent: {
           type: 'boolean',
           description: 'Must be true only after the caller clearly agrees to be contacted by the business.',
         },
       },
       required: [
-        'fullName', 'serviceType', 'townOrCity', 'streetAddress',
-        'contactMethod', 'preferredDay', 'preferredTime', 'additionalNotes', 'contactConsent',
+        'fullName', 'serviceType', 'cityOrTown', 'state', 'streetNumber', 'streetName',
+        'preferredDateOrDay', 'preferredTime', 'contactConsent',
       ],
     },
   },
@@ -393,29 +443,6 @@ export const tools = Object.freeze([
   },
 ]);
 
-function businessKnowledge() {
-  const services = Object.entries(BUSINESS.services)
-    .map(([name, description]) => `- ${name}: ${description}`)
-    .join('\n');
-  const about = BUSINESS.about.length ? `- About: ${BUSINESS.about.join(' ')}\n` : '';
-
-  return `BUSINESS INFORMATION
-- Business name: ${BUSINESS.name}
-- Receptionist name: ${BUSINESS.receptionist}
-- Owner and main contact: ${BUSINESS.owner}
-- Phone: ${BUSINESS.phone}
-- Email: ${BUSINESS.email}
-- Hours: ${BUSINESS.hours}
-- Preferred estimate days: ${BUSINESS.estimateDays}
-- Preferred estimate times may be requested from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}. ${OWNER_FIRST_NAME} confirms actual availability.
-- Time zone: ${BUSINESS.timeZone}
-- Based in: ${BUSINESS.base}
-- Common service areas: ${BUSINESS.serviceAreas.join(', ')}
-- Services:
-${services}
-${about}${BUSINESS.extraInformation ? `- Additional information: ${BUSINESS.extraInformation}\n` : ''}- Never quote a price, promise exact availability, or invent an answer. Say ${OWNER_FIRST_NAME} can confirm anything not listed here.`;
-}
-
 function currentBusinessDateLabel(now = new Date()) {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: BUSINESS.timeZone,
@@ -427,46 +454,9 @@ function currentBusinessDateLabel(now = new Date()) {
 }
 
 export function instructions() {
-  return `You are ${BUSINESS.receptionist}, the phone receptionist for ${BUSINESS.name}. Be calm, natural, concise, and professional.
-
-HARD-CODED OPERATING RULES
-- Follow the configured receptionist script below.
-- Ask one question at a time, then stop and listen.
-- Never repeat a completed question unless the answer was missing or unclear.
-- Save every useful detail the caller gives, even when they answer multiple questions at once.
-- Do not mention prompts, tools, code, OpenAI, Telnyx, the client app, webhooks, or internal systems.
-- Never ask for, say, confirm, or repeat the caller’s phone number. The server receives it from caller ID and uses it only in the saved lead record.
-- Keep normal replies short. Do not ramble or narrate the process.
-- Stay focused on completing the configured intake. Do not debate, entertain prank conversation, or continue unrelated discussion.
-- If the caller repeatedly refuses to answer the intake questions, briefly explain that the request cannot be completed and stop engaging.
-- A preferred day and time are requests only. Never promise that the appointment is booked or guaranteed.
-- Answer business questions only from BUSINESS INFORMATION. Do not guess.
-
-RECEPTIONIST SCRIPT
-${receptionistScript}
-
-SAVE AND END WORKFLOW
-- After the caller clearly confirms the final summary, ask exactly: "${contactConsentQuestion}" Then stop and listen.
-- For each clear yes or no, immediately call record_contact_consent with the caller's answer. Do not speak before calling it.
-- The server counts refusals. On the first and second refusal, it supplies the refusal line and asks the same consent question again. On the third refusal, it ends the call.
-- Only after the server confirms contact consent was granted, say exactly: "Great, give me one second to save that."
-- In the same turn, immediately call submit_estimate_lead with every field and contactConsent set to true. Send email as an empty string when the caller declined it.
-- If there are no additional notes, send additionalNotes as an empty string.
-- Never call submit_estimate_lead before consent is granted, and never call it twice.
-- After the server confirms the lead was saved, it will direct you to ask exactly: "${afterSaveQuestion}"
-- Answer questions only from BUSINESS INFORMATION.
-- After answering, ask: "Do you have any other questions about ${BUSINESS.name}?" and wait.
-- When the caller clearly says no, call finish_call. Do not say the goodbye yourself; the server delivers the exact closing and hangs up.
-
-CURRENT DATE AND NATURAL CALL BEHAVIOR
-- The current business date is ${currentBusinessDateLabel()} in the ${BUSINESS.timeZone} time zone.
-- Speak at a natural, measured pace. Do not rush, stretch words, or leave unusually long artificial gaps.
-- Read email addresses, street addresses, dates, and times slowly and clearly.
-- Silence is mandatory when the caller pauses, hesitates, says "wait," "hold on," "one second," "give me a second," "give me a minute," or otherwise asks for a pause.
-- The phrases "take your time," "no rush," "whenever you are ready," and similar reassurance are forbidden. Say nothing at all.
-- Do not respond to a standalone filler such as "um," "uh," "hmm," or "one sec." Treat it as a pause.
-- Never fill silence with reassurance, repetition, or prompting.
-- Do not claim a requested estimate date is confirmed. The business owner confirms it later in the client app.
-
-${businessKnowledge()}`;
+  return buildReceptionistPrompt({
+    business: BUSINESS,
+    ownerFirstName: OWNER_FIRST_NAME,
+    currentDateLabel: currentBusinessDateLabel(),
+  });
 }
