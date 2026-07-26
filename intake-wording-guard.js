@@ -38,7 +38,11 @@ function isOpenAiRealtimeSocket(socket) {
 }
 
 function fieldFromState(value) {
-  return clean(value).match(/^Current field:\s*(.+)$/im)?.[1]?.trim() || '';
+  const source = clean(value);
+  const lastQuestion = source.match(/^Last question:\s*(.+)$/im)?.[1]?.trim() || '';
+  if (/project address/i.test(lastQuestion)) return 'projectLocation';
+  if (/(?:date|day).*time|time.*(?:date|day)/i.test(lastQuestion)) return 'preferredSchedule';
+  return source.match(/^Current field:\s*(.+)$/im)?.[1]?.trim() || '';
 }
 
 function lastQuestionFromState(value) {
@@ -93,7 +97,8 @@ export function rewriteSilenceReaskMessage(message = {}) {
 
   const rewritten = instructions
     .replace(/I'm sorry, I didn't get that\.\s*/gi, '')
-    .replace(/What service do you need\?/gi, 'What service were you looking for?');
+    .replace(/What service do you need\?/gi, 'What service were you looking for?')
+    .replace(/What is the project's street address\?/gi, 'What is the project address? Please include the city or town, state, street number, and street name.');
 
   if (rewritten === instructions) return message;
   return {
