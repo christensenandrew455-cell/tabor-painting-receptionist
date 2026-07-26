@@ -73,12 +73,12 @@ test('session rules require estimate days and hours before the schedule choice',
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
-      instructions: `RESPONSIVE ACKNOWLEDGMENTS
-After a usable answer, you may say Nice to meet you, [first name].
-
-NATURAL ESTIMATE INTAKE
+      instructions: `NATURAL ESTIMATE INTAKE
 Ask: "What is the project address? Please give me the city or town, state, street number, and street name."
 Ask: "Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 9:00 AM through 4:30 PM."
+
+RESPONSIVE ACKNOWLEDGMENTS
+After a usable answer, you may say Nice to meet you, [first name].
 
 RESTRICTED OUTPUT
 Only approved output.`,
