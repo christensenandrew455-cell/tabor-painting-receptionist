@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { HARD_CODED_RECEPTIONIST_SCRIPT } from './receptionist-script.js';
 
 const REQUIRED_VARIABLES = Object.freeze([
   'OPENAI_API_KEY',
@@ -36,11 +35,11 @@ requireExactVariables();
 validatePublicUrlWhenProvided();
 
 process.env.AI_MODEL = 'gpt-realtime-mini';
-process.env.RECEPTIONIST_SCRIPT = HARD_CODED_RECEPTIONIST_SCRIPT;
+delete process.env.RECEPTIONIST_SCRIPT;
 
 console.log('[Receptionist bootstrap]', {
   configuration: 'loaded per call from ARK OCM by dialed Telnyx number',
-  hasHardcodedReceptionistScript: true,
+  customization: 'single source in receptionist-customization.js',
   model: process.env.AI_MODEL,
   hasOpenAiKey: true,
   hasTelnyxKey: true,
