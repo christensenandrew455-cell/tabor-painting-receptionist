@@ -1,6 +1,8 @@
-export const THINKING_CUE_DELAY_MS = 1100;
+import { RECEPTIONIST_COMMANDS } from './receptionist-customization.js';
+
+export const THINKING_CUE_DELAY_MS = RECEPTIONIST_COMMANDS.thinkingCueMs;
 export const THINKING_CUE_PLAYBACK_MS = 900;
-export const THINKING_CUES = Object.freeze(['Okay...', 'Hmm...', 'Okay...']);
+export const THINKING_CUES = RECEPTIONIST_COMMANDS.thinkingCues;
 
 export function thinkingCueForSequence(sequence = 0) {
   const index = Math.max(0, Number(sequence) || 0) % THINKING_CUES.length;
