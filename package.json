@@ -1,6 +1,6 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Telnyx and OpenAI Realtime receptionist that loads each business profile from ARK OCM by dialed phone number.",
   "main": "server.js",
   "type": "module",
