@@ -39,7 +39,7 @@ test('makes realtime VAD stricter and enables far-field noise reduction', () => 
   assert.equal(input.turn_detection.create_response, false);
   assert.equal(input.turn_detection.interrupt_response, false);
   assert.equal('idle_timeout_ms' in input.turn_detection, false);
-  assert.match(result.session.instructions, /Never say "take your time"/i);
+  assert.match(result.session.instructions, /Never say "take your time,/i);
 });
 
 test('only accepts a narrow interruption whitelist while the receptionist speaks', () => {
