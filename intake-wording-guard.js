@@ -36,15 +36,6 @@ function isOpenAiRealtimeSocket(socket) {
   return clean(socket?.url || socket?._url).includes('api.openai.com/v1/realtime');
 }
 
-function escapeXml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 function fieldFromState(value) {
   return clean(value).match(/^Current field:\s*(.+)$/im)?.[1]?.trim() || '';
 }
@@ -113,14 +104,11 @@ export function rewriteThinkingCueRequest(body = {}) {
 
   const rawCue = clean(body.payload).replace(/^Okay\b/i, 'Mm-hm').replace(/\.{2,}$/g, '.');
   const cue = rawCue || 'Mm-hm.';
-  if (body.service_level === 'premium') {
-    return {
-      ...body,
-      payload: `<speak><prosody volume="-8dB">${escapeXml(cue)}</prosody></speak>`,
-      payload_type: 'ssml',
-    };
-  }
-  return { ...body, payload: cue, payload_type: 'text' };
+  return {
+    ...body,
+    payload: cue,
+    payload_type: 'text',
+  };
 }
 
 globalThis.fetch = async function intakeWordingFetch(input, init = {}) {
@@ -158,5 +146,5 @@ WebSocket.prototype.send = function intakeWordingSend(data, ...args) {
 
 console.log('[Intake wording guard]', {
   enabled: true,
-  behavior: 'scopes name acknowledgments, prevents doubled questions, uses concise invalid-answer retries, and softens latency cues',
+  behavior: 'scopes name acknowledgments, prevents doubled questions, uses concise invalid-answer retries, and keeps latency cues as plain speech text only',
 });
