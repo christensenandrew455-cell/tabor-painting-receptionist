@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   CANCELLATION_PATTERN,
   RECEPTIONIST_COMMANDS,
+  buildQuestionCatalog,
+  buildReceptionistPrompt,
   callMemorySummary,
   createCallMemory,
   holdAcknowledgementFor,
@@ -11,11 +13,64 @@ import {
   resetIntakeMemory,
 } from '../receptionist-customization.js';
 
-test('central commands contain the production timing rules', () => {
+const business = {
+  name: 'Tabor Painting',
+  receptionist: 'Alex',
+  owner: 'Andrew Christensen',
+  phone: '+15551234567',
+  email: 'office@example.com',
+  hours: 'Monday through Friday, 9:00 AM to 5:00 PM',
+  timeZone: 'America/New_York',
+  estimateDays: 'Monday through Friday',
+  earliestEstimateStart: '9:00 AM',
+  latestEstimateStart: '5:00 PM',
+  base: 'Portland, Maine',
+  serviceAreas: ['Portland'],
+  services: {
+    'interior painting': 'Interior painting.',
+    'exterior painting': 'Exterior painting.',
+  },
+  about: [],
+  extraInformation: '',
+};
+
+test('central commands contain only server timing rules that still exist', () => {
   assert.equal(RECEPTIONIST_COMMANDS.silenceReaskMs, 5000);
   assert.equal(RECEPTIONIST_COMMANDS.holdCheckMs, 30000);
-  assert.equal(RECEPTIONIST_COMMANDS.thinkingCueMs, 1100);
-  assert.deepEqual(RECEPTIONIST_COMMANDS.thinkingCues, ['Okay...', 'Hmm...']);
+  assert.equal('thinkingCueMs' in RECEPTIONIST_COMMANDS, false);
+  assert.equal('thinkingCues' in RECEPTIONIST_COMMANDS, false);
+});
+
+test('groups normal address and schedule intake before itemizing missing parts', () => {
+  const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
+  assert.equal(
+    questions.project_location.text,
+    'What is the project address? Please give me the city or town, state, street number, and street name.',
+  );
+  assert.match(questions.estimate_schedule.text, /exact date or upcoming day and time works best/i);
+  assert.match(questions.estimate_schedule.text, /Monday through Friday/i);
+  assert.match(questions.estimate_schedule.text, /9:00 AM through 5:00 PM/i);
+});
+
+test('always includes the complete service list on the first service question', () => {
+  const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
+  assert.equal(
+    questions.service_type.text,
+    'What service are you looking for? We specialize in interior painting or exterior painting.',
+  );
+});
+
+test('prompt requires silence while waiting and forbids a secondary cue voice', () => {
+  const prompt = buildReceptionistPrompt({
+    business,
+    ownerFirstName: 'Andrew',
+    currentDateLabel: 'Sunday, July 26, 2026',
+  });
+  assert.match(prompt, /When waiting for the caller, remain silent/i);
+  assert.match(prompt, /There is no separate thinking cue or secondary voice/i);
+  assert.match(prompt, /Do not itemize the address before the caller has a chance/i);
+  assert.match(prompt, /first service question must always include the complete configured service list/i);
+  assert.doesNotMatch(prompt, /1,100 millisecond thinking cue/i);
 });
 
 test('hold acknowledgements match the caller request without improvising', () => {
