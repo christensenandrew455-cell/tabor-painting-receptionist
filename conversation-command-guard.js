@@ -14,6 +14,7 @@ import {
 const previousSend = WebSocket.prototype.send;
 const previousEmit = WebSocket.prototype.emit;
 const socketStates = new WeakMap();
+const WEEKDAY_PATTERN = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i;
 
 function clean(value) {
   return String(value || '').trim();
@@ -36,14 +37,17 @@ function stateFor(socket) {
     socketStates.set(socket, {
       memory: createCallMemory(),
       businessName: 'the business',
+      estimateWindow: { earliest: '', latest: '' },
       pendingHoldAcknowledgement: '',
       cancellationPending: false,
       pendingSaveSuccess: false,
       awaitingSummaryConfirmation: false,
       summaryConfirmed: false,
+      contactConsentRefusals: 0,
       assistantTranscript: '',
       callNames: new Map(),
       blockedCallIds: new Set(),
+      handledConsentCalls: new Set(),
     });
   }
   return socketStates.get(socket);
@@ -54,12 +58,20 @@ function businessNameFromInstructions(value) {
   return clean(match?.[1]) || 'the business';
 }
 
+function estimateWindowFromInstructions(value) {
+  const match = clean(value).match(/Estimate times may be requested from\s+(.+?)\s+through\s+(.+?)\./i);
+  return {
+    earliest: clean(match?.[1]),
+    latest: clean(match?.[2]),
+  };
+}
+
 function extractLastQuestion(value) {
   const questions = clean(value).match(/[^.!?]*\?/g) || [];
   return clean(questions.at(-1));
 }
 
-function identifyQuestion(question, businessName) {
+export function identifyQuestion(question, businessName = 'the business') {
   const normalized = clean(question).toLowerCase();
   if (!normalized) return null;
   if (/would you like me to help you submit an estimate request/.test(normalized)) {
@@ -67,6 +79,10 @@ function identifyQuestion(question, businessName) {
   }
   if (/first and last name/.test(normalized)) return { id: 'full_name', field: 'fullName', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/what service/.test(normalized)) return { id: 'service_type', field: 'serviceType', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
+  if (/project address/.test(normalized)) return { id: 'project_location', field: 'projectLocation', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
+  if (/(?:date|day)/.test(normalized) && /time/.test(normalized) && /estimate/.test(normalized)) {
+    return { id: 'estimate_schedule', field: 'preferredSchedule', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
+  }
   if (/city or town/.test(normalized)) return { id: 'city_or_town', field: 'cityOrTown', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/what state/.test(normalized)) return { id: 'state', field: 'state', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/street number/.test(normalized)) return { id: 'street_number', field: 'streetNumber', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
@@ -93,6 +109,76 @@ function looksLikeQuestion(value) {
 
 function isAffirmative(value) {
   return /^(?:yes|yeah|yep|yup|sure|correct|right|that'?s correct|sounds right|all correct|okay|ok|please do|go ahead)\b/i.test(clean(value));
+}
+
+function clockMinutes(value) {
+  const match = clean(value).toLowerCase().replace(/\./g, '').match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)$/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  if (hour < 1 || hour > 12) return null;
+  if (hour === 12) hour = 0;
+  if (match[3] === 'pm') hour += 12;
+  return hour * 60 + minute;
+}
+
+function displayClock(totalMinutes) {
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${String(minute).padStart(2, '0')} ${hour >= 12 ? 'PM' : 'AM'}`;
+}
+
+function normalizeSpokenTime(hourValue, minuteValue, meridiemValue, estimateWindow = {}) {
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue || 0);
+  const meridiem = clean(meridiemValue).toLowerCase().replace(/\./g, '');
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return '';
+
+  if (meridiem === 'am' || meridiem === 'pm') {
+    if (hour < 1 || hour > 12) return '';
+    let normalizedHour = hour % 12;
+    if (meridiem === 'pm') normalizedHour += 12;
+    return displayClock(normalizedHour * 60 + minute);
+  }
+
+  if (hour > 12) return displayClock(hour * 60 + minute);
+  if (hour === 0) return displayClock(minute);
+
+  const candidates = [hour * 60 + minute, (hour % 12 + 12) * 60 + minute];
+  const earliest = clockMinutes(estimateWindow.earliest);
+  const latest = clockMinutes(estimateWindow.latest);
+  if (earliest !== null && latest !== null) {
+    const inside = candidates.filter((candidate) => candidate >= earliest && candidate <= latest);
+    if (inside.length === 1) return displayClock(inside[0]);
+    if (inside.length > 1) return displayClock(inside[0]);
+  }
+
+  return displayClock(candidates[1]);
+}
+
+export function parsePreferredScheduleAnswer(value, estimateWindow = {}) {
+  const text = clean(value);
+  const weekday = text.match(WEEKDAY_PATTERN)?.[1] || '';
+  const isoDate = text.match(/\b\d{4}-\d{2}-\d{2}\b/)?.[0] || '';
+  const usDate = text.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/)?.[0] || '';
+  const preferredDateOrDay = weekday
+    ? weekday.charAt(0).toUpperCase() + weekday.slice(1).toLowerCase()
+    : isoDate || usDate;
+
+  const timeMatch = text.match(/\b(?:at|around|by)\s+(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?\b/i)
+    || text.match(/\b(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
+    || (weekday ? text.match(new RegExp(`${weekday}\\s+(\\d{1,2})(?::([0-5]\\d))?\\b`, 'i')) : null);
+  const preferredTime = timeMatch
+    ? normalizeSpokenTime(timeMatch[1], timeMatch[2], timeMatch[3], estimateWindow)
+    : '';
+
+  return { preferredDateOrDay, preferredTime };
+}
+
+export function nextConsentRefusalAction(previousRefusals = 0) {
+  const refusalCount = Math.max(0, Number(previousRefusals) || 0) + 1;
+  return { refusalCount, cancel: refusalCount >= 2 };
 }
 
 function toolCallFromMessage(message) {
@@ -132,6 +218,10 @@ function controlledResponse(line) {
 
 function cancellationLine(state) {
   return `Okay, no problem. I've canceled the estimate request. Do you have any questions about ${state.businessName} or its services?`;
+}
+
+function consentRetryLine(state) {
+  return `I need your consent so ${state.businessName} can contact you about this estimate request. Do you agree to be contacted by ${state.businessName} about this estimate request?`;
 }
 
 function successLine(state) {
@@ -228,6 +318,59 @@ function blockedSubmitOutput(socket, state, callId) {
   }));
 }
 
+function handleConsentRefusal(socket, state, call) {
+  if (!call.callId || state.handledConsentCalls.has(call.callId)) return false;
+  state.handledConsentCalls.add(call.callId);
+  const action = nextConsentRefusalAction(state.contactConsentRefusals);
+  state.contactConsentRefusals = action.refusalCount;
+
+  previousSend.call(socket, JSON.stringify({
+    type: 'conversation.item.create',
+    item: {
+      type: 'function_call_output',
+      call_id: call.callId,
+      output: JSON.stringify({
+        ok: true,
+        agreed: false,
+        refusals: action.refusalCount,
+        cancelled: action.cancel,
+      }),
+    },
+  }));
+
+  if (!action.cancel) {
+    state.memory.stage = RECEPTIONIST_COMMANDS.stages.CONSENT;
+    state.memory.lastQuestionId = 'contact_consent';
+    state.memory.lastQuestionText = `Do you agree to be contacted by ${state.businessName} about this estimate request?`;
+    state.memory.currentField = 'contactConsent';
+    previousSend.call(socket, JSON.stringify(controlledResponse(consentRetryLine(state))));
+    return false;
+  }
+
+  resetIntakeMemory(state.memory);
+  state.contactConsentRefusals = 0;
+  state.pendingSaveSuccess = false;
+  state.awaitingSummaryConfirmation = false;
+  state.summaryConfirmed = false;
+  sendStateContext(socket, state);
+  previousSend.call(socket, JSON.stringify(controlledResponse(cancellationLine(state))));
+  return false;
+}
+
+function rememberFieldAnswer(state, transcript) {
+  const field = state.memory.currentField;
+  if (!field || looksLikeQuestion(transcript)) return;
+
+  if (field === 'preferredSchedule' || field === 'preferredDateOrDay' || field === 'preferredTime') {
+    const parsed = parsePreferredScheduleAnswer(transcript, state.estimateWindow);
+    if (parsed.preferredDateOrDay) state.memory.fieldAnswers.preferredDateOrDay = parsed.preferredDateOrDay;
+    if (parsed.preferredTime) state.memory.fieldAnswers.preferredTime = parsed.preferredTime;
+    if (parsed.preferredDateOrDay || parsed.preferredTime) return;
+  }
+
+  state.memory.fieldAnswers[field] = transcript;
+}
+
 WebSocket.prototype.send = function conversationCommandSend(data, ...args) {
   if (!isOpenAiRealtimeSocket(this)) return previousSend.call(this, data, ...args);
   const message = parseJson(data);
@@ -236,6 +379,7 @@ WebSocket.prototype.send = function conversationCommandSend(data, ...args) {
 
   if (message.type === 'session.update') {
     state.businessName = businessNameFromInstructions(message?.session?.instructions);
+    state.estimateWindow = estimateWindowFromInstructions(message?.session?.instructions);
     return previousSend.call(this, data, ...args);
   }
 
@@ -275,6 +419,7 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
         state.memory.stage = RECEPTIONIST_COMMANDS.stages.HOLD;
       } else if (CANCELLATION_PATTERN.test(transcript)) {
         resetIntakeMemory(state.memory);
+        state.contactConsentRefusals = 0;
         state.cancellationPending = true;
         state.awaitingSummaryConfirmation = false;
         state.summaryConfirmed = false;
@@ -283,15 +428,21 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
           state.summaryConfirmed = true;
           state.awaitingSummaryConfirmation = false;
         }
-        if (state.memory.currentField && !looksLikeQuestion(transcript)) {
-          state.memory.fieldAnswers[state.memory.currentField] = transcript;
-        }
+        rememberFieldAnswer(state, transcript);
       }
     }
 
     if (message?.type === 'response.function_call_arguments.done' || message?.type === 'response.output_item.done') {
       const call = toolCallFromMessage(message);
       if (call.name && call.callId) state.callNames.set(call.callId, call.name);
+      if (call.name === 'record_contact_consent' && call.args?.agreed !== true) {
+        return handleConsentRefusal(this, state, call);
+      }
+      if (call.name === 'record_contact_consent' && call.args?.agreed === true) {
+        state.contactConsentRefusals = 0;
+        state.memory.fieldAnswers.contactConsent = true;
+        state.memory.stage = RECEPTIONIST_COMMANDS.stages.CONFIRMATION;
+      }
       if (call.name === 'submit_estimate_lead') {
         if (!state.summaryConfirmed) {
           blockedSubmitOutput(this, state, call.callId);
@@ -299,10 +450,6 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
         }
         Object.assign(state.memory.fieldAnswers, call.args || {});
         state.memory.stage = RECEPTIONIST_COMMANDS.stages.SAVING;
-      }
-      if (call.name === 'record_contact_consent' && call.args?.agreed === true) {
-        state.memory.fieldAnswers.contactConsent = true;
-        state.memory.stage = RECEPTIONIST_COMMANDS.stages.CONFIRMATION;
       }
     }
 
@@ -335,5 +482,5 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
 
 console.log('[Conversation commands]', {
   enabled: true,
-  behavior: 'injects structured call memory, resets cancelled intake, enforces final confirmation, and adapts fixed hold acknowledgements',
+  behavior: 'injects structured call memory, captures combined schedule answers, retries consent once, cancels refused intake, enforces final confirmation, and adapts fixed hold acknowledgements',
 });
