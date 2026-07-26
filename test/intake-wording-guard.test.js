@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   applyIntakeWordingSessionRules,
   augmentCallStateText,
+  rewritePrimaryIntakeQuestions,
   rewriteSilenceReaskMessage,
 } from '../intake-wording-guard.js';
 
@@ -31,7 +32,7 @@ Last question ID: project_location
 Last question: What is the project address?
 Current field: projectLocation`);
   assert.match(locationState, /I'm sorry, I didn't get that\. What is the project address\?/i);
-  assert.match(locationState, /city or town, state, street number, and street name/i);
+  assert.match(locationState, /street number, street name, city or town, and state/i);
   assert.match(locationState, /Ask only for a missing part after evaluating the complete answer/i);
 
   const scheduleState = augmentCallStateText(`CURRENT CALL STATE
@@ -54,12 +55,30 @@ Current field: serviceType`);
   assert.doesNotMatch(serviceState, /I'm sorry, I didn't get that[\s\S]*We specialize/i);
 });
 
-test('session rules require natural grouped intake and silence while waiting', () => {
+test('rewrites the first address and schedule questions into required spoken order', () => {
+  const result = rewritePrimaryIntakeQuestions(
+    'What is the project address? Please give me the city or town, state, street number, and street name.\n'
+    + 'Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 9:00 AM through 4:30 PM.',
+  );
+
+  assert.match(result, /street number, street name, city or town, and state/i);
+  assert.doesNotMatch(result, /city or town, state, street number, and street name/i);
+  assert.match(
+    result,
+    /We offer estimates Monday through Friday from 9:00 AM through 4:30 PM; what exact date or upcoming day and time works best for you\?/i,
+  );
+});
+
+test('session rules require estimate days and hours before the schedule choice', () => {
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
       instructions: `RESPONSIVE ACKNOWLEDGMENTS
 After a usable answer, you may say Nice to meet you, [first name].
+
+NATURAL ESTIMATE INTAKE
+Ask: "What is the project address? Please give me the city or town, state, street number, and street name."
+Ask: "Next, what exact date or upcoming day and time works best for the estimate? We offer estimates Monday through Friday from 9:00 AM through 4:30 PM."
 
 RESTRICTED OUTPUT
 Only approved output.`,
@@ -67,8 +86,9 @@ Only approved output.`,
   });
   assert.match(result.session.instructions, /Immediately after a valid full name only/i);
   assert.match(result.session.instructions, /first service question must include the complete configured service list/i);
-  assert.match(result.session.instructions, /full project address in one natural question/i);
-  assert.match(result.session.instructions, /preferred date or upcoming day and time in one natural question/i);
+  assert.match(result.session.instructions, /street number, street name, city or town, and state/i);
+  assert.match(result.session.instructions, /first combined scheduling question must always state the configured estimate days and estimate hours/i);
+  assert.match(result.session.instructions, /We offer estimates Monday through Friday from 9:00 AM through 4:30 PM; what exact date or upcoming day and time works best for you\?/i);
   assert.match(result.session.instructions, /There is no separate latency cue or secondary voice/i);
   assert.match(result.session.instructions, /While waiting, say nothing/i);
 });
