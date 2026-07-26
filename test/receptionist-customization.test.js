@@ -56,7 +56,7 @@ test('always includes the complete service list on the first service question', 
   const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
   assert.equal(
     questions.service_type.text,
-    'What service are you looking for? We specialize in interior painting or exterior painting.',
+    'What service are you looking for? We specialize in interior painting, or exterior painting.',
   );
 });
 
