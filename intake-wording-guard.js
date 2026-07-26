@@ -53,15 +53,29 @@ function retryQuestionFor(field, lastQuestion = '') {
   return RETRY_QUESTIONS[field] || (clean(lastQuestion).endsWith('?') ? clean(lastQuestion) : 'Could you repeat that?');
 }
 
+function businessNameFromInstructions(value = '') {
+  return clean(value).match(/^- Business name:\s*(.+)$/im)?.[1]?.trim() || 'The business';
+}
+
 export function rewritePrimaryIntakeQuestions(value = '') {
-  return clean(value)
+  const source = clean(value);
+  const businessName = businessNameFromInstructions(source);
+  return source
     .replace(
       /What is the project address\? Please (?:give me|include) the city or town, state, street number, and street name\./gi,
       'What is the project address? Please say it in this order: street number, street name, city or town, and state.',
     )
     .replace(
       /Next,\s*what exact date or upcoming day and time works best for the estimate\?\s*We offer estimates\s+([^\n.]+?)\s+from\s+([^\n.]+?)\s+through\s+([^\n.]+?)\./gi,
-      'We offer estimates $1 from $2 through $3; what exact date or upcoming day and time works best for you?',
+      (_match, estimateDays, earliestTime, latestTime) => (
+        `Next, we need a time for the estimate. ${businessName} schedules estimates ${estimateDays} from ${earliestTime} through ${latestTime}. What exact date or upcoming day and time works best for you?`
+      ),
+    )
+    .replace(
+      /We offer estimates\s+([^\n.;]+?)\s+from\s+([^\n.;]+?)\s+through\s+([^\n.;]+?);\s*what exact date or upcoming day and time works best for you\?/gi,
+      (_match, estimateDays, earliestTime, latestTime) => (
+        `Next, we need a time for the estimate. ${businessName} schedules estimates ${estimateDays} from ${earliestTime} through ${latestTime}. What exact date or upcoming day and time works best for you?`
+      ),
     );
 }
 
@@ -91,7 +105,7 @@ export function applyIntakeWordingSessionRules(message = {}) {
   let instructions = rewritePrimaryIntakeQuestions(session.instructions);
   if (instructions.includes(SESSION_MARKER)) return { ...message, session: { ...session, instructions } };
 
-  const strictBlock = `${SESSION_MARKER}\n- "Nice to meet you" may be spoken only once, immediately after the caller supplies a valid first and last name. It is forbidden after service, location, date, time, notes, consent, business questions, or any later step.\n- The first service question must include the complete configured service list.\n- Ask for the full project address in one natural question using this order: street number, street name, city or town, and state. Ask individual address parts only when missing or unclear.\n- The first combined scheduling question must always state the configured estimate days and estimate hours before asking which exact date or upcoming day and time works best. Never omit the days or hours.\n- Ask for the preferred date or upcoming day and time in one natural question before asking for date and time separately. Ask individual schedule parts only when missing or invalid.\n- Ask each question only once per response. Never repeat a question back-to-back and never say both the full question and its simplified retry in the same response.\n- When a complete answer does not fit the current field, use one short retry: "I'm sorry, I didn't get that," followed by the simplified current question. Do not repeat service lists or scheduling ranges in a retry.\n- Do not use "I'm sorry, I didn't get that" merely because the caller is silent, paused, unfinished, or surrounded by noise.\n- Acknowledgments must be quiet and neutral, with no exclamation marks. Outside the name step, do not attach the caller’s name to an acknowledgment.\n- There is no separate latency cue or secondary voice. While waiting, say nothing.`;
+  const strictBlock = `${SESSION_MARKER}\n- "Nice to meet you" may be spoken only once, immediately after the caller supplies a valid first and last name. It is forbidden after service, location, date, time, notes, consent, business questions, or any later step.\n- The first service question must include the complete configured service list.\n- Ask for the full project address in one natural question using this order: street number, street name, city or town, and state. Ask individual address parts only when missing or unclear.\n- The first combined scheduling question must say "Next, we need a time for the estimate," then state the business's configured estimate days and hours, then ask which exact date or upcoming day and time works best. Never change that order and never omit the days or hours.\n- Ask for the preferred date or upcoming day and time in one natural question before asking for date and time separately. Ask individual schedule parts only when missing or invalid.\n- Ask each question only once per response. Never repeat a question back-to-back and never say both the full question and its simplified retry in the same response.\n- When a complete answer does not fit the current field, use one short retry: "I'm sorry, I didn't get that," followed by the simplified current question. Do not repeat service lists or scheduling ranges in a retry.\n- Do not use "I'm sorry, I didn't get that" merely because the caller is silent, paused, unfinished, or surrounded by noise.\n- Acknowledgments must be quiet and neutral, with no exclamation marks. Outside the name step, do not attach the caller’s name to an acknowledgment.\n- There is no separate latency cue or secondary voice. While waiting, say nothing.`;
 
   const replacement = `RESPONSIVE ACKNOWLEDGMENTS\nImmediately after a valid full name only, you may say "Thanks, [first name]" or "Nice to meet you, [first name]" once, then ask the service question once.\nAfter every other usable intake answer, you may say only one neutral acknowledgment: "Okay." "Thanks." or "Got it." Never use the caller’s name in those acknowledgments.\nDo not repeat an answer unless a confirmation is required.\nDo not use exclamation marks.\nDo not say "take your time," "no rush," "whenever you're ready," or similar reassurance.\nRemain silent while waiting for the caller.\n\nRESTRICTED OUTPUT`;
 
@@ -151,5 +165,5 @@ WebSocket.prototype.send = function intakeWordingSend(data, ...args) {
 
 console.log('[Intake wording guard]', {
   enabled: true,
-  behavior: 'enforces estimate days and hours, uses natural address order, groups intake questions, and keeps waiting silent',
+  behavior: 'uses the requested scheduling sentence order, groups natural address answers, prevents doubled questions, and keeps waiting silent',
 });
