@@ -52,7 +52,11 @@ test('rejects expired or tampered handoff tokens', () => {
     () => decodeRuntimeHandoff(token, secret, now + RUNTIME_HANDOFF_TTL_MS + 1),
     /expired or incomplete/i,
   );
-  assert.throws(() => decodeRuntimeHandoff(`${token.slice(0, -1)}x`, secret, now), /authenticate|invalid|expired/i);
+
+  const middle = Math.floor(token.length / 2);
+  const replacement = token[middle] === 'A' ? 'B' : 'A';
+  const tampered = `${token.slice(0, middle)}${replacement}${token.slice(middle + 1)}`;
+  assert.throws(() => decodeRuntimeHandoff(tampered, secret, now), /authenticate|invalid|expired/i);
 });
 
 test('adds the encrypted handoff and call ID to the media stream URL', () => {
