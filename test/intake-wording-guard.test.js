@@ -4,7 +4,6 @@ import {
   applyIntakeWordingSessionRules,
   augmentCallStateText,
   rewriteSilenceReaskMessage,
-  rewriteThinkingCueRequest,
 } from '../intake-wording-guard.js';
 
 test('allows nice-to-meet-you wording only on the full-name turn', () => {
@@ -18,14 +17,33 @@ Current field: fullName`);
 
   const locationState = augmentCallStateText(`CURRENT CALL STATE
 Stage: INTAKE
-Last question ID: city_or_town
-Last question: What city or town is the project in?
-Current field: cityOrTown`);
+Last question ID: project_location
+Last question: What is the project address?
+Current field: projectLocation`);
   assert.match(locationState, /"Nice to meet you" is forbidden on this turn/i);
   assert.match(locationState, /do not use the caller’s name in an acknowledgment/i);
 });
 
-test('supplies one simplified retry for the current field', () => {
+test('supplies one simplified retry for grouped location and scheduling fields', () => {
+  const locationState = augmentCallStateText(`CURRENT CALL STATE
+Stage: INTAKE
+Last question ID: project_location
+Last question: What is the project address?
+Current field: projectLocation`);
+  assert.match(locationState, /I'm sorry, I didn't get that\. What is the project address\?/i);
+  assert.match(locationState, /city or town, state, street number, and street name/i);
+  assert.match(locationState, /Ask only for a missing part after evaluating the complete answer/i);
+
+  const scheduleState = augmentCallStateText(`CURRENT CALL STATE
+Stage: INTAKE
+Last question ID: estimate_schedule
+Last question: What exact date or upcoming day and time works best for the estimate?
+Current field: preferredSchedule`);
+  assert.match(scheduleState, /exact date or upcoming day and time works best/i);
+  assert.match(scheduleState, /supplying both date or day and time/i);
+});
+
+test('supplies one concise retry for the service field', () => {
   const serviceState = augmentCallStateText(`CURRENT CALL STATE
 Stage: INTAKE
 Last question ID: service_type
@@ -36,7 +54,7 @@ Current field: serviceType`);
   assert.doesNotMatch(serviceState, /I'm sorry, I didn't get that[\s\S]*We specialize/i);
 });
 
-test('replaces broad acknowledgment permission in the session prompt', () => {
+test('session rules require natural grouped intake and silence while waiting', () => {
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
@@ -48,8 +66,11 @@ Only approved output.`,
     },
   });
   assert.match(result.session.instructions, /Immediately after a valid full name only/i);
-  assert.match(result.session.instructions, /It is forbidden after service, location, date, time, notes, consent/i);
-  assert.match(result.session.instructions, /Ask each question only once per response/i);
+  assert.match(result.session.instructions, /first service question must include the complete configured service list/i);
+  assert.match(result.session.instructions, /full project address in one natural question/i);
+  assert.match(result.session.instructions, /preferred date or upcoming day and time in one natural question/i);
+  assert.match(result.session.instructions, /There is no separate latency cue or secondary voice/i);
+  assert.match(result.session.instructions, /While waiting, say nothing/i);
 });
 
 test('normal silence re-asks do not pretend an answer was misunderstood', () => {
@@ -61,25 +82,4 @@ test('normal silence re-asks do not pretend an answer was misunderstood', () => 
   });
   assert.doesNotMatch(result.response.instructions, /I'm sorry, I didn't get that/i);
   assert.match(result.response.instructions, /What service were you looking for\?/i);
-});
-
-test('keeps every separate latency cue as plain speech text with no markup', () => {
-  const premium = rewriteThinkingCueRequest({
-    command_id: 'thinking-cue-1-1',
-    payload: 'Okay...',
-    payload_type: 'text',
-    service_level: 'premium',
-  });
-  assert.equal(premium.payload_type, 'text');
-  assert.equal(premium.payload, 'Mm-hm.');
-  assert.doesNotMatch(premium.payload, /Okay|<|>|prosody|speak/i);
-
-  const basic = rewriteThinkingCueRequest({
-    command_id: 'thinking-cue-1-2',
-    payload: 'Okay...',
-    payload_type: 'text',
-    service_level: 'basic',
-  });
-  assert.equal(basic.payload_type, 'text');
-  assert.equal(basic.payload, 'Mm-hm.');
 });
