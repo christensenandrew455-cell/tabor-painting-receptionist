@@ -63,17 +63,16 @@ test('normal silence re-asks do not pretend an answer was misunderstood', () => 
   assert.match(result.response.instructions, /What service were you looking for\?/i);
 });
 
-test('softens the separate latency cue and lowers premium cue volume', () => {
+test('keeps every separate latency cue as plain speech text with no markup', () => {
   const premium = rewriteThinkingCueRequest({
     command_id: 'thinking-cue-1-1',
     payload: 'Okay...',
     payload_type: 'text',
     service_level: 'premium',
   });
-  assert.equal(premium.payload_type, 'ssml');
-  assert.match(premium.payload, /Mm-hm\./i);
-  assert.match(premium.payload, /volume="-8dB"/i);
-  assert.doesNotMatch(premium.payload, /Okay/i);
+  assert.equal(premium.payload_type, 'text');
+  assert.equal(premium.payload, 'Mm-hm.');
+  assert.doesNotMatch(premium.payload, /Okay|<|>|prosody|speak/i);
 
   const basic = rewriteThinkingCueRequest({
     command_id: 'thinking-cue-1-2',
