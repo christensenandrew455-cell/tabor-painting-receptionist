@@ -38,10 +38,12 @@ Current field: projectLocation`);
   const scheduleState = augmentCallStateText(`CURRENT CALL STATE
 Stage: INTAKE
 Last question ID: estimate_schedule
-Last question: What exact date or upcoming day and time works best for the estimate?
+Last question: What day works best for you, and what time?
 Current field: preferredSchedule`);
-  assert.match(scheduleState, /exact date or upcoming day and time works best/i);
-  assert.match(scheduleState, /supplying both date or day and time/i);
+  assert.match(scheduleState, /What day works best for you, and what time\?/i);
+  assert.match(scheduleState, /supplying both a day or date and a time/i);
+  assert.match(scheduleState, /Just to make sure, you mean \[weekday\], \[month\] \[day\] at \[time\], right\?/i);
+  assert.match(scheduleState, /Do not ask the original scheduling question again/i);
 });
 
 test('supplies one concise retry for the service field', () => {
@@ -55,7 +57,7 @@ Current field: serviceType`);
   assert.doesNotMatch(serviceState, /I'm sorry, I didn't get that[\s\S]*We specialize/i);
 });
 
-test('rewrites the first address and schedule questions into the requested spoken order', () => {
+test('rewrites the first address and schedule questions without duplicating scheduling', () => {
   const result = rewritePrimaryIntakeQuestions(
     '- Business name: Tabor Painting\n'
     + 'What is the project address? Please give me the city or town, state, street number, and street name.\n'
@@ -66,11 +68,22 @@ test('rewrites the first address and schedule questions into the requested spoke
   assert.doesNotMatch(result, /city or town, state, street number, and street name/i);
   assert.match(
     result,
-    /Next, we need a time for the estimate\. Tabor Painting schedules estimates Monday through Friday from 8:00 AM through 5:00 PM\. What exact date or upcoming day and time works best for you\?/i,
+    /What day works best for you, and what time\? We schedule estimates Monday through Friday from 8:00 AM to 5:00 PM\./i,
   );
+  assert.equal((result.match(/What day works best for you, and what time\?/gi) || []).length, 1);
+  assert.doesNotMatch(result, /exact date or upcoming day/i);
 });
 
-test('session rules lock the requested scheduling sentence order', () => {
+test('removes a second scheduling question when old rewritten wording is present', () => {
+  const result = rewritePrimaryIntakeQuestions(
+    '- Business name: Tabor Painting\n'
+    + 'What day works best for you, and what time? We schedule estimates Monday through Friday from 8:00 AM to 5:00 PM. What day and time works best for you?',
+  );
+  assert.equal((result.match(/What day works best for you, and what time\?/gi) || []).length, 1);
+  assert.doesNotMatch(result, /What day and time works best for you\?/i);
+});
+
+test('session rules preserve service classification and lock one scheduling confirmation', () => {
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
@@ -89,12 +102,14 @@ Only approved output.
   });
   assert.match(result.session.instructions, /Immediately after a valid full name only/i);
   assert.match(result.session.instructions, /first service question must include the complete configured service list/i);
+  assert.match(result.session.instructions, /identify the best matching configured service/i);
   assert.match(result.session.instructions, /street number, street name, city or town, and state/i);
-  assert.match(result.session.instructions, /must say "Next, we need a time for the estimate," then state the business's configured estimate days and hours/i);
   assert.match(
     result.session.instructions,
-    /Next, we need a time for the estimate\. Tabor Painting schedules estimates Monday through Friday from 8:00 AM through 5:00 PM\. What exact date or upcoming day and time works best for you\?/i,
+    /What day works best for you, and what time\? We schedule estimates Monday through Friday from 8:00 AM to 5:00 PM\./i,
   );
+  assert.match(result.session.instructions, /confirm once by saying: "Just to make sure/i);
+  assert.match(result.session.instructions, /Do not repeat the scheduling question in that confirmation/i);
   assert.match(result.session.instructions, /There is no separate latency cue or secondary voice/i);
   assert.match(result.session.instructions, /While waiting, say nothing/i);
 });
@@ -108,4 +123,15 @@ test('normal silence re-asks do not pretend an answer was misunderstood', () => 
   });
   assert.doesNotMatch(result.response.instructions, /I'm sorry, I didn't get that/i);
   assert.match(result.response.instructions, /What service were you looking for\?/i);
+});
+
+test('silence schedule retry uses the short day-and-time wording', () => {
+  const result = rewriteSilenceReaskMessage({
+    type: 'response.create',
+    response: {
+      instructions: `Say exactly this and nothing else: "I'm sorry, I didn't get that. What exact date or upcoming day and time works best for the estimate?" Then stop and wait. Do not add reassurance, filler, or the next intake question.`,
+    },
+  });
+  assert.doesNotMatch(result.response.instructions, /exact date or upcoming day/i);
+  assert.match(result.response.instructions, /What day works best for you, and what time\?/i);
 });
