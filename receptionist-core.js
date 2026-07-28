@@ -162,10 +162,10 @@ export function renderTemplate(value = '') {
 }
 
 export const openingLine = renderTemplate(BUSINESS.openingLine);
-export const closingLine = renderTemplate(BUSINESS.closingLine);
-export const afterSaveQuestion = `Do you have any questions about ${BUSINESS.name}?`;
-export const afterSaveFollowUpQuestion = `Do you have any other questions about ${BUSINESS.name}?`;
-export const saveSuccessLine = `Perfect. Your estimate request has been sent to ${BUSINESS.name}. They will follow up with you shortly. Before I go, ${afterSaveQuestion.toLowerCase()}`;
+export const closingLine = `Okay. Thank you for calling ${BUSINESS.name}. Have a good day.`;
+export const afterSaveQuestion = `Do you have any other questions about ${BUSINESS.name}?`;
+export const afterSaveFollowUpQuestion = afterSaveQuestion;
+export const saveSuccessLine = `The estimate request has been submitted. ${BUSINESS.name} will follow up with you shortly. ${afterSaveQuestion}`;
 export const contactConsentQuestion = `Do you agree to be contacted by ${BUSINESS.name} about this estimate request?`;
 export const contactConsentRefusalLine = `I'm sorry, I cannot submit the estimate request unless you agree to be contacted by ${BUSINESS.name}.`;
 export const contactConsentFinalLine = `${contactConsentRefusalLine} Goodbye.`;
@@ -238,153 +238,115 @@ export function normalizePreferredTime(value = '') {
 }
 
 function validIsoDate(value) {
-  const match = cleanText(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return '';
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (
-    date.getUTCFullYear() !== year
-    || date.getUTCMonth() !== month - 1
-    || date.getUTCDate() !== day
-  ) return '';
-  return `${match[1]}-${match[2]}-${match[3]}`;
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T12:00:00Z`));
 }
 
-function parseUsDate(value) {
-  const match = cleanText(value).match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (!match) return '';
-  return validIsoDate(`${match[3]}-${String(match[1]).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}`);
-}
-
-function datePartsInBusinessTimeZone(date = new Date()) {
+function todayInBusinessTimeZone(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: BUSINESS.timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).formatToParts(date);
+  }).formatToParts(now);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return {
-    year: Number(values.year),
-    month: Number(values.month),
-    day: Number(values.day),
-  };
+  return new Date(`${values.year}-${values.month}-${values.day}T12:00:00Z`);
 }
 
-function weekdayAllowedForDate(isoDate) {
-  const date = new Date(`${isoDate}T12:00:00.000Z`);
-  const weekday = Object.keys(WEEKDAY_INDEX).find((name) => WEEKDAY_INDEX[name] === date.getUTCDay());
-  return Boolean(weekday && WEEKDAYS.includes(weekday));
+function formatIsoDate(date) {
+  return date.toISOString().slice(0, 10);
 }
 
-export function resolvePreferredDate(preferredDateOrDay, now = new Date()) {
-  const raw = cleanText(preferredDateOrDay);
-  const exactDate = validIsoDate(raw) || parseUsDate(raw);
-  if (exactDate) return weekdayAllowedForDate(exactDate) ? exactDate : '';
-
-  const normalized = raw.toLowerCase();
-  const targetDay = WEEKDAY_INDEX[normalized];
-  if (!Number.isInteger(targetDay) || !WEEKDAYS.includes(normalized)) return '';
-
-  const parts = datePartsInBusinessTimeZone(now);
-  const base = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  const daysAhead = (targetDay - base.getUTCDay() + 7) % 7;
-  base.setUTCDate(base.getUTCDate() + daysAhead);
-
-  const year = base.getUTCFullYear();
-  const month = String(base.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(base.getUTCDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+function weekdayAllowed(date) {
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(date).toLowerCase();
+  return WEEKDAYS.includes(weekday);
 }
 
-export function validateLead(args = {}) {
-  const serviceType = cleanText(args.serviceType).toLowerCase();
-  const preferredDateOrDay = cleanText(args.preferredDateOrDay || args.preferredDay);
-  const preferredDate = resolvePreferredDate(preferredDateOrDay);
-  const preferredTime = normalizePreferredTime(args.preferredTime);
+export function resolvePreferredDate(value = '', now = new Date()) {
+  const raw = cleanText(value);
+  if (!raw) return '';
+  const today = todayInBusinessTimeZone(now);
+  const normalizedWeekday = raw.toLowerCase();
+
+  if (WEEKDAY_INDEX[normalizedWeekday] !== undefined) {
+    const target = new Date(today);
+    const delta = (WEEKDAY_INDEX[normalizedWeekday] - target.getUTCDay() + 7) % 7 || 7;
+    target.setUTCDate(target.getUTCDate() + delta);
+    return weekdayAllowed(target) ? formatIsoDate(target) : '';
+  }
+
+  let candidate = '';
+  if (validIsoDate(raw)) candidate = raw;
+  else {
+    const match = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (match) {
+      const [, month, day, year] = match;
+      candidate = `${year}-${String(Number(month)).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`;
+    }
+  }
+
+  if (!validIsoDate(candidate)) return '';
+  const date = new Date(`${candidate}T12:00:00Z`);
+  if (date <= today || !weekdayAllowed(date)) return '';
+  return candidate;
+}
+
+export function validateLead(rawLead = {}, now = new Date()) {
   const lead = {
-    fullName: cleanText(args.fullName),
-    serviceType,
-    cityOrTown: cleanText(args.cityOrTown || args.townOrCity),
-    state: cleanText(args.state),
-    streetNumber: cleanText(args.streetNumber),
-    streetName: cleanText(args.streetName),
-    preferredDateOrDay,
-    preferredDate,
-    preferredTime,
-    additionalNotes: cleanText(args.additionalNotes),
-    contactConsent: args.contactConsent === true,
+    fullName: cleanText(rawLead.fullName),
+    serviceType: cleanText(rawLead.serviceType).toLowerCase(),
+    cityOrTown: cleanText(rawLead.cityOrTown),
+    state: cleanText(rawLead.state),
+    streetNumber: cleanText(rawLead.streetNumber),
+    streetName: cleanText(rawLead.streetName),
+    preferredDateOrDay: cleanText(rawLead.preferredDateOrDay),
+    preferredTime: cleanText(rawLead.preferredTime),
+    additionalNotes: cleanText(rawLead.additionalNotes),
+    contactConsent: rawLead.contactConsent === true,
   };
 
   const errors = [];
-  if (lead.fullName.split(/\s+/).filter(Boolean).length < 2) errors.push('the caller’s full first and last name');
-  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push(serviceList());
-  if (!lead.cityOrTown) errors.push('the city or town');
-  if (!lead.state) errors.push('the state');
-  if (!lead.streetNumber) errors.push('the street number');
-  if (!lead.streetName) errors.push('the street name');
-  if (!lead.preferredDate) errors.push(`an exact date or upcoming estimate day from ${weekdayList()}`);
-  if (!lead.preferredTime) {
-    errors.push(`a preferred estimate time between ${BUSINESS.earliestEstimateStart} and ${BUSINESS.latestEstimateStart}`);
-  }
-  if (!lead.contactConsent) errors.push('clear contact consent');
+  const parts = lead.fullName.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) errors.push('the caller first and last name');
+  if (!SERVICE_TYPES.includes(lead.serviceType)) errors.push(`one configured service: ${serviceList()}`);
+  if (!lead.cityOrTown) errors.push('the project city or town');
+  if (!lead.state) errors.push('the project state');
+  if (!lead.streetNumber) errors.push('the project street number');
+  if (!lead.streetName) errors.push('the project street name');
+  const preferredDate = resolvePreferredDate(lead.preferredDateOrDay, now);
+  if (!preferredDate) errors.push(`an upcoming configured estimate date or weekday: ${weekdayList()}`);
+  const preferredTime = normalizePreferredTime(lead.preferredTime);
+  if (!preferredTime) errors.push(`an estimate time from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}`);
+  if (!lead.contactConsent) errors.push('clear consent to be contacted');
 
-  return { valid: errors.length === 0, errors, lead };
+  return {
+    valid: errors.length === 0,
+    errors,
+    lead: { ...lead, preferredDate, preferredTime },
+  };
 }
 
 export function buildOcmPayload(callerPhone, lead) {
-  const nameParts = cleanText(lead.fullName).split(/\s+/).filter(Boolean);
-  const firstName = nameParts.shift() || '';
-  const lastName = nameParts.join(' ');
-  const streetAddress = [cleanText(lead.streetNumber), cleanText(lead.streetName)].filter(Boolean).join(' ');
-  const cityOrTown = cleanText(lead.cityOrTown);
-  const state = cleanText(lead.state);
-  const address = [streetAddress, cityOrTown, state].filter(Boolean).join(', ');
-  const requestedDateOrDay = cleanText(lead.preferredDateOrDay);
-  const preferredDate = cleanText(lead.preferredDate) || resolvePreferredDate(requestedDateOrDay);
-  const requestedTime = cleanText(lead.preferredTime);
-  const additionalNotes = cleanText(lead.additionalNotes);
-  const source = `${CLIENT_ID}-receptionist`;
-  const notes = [
-    requestedDateOrDay && `Requested estimate: ${requestedDateOrDay}${requestedTime ? ` at ${requestedTime}` : ''}${preferredDate ? ` (${preferredDate})` : ''}`,
-    `Additional notes: ${additionalNotes || 'none'}`,
-  ].filter(Boolean).join('\n');
-
+  const [FirstName, ...lastParts] = cleanText(lead.fullName).split(/\s+/);
+  const LastName = lastParts.join(' ');
+  const streetAddress = `${lead.streetNumber} ${lead.streetName}`.trim();
   return {
     clientId: CLIENT_ID,
-    sectionKey: 'contactedMe',
-    FirstName: firstName,
-    LastName: lastName,
-    Name: cleanText(lead.fullName),
+    FirstName,
+    LastName,
+    Name: lead.fullName,
     Phone: cleanText(callerPhone),
-    StreetNumber: cleanText(lead.streetNumber),
-    StreetName: cleanText(lead.streetName),
+    Job: lead.serviceType,
+    ServiceType: lead.serviceType,
     StreetAddress: streetAddress,
-    TownOrCity: cityOrTown,
-    State: state,
-    Address: address,
-    ServiceType: cleanText(lead.serviceType),
-    Job: cleanText(lead.serviceType),
-    BestContactMethod: 'call',
-    PreferredDay: preferredDate || requestedDateOrDay,
-    PreferredDate: preferredDate,
-    EstimateDate: preferredDate,
-    RequestedWeekday: requestedDateOrDay,
-    PreferredTime: requestedTime,
-    Notes: notes,
-    ContactConsent: lead.contactConsent === true,
-    ContactConsentMethod: 'voice-call',
-    ContactConsentText: contactConsentQuestion,
-    ContactConsentAt: new Date().toISOString(),
-    source,
-    rawSubmission: {
-      ...lead,
-      callerPhone: cleanText(callerPhone),
-      preferredDate,
-      businessTimeZone: BUSINESS.timeZone,
-    },
+    TownOrCity: lead.cityOrTown,
+    State: lead.state,
+    Address: `${streetAddress}, ${lead.cityOrTown}, ${lead.state}`,
+    PreferredDate: lead.preferredDate,
+    EstimateDate: lead.preferredDate,
+    PreferredDay: lead.preferredDateOrDay,
+    PreferredTime: lead.preferredTime,
+    Notes: lead.additionalNotes || 'none',
+    source: `${CLIENT_ID}-receptionist`,
   };
 }
 
@@ -392,9 +354,10 @@ export const tools = Object.freeze([
   {
     type: 'function',
     name: 'submit_estimate_lead',
-    description: `Save the caller-confirmed estimate request to the ${BUSINESS.name} client account only after consent and final summary confirmation.`,
+    description: 'Submit the fully confirmed estimate request after the caller agrees to be contacted and confirms the complete summary.',
     parameters: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         fullName: { type: 'string' },
         serviceType: { type: 'string', enum: SERVICE_TYPES },
@@ -402,61 +365,57 @@ export const tools = Object.freeze([
         state: { type: 'string' },
         streetNumber: { type: 'string' },
         streetName: { type: 'string' },
-        preferredDateOrDay: {
-          type: 'string',
-          description: `An exact date or an upcoming configured weekday from ${BUSINESS.estimateDays}.`,
-        },
-        preferredTime: {
-          type: 'string',
-          description: `Preferred estimate time from ${BUSINESS.earliestEstimateStart} through ${BUSINESS.latestEstimateStart}.`,
-        },
-        additionalNotes: {
-          type: 'string',
-          description: 'Optional additional notes. Send an empty string when the caller has none.',
-        },
-        contactConsent: {
-          type: 'boolean',
-          description: 'Must be true only after the caller clearly agrees to be contacted by the business.',
-        },
+        preferredDateOrDay: { type: 'string' },
+        preferredTime: { type: 'string' },
+        additionalNotes: { type: 'string' },
+        contactConsent: { type: 'boolean' },
       },
       required: [
-        'fullName', 'serviceType', 'cityOrTown', 'state', 'streetNumber', 'streetName',
-        'preferredDateOrDay', 'preferredTime', 'contactConsent',
+        'fullName',
+        'serviceType',
+        'cityOrTown',
+        'state',
+        'streetNumber',
+        'streetName',
+        'preferredDateOrDay',
+        'preferredTime',
+        'contactConsent',
       ],
     },
   },
   {
     type: 'function',
     name: 'record_contact_consent',
-    description: 'Record one clear yes or no answer to the required contact-consent question. Call once for every clear answer.',
+    description: 'Record whether the caller clearly agreed to be contacted about this estimate request.',
     parameters: {
       type: 'object',
-      properties: { agreed: { type: 'boolean' } },
+      additionalProperties: false,
+      properties: {
+        agreed: { type: 'boolean' },
+      },
       required: ['agreed'],
     },
   },
   {
     type: 'function',
     name: 'finish_call',
-    description: 'End the call only after the estimate request is saved and the caller has no more questions.',
-    parameters: { type: 'object', properties: {}, required: [] },
+    description: 'Finish the call only after the estimate has been saved or a save attempt has failed and the caller has no more questions.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: [],
+    },
   },
 ]);
 
-function currentBusinessDateLabel(now = new Date()) {
-  return new Intl.DateTimeFormat('en-US', {
+export function instructions(now = new Date()) {
+  const currentDateLabel = new Intl.DateTimeFormat('en-US', {
     timeZone: BUSINESS.timeZone,
     weekday: 'long',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
   }).format(now);
-}
-
-export function instructions() {
-  return buildReceptionistPrompt({
-    business: BUSINESS,
-    ownerFirstName: OWNER_FIRST_NAME,
-    currentDateLabel: currentBusinessDateLabel(),
-  });
+  return buildReceptionistPrompt({ business: BUSINESS, ownerFirstName: OWNER_FIRST_NAME, currentDateLabel });
 }
