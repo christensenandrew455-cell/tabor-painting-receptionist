@@ -42,8 +42,9 @@ Last question: What day works best for you, and what time?
 Current field: preferredSchedule`);
   assert.match(scheduleState, /What day works best for you, and what time\?/i);
   assert.match(scheduleState, /supplying both a day or date and a time/i);
-  assert.match(scheduleState, /Just to make sure, you mean \[weekday\], \[month\] \[day\] at \[time\], right\?/i);
-  assert.match(scheduleState, /Do not ask the original scheduling question again/i);
+  assert.match(scheduleState, /The date and time you requested is a request\. The business might ask to reschedule\./i);
+  assert.match(scheduleState, /Do not ask a separate date-confirmation question/i);
+  assert.doesNotMatch(scheduleState, /Just to make sure/i);
 });
 
 test('supplies one concise retry for the service field', () => {
@@ -83,7 +84,7 @@ test('removes a second scheduling question when old rewritten wording is present
   assert.doesNotMatch(result, /What day and time works best for you\?/i);
 });
 
-test('session rules preserve service classification and lock one scheduling confirmation', () => {
+test('session rules preserve service classification and use the request disclaimer without date confirmation', () => {
   const result = applyIntakeWordingSessionRules({
     type: 'session.update',
     session: {
@@ -108,8 +109,9 @@ Only approved output.
     result.session.instructions,
     /What day works best for you, and what time\? We schedule estimates Monday through Friday from 8:00 AM to 5:00 PM\./i,
   );
-  assert.match(result.session.instructions, /confirm once by saying: "Just to make sure/i);
-  assert.match(result.session.instructions, /Do not repeat the scheduling question in that confirmation/i);
+  assert.match(result.session.instructions, /The date and time you requested is a request\. Tabor Painting might ask to reschedule\./i);
+  assert.match(result.session.instructions, /Do not ask a separate date-confirmation question/i);
+  assert.doesNotMatch(result.session.instructions, /Just to make sure/i);
   assert.match(result.session.instructions, /There is no separate latency cue or secondary voice/i);
   assert.match(result.session.instructions, /While waiting, say nothing/i);
 });
