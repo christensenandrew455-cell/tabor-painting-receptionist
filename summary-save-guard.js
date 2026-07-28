@@ -15,7 +15,7 @@ export function buildConfirmedSummarySaveInstructions(fieldAnswers = {}) {
     additionalNotes: String(fieldAnswers.additionalNotes || '').trim(),
     contactConsent: fieldAnswers.contactConsent === true,
   };
-  return `${FINAL_SUMMARY_CONFIRMATION_MARKER}\nSay exactly: "Okay, great. I'm sending your request now." In the same turn, call submit_estimate_lead exactly once with this JSON object: ${JSON.stringify(payload)}. Do not ask another question before the tool call.`;
+  return `${FINAL_SUMMARY_CONFIRMATION_MARKER}\nSay exactly: "Okay, I'm going to submit the estimate request now." In the same turn, call submit_estimate_lead exactly once with this JSON object: ${JSON.stringify(payload)}. Do not ask another question before the tool call.`;
 }
 
 export function shouldTriggerConfirmedSummarySave({ awaitingSummaryConfirmation = false, transcript = '' } = {}) {
@@ -127,8 +127,6 @@ WebSocket.prototype.emit = function summarySaveEmit(eventName, ...args) {
     if (shouldTriggerConfirmedSummarySave({ awaitingSummaryConfirmation: state.awaitingSummaryConfirmation, transcript })) {
       state.awaitingSummaryConfirmation = false;
 
-      // Let the main conversation controller observe the caller's confirmation first.
-      // It must set summaryConfirmed before the repeated submit tool call arrives.
       const result = previousEmit.call(this, eventName, ...args);
       const payload = state.pendingSubmitArgs || state.fieldAnswers;
       state.pendingSubmitArgs = null;
@@ -149,5 +147,5 @@ WebSocket.prototype.emit = function summarySaveEmit(eventName, ...args) {
 
 console.log('[Summary save guard]', {
   enabled: true,
-  behavior: 'preserves the complete submit payload and submits it after the main controller records final-summary confirmation',
+  behavior: 'preserves the complete submit payload and announces the submission before sending it',
 });
