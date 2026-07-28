@@ -59,7 +59,6 @@ function businessNameFromInstructions(value = '') {
 
 export function rewritePrimaryIntakeQuestions(value = '') {
   const source = clean(value);
-  const businessName = businessNameFromInstructions(source);
   return source
     .replace(
       /What is the project address\? Please (?:give me|include) the city or town, state, street number, and street name\./gi,
@@ -98,6 +97,7 @@ export function augmentCallStateText(value = '') {
   const field = fieldFromState(source);
   const lastQuestion = lastQuestionFromState(source);
   const retryQuestion = retryQuestionFor(field, lastQuestion);
+  const businessName = businessNameFromInstructions(source);
   const nameRule = field === 'fullName'
     ? '- "Nice to meet you, [first name]" is allowed once only when the newest caller response provides a valid first and last name. Use it immediately after that name, then ask the service question once.'
     : '- "Nice to meet you" is forbidden on this turn. Do not use the caller’s name in an acknowledgment. The caller’s name may still appear later in the final summary or closing.';
@@ -116,11 +116,10 @@ export function applyIntakeWordingSessionRules(message = {}) {
   const session = { ...message.session };
   let instructions = rewritePrimaryIntakeQuestions(session.instructions);
   if (instructions.includes(SESSION_MARKER)) return { ...message, session: { ...session, instructions } };
+  const businessName = businessNameFromInstructions(instructions);
 
   const strictBlock = `${SESSION_MARKER}\n- "Nice to meet you" may be spoken only once, immediately after the caller supplies a valid first and last name. It is forbidden after service, location, date, time, notes, consent, business questions, or any later step.\n- The first service question must include the complete configured service list and briefly identify the best matching configured service when the caller describes the problem in ordinary language. Do not skip directly to the address after a service description.\n- Ask for the full project address in one natural question using this order: street number, street name, city or town, and state. Ask individual address parts only when missing or unclear.\n- The first combined scheduling question must say exactly: "What day works best for you, and what time? We schedule estimates [configured estimate days] from [configured earliest estimate time] to [configured latest estimate time]." Ask it once.\n- Accept a weekday, a calendar date, or a day number when it can be resolved to one future date. After the caller gives a usable day and time, say exactly: "The date and time you requested is a request. ${businessName} might ask to reschedule." Then continue to the next intake question. Do not ask a separate date-confirmation question.\n- Ask for the preferred day and time in one natural question before asking for either part separately. Ask individual schedule parts only when missing or invalid.\n- Ask each question only once per response. Never repeat a question back-to-back and never say both the full question and its simplified retry in the same response.\n- When a complete answer does not fit the current field, use one short retry: "I'm sorry, I didn't get that," followed by the simplified current question. Do not repeat service lists or scheduling ranges in a retry.\n- Do not use "I'm sorry, I didn't get that" merely because the caller is silent, paused, unfinished, interrupted, or surrounded by noise.\n- Acknowledgments must be quiet and neutral, with no exclamation marks. Outside the name step, do not attach the caller’s name to an acknowledgment.\n- There is no separate latency cue or secondary voice. While waiting, say nothing.`;
-
   const replacement = `RESPONSIVE ACKNOWLEDGMENTS\nImmediately after a valid full name only, you may say "Thanks, [first name]" or "Nice to meet you, [first name]" once, then ask the service question once.\nAfter every other usable intake answer, you may say only one neutral acknowledgment: "Okay." "Thanks." or "Got it." Never use the caller’s name in those acknowledgments.\nDo not repeat an answer unless a confirmation is required.\nDo not use exclamation marks.\nDo not say "take your time," "no rush," "whenever you're ready," or similar reassurance.\nRemain silent while waiting for the caller.\n\nRESTRICTED OUTPUT`;
-
   if (/RESPONSIVE ACKNOWLEDGMENTS[\s\S]*?\n\nRESTRICTED OUTPUT/i.test(instructions)) {
     instructions = instructions.replace(/RESPONSIVE ACKNOWLEDGMENTS[\s\S]*?\n\nRESTRICTED OUTPUT/i, replacement);
   }
