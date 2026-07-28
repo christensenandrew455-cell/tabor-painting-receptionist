@@ -44,7 +44,13 @@ function isOpenAiRealtimeSocket(socket) {
 }
 
 function stateFor(socket) {
-  if (!states.has(socket)) states.set(socket, { awaitingSummaryConfirmation: false, fieldAnswers: {} });
+  if (!states.has(socket)) {
+    states.set(socket, {
+      awaitingSummaryConfirmation: false,
+      fieldAnswers: {},
+      pendingSubmitArgs: null,
+    });
+  }
   return states.get(socket);
 }
 
@@ -60,6 +66,19 @@ function extractFieldAnswers(value = '') {
     else answers[name] = rawValue;
   }
   return answers;
+}
+
+function toolCallFromMessage(message = {}) {
+  const item = message.item || message.output_item || {};
+  const name = clean(message.name || item.name);
+  const raw = message.arguments || item.arguments || '{}';
+  let args = {};
+  try {
+    args = JSON.parse(raw || '{}');
+  } catch {
+    args = {};
+  }
+  return { name, args };
 }
 
 WebSocket.prototype.send = function summarySaveSend(data, ...args) {
@@ -83,29 +102,45 @@ WebSocket.prototype.send = function summarySaveSend(data, ...args) {
 };
 
 WebSocket.prototype.emit = function summarySaveEmit(eventName, ...args) {
-  if (eventName === 'message' && isOpenAiRealtimeSocket(this) && args[0]) {
-    const message = parseJson(args[0]);
-    const state = stateFor(this);
+  if (eventName !== 'message' || !isOpenAiRealtimeSocket(this) || !args[0]) {
+    return previousEmit.call(this, eventName, ...args);
+  }
 
-    if (message?.type === 'response.audio_transcript.done' || message?.type === 'response.output_audio_transcript.done') {
-      const transcript = clean(message.transcript);
-      if (/does all of that sound correct\?/i.test(transcript)) state.awaitingSummaryConfirmation = true;
+  const message = parseJson(args[0]);
+  const state = stateFor(this);
+
+  if (message?.type === 'response.function_call_arguments.done' || message?.type === 'response.output_item.done') {
+    const call = toolCallFromMessage(message);
+    if (call.name === 'submit_estimate_lead' && Object.keys(call.args).length) {
+      state.pendingSubmitArgs = { ...call.args };
+      state.fieldAnswers = { ...state.fieldAnswers, ...call.args };
     }
+  }
 
-    if (message?.type === 'conversation.item.input_audio_transcription.completed') {
-      const transcript = clean(message.transcript);
-      if (shouldTriggerConfirmedSummarySave({ awaitingSummaryConfirmation: state.awaitingSummaryConfirmation, transcript })) {
-        state.awaitingSummaryConfirmation = false;
-        const outgoing = {
-          type: 'response.create',
-          response: {
-            output_modalities: ['audio'],
-            instructions: buildConfirmedSummarySaveInstructions(state.fieldAnswers),
-          },
-        };
-        previousSend.call(this, JSON.stringify(outgoing));
-        return false;
-      }
+  if (message?.type === 'response.audio_transcript.done' || message?.type === 'response.output_audio_transcript.done') {
+    const transcript = clean(message.transcript);
+    if (/does all of that sound correct\?/i.test(transcript)) state.awaitingSummaryConfirmation = true;
+  }
+
+  if (message?.type === 'conversation.item.input_audio_transcription.completed') {
+    const transcript = clean(message.transcript);
+    if (shouldTriggerConfirmedSummarySave({ awaitingSummaryConfirmation: state.awaitingSummaryConfirmation, transcript })) {
+      state.awaitingSummaryConfirmation = false;
+
+      // Let the main conversation controller observe the caller's confirmation first.
+      // It must set summaryConfirmed before the repeated submit tool call arrives.
+      const result = previousEmit.call(this, eventName, ...args);
+      const payload = state.pendingSubmitArgs || state.fieldAnswers;
+      state.pendingSubmitArgs = null;
+
+      previousSend.call(this, JSON.stringify({
+        type: 'response.create',
+        response: {
+          output_modalities: ['audio'],
+          instructions: buildConfirmedSummarySaveInstructions(payload),
+        },
+      }));
+      return result;
     }
   }
 
@@ -114,5 +149,5 @@ WebSocket.prototype.emit = function summarySaveEmit(eventName, ...args) {
 
 console.log('[Summary save guard]', {
   enabled: true,
-  behavior: 'submits the collected lead immediately after the caller confirms the final summary',
+  behavior: 'preserves the complete submit payload and submits it after the main controller records final-summary confirmation',
 });
