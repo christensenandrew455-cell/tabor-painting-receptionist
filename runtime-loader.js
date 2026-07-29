@@ -65,7 +65,7 @@ async function importCore(runtimeData) {
     AI_MODEL: clean(profile.aiModel) || 'gpt-realtime-mini',
     AI_VOICE: clean(profile.aiVoice) || 'alloy',
     AI_SPEECH_SPEED: Number(profile.aiSpeechSpeed || 0.94),
-    AI_SILENCE_MS: Math.round(Number(profile.aiSilenceMs || 1200)),
+    AI_SILENCE_MS: Math.round(Number(profile.aiSilenceMs || 1050)),
     BUSINESS_INFO: JSON.stringify(businessInfoFromProfile(profile)),
     OCM_CLIENT_ID: clean(runtimeData.clientId),
   };
