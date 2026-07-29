@@ -43,6 +43,7 @@ function stateFor(socket) {
       pendingSaveSuccess: false,
       awaitingSummaryConfirmation: false,
       summaryConfirmed: false,
+      awaitingAdditionalNoteContent: false,
       contactConsentRefusals: 0,
       assistantTranscript: '',
       callNames: new Map(),
@@ -89,7 +90,7 @@ export function identifyQuestion(question, businessName = 'the business') {
   if (/street name/.test(normalized)) return { id: 'street_name', field: 'streetName', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/exact date|upcoming day|preferred.*date/.test(normalized)) return { id: 'preferred_date', field: 'preferredDateOrDay', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/what time|time would you prefer/.test(normalized)) return { id: 'preferred_time', field: 'preferredTime', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
-  if (/additional notes.*know/.test(normalized)) return { id: 'additional_notes_offer', field: 'additionalNotesRequested', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
+  if (/additional notes.*know|additional notes for the business/.test(normalized)) return { id: 'additional_notes_offer', field: 'additionalNotesRequested', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/what additional notes/.test(normalized)) return { id: 'additional_notes_details', field: 'additionalNotes', stage: RECEPTIONIST_COMMANDS.stages.INTAKE };
   if (/agree to be contacted/.test(normalized)) return { id: 'contact_consent', field: 'contactConsent', stage: RECEPTIONIST_COMMANDS.stages.CONSENT };
   if (/does all of that sound correct|is all of that correct|is that information correct/.test(normalized)) {
@@ -109,6 +110,14 @@ function looksLikeQuestion(value) {
 
 function isAffirmative(value) {
   return /^(?:yes|yeah|yep|yup|sure|correct|right|that'?s correct|sounds right|all correct|okay|ok|please do|go ahead)\b/i.test(clean(value));
+}
+
+function isNegative(value) {
+  return /^(?:no|nope|nah|nothing|none|no thanks|not really)\b/i.test(clean(value));
+}
+
+function affirmativeRemainder(value) {
+  return clean(value).replace(/^(?:yes|yeah|yep|yup|sure|okay|ok)\b[\s,.:;-]*/i, '').trim();
 }
 
 function clockMinutes(value) {
@@ -235,7 +244,7 @@ function summaryInstructions(state) {
   state.memory.lastQuestionId = 'final_confirmation';
   state.memory.lastQuestionText = 'Does all of that sound correct?';
   state.memory.currentField = '';
-  return `Say exactly: "Okay, before I send this in, I want to make sure I have everything correct." Then give one concise complete summary of the caller's full name, service, full project address, preferred estimate date and time, optional additional notes if any, and that contact consent was granted. Never say caller ID or an email address. End by asking exactly: "Does all of that sound correct?" Then stop and wait. Do not call submit_estimate_lead yet.`;
+  return `Say exactly: "Okay, before I send this in, I want to make sure I have everything correct." Then give one concise complete summary of the caller's full name, service, full address, preferred estimate date and time, optional additional notes if any, and that contact consent was granted. Never say caller ID or an email address. End by asking exactly: "Does all of that sound correct?" Then stop and wait. Do not call submit_estimate_lead yet.`;
 }
 
 function replaceHoldAcknowledgement(message, state) {
@@ -298,7 +307,7 @@ function rememberFunctionOutput(state, message) {
   }
 }
 
-function blockedSubmitOutput(socket, state, callId) {
+function blockedSubmitOutput(socket, state, callId, error = 'final_summary_confirmation_required') {
   if (!callId || state.blockedCallIds.has(callId)) return;
   state.blockedCallIds.add(callId);
   previousSend.call(socket, JSON.stringify({
@@ -306,14 +315,16 @@ function blockedSubmitOutput(socket, state, callId) {
     item: {
       type: 'function_call_output',
       call_id: callId,
-      output: JSON.stringify({ ok: false, error: 'final_summary_confirmation_required' }),
+      output: JSON.stringify({ ok: false, error }),
     },
   }));
   previousSend.call(socket, JSON.stringify({
     type: 'response.create',
     response: {
       output_modalities: ['audio'],
-      instructions: summaryInstructions(state),
+      instructions: error === 'contact_consent_required'
+        ? `Say exactly this and nothing else: ${JSON.stringify(`Do you agree to be contacted by ${state.businessName} about this estimate request?`)} Then stop and wait.`
+        : summaryInstructions(state),
     },
   }));
 }
@@ -352,6 +363,7 @@ function handleConsentRefusal(socket, state, call) {
   state.pendingSaveSuccess = false;
   state.awaitingSummaryConfirmation = false;
   state.summaryConfirmed = false;
+  state.awaitingAdditionalNoteContent = false;
   sendStateContext(socket, state);
   previousSend.call(socket, JSON.stringify(controlledResponse(cancellationLine(state))));
   return false;
@@ -360,6 +372,41 @@ function handleConsentRefusal(socket, state, call) {
 function rememberFieldAnswer(state, transcript) {
   const field = state.memory.currentField;
   if (!field || looksLikeQuestion(transcript)) return;
+
+  if (field === 'additionalNotesRequested') {
+    if (isNegative(transcript)) {
+      state.memory.fieldAnswers.additionalNotesRequested = false;
+      state.memory.fieldAnswers.additionalNotes = '';
+      state.awaitingAdditionalNoteContent = false;
+      return;
+    }
+    if (isAffirmative(transcript)) {
+      const remainder = affirmativeRemainder(transcript);
+      state.memory.fieldAnswers.additionalNotesRequested = true;
+      if (remainder) {
+        state.memory.fieldAnswers.additionalNotes = remainder;
+        state.awaitingAdditionalNoteContent = false;
+      } else {
+        state.awaitingAdditionalNoteContent = true;
+        state.memory.currentField = 'additionalNotes';
+        state.memory.lastQuestionId = 'additional_notes_details';
+        state.memory.lastQuestionText = '';
+      }
+      return;
+    }
+  }
+
+  if (field === 'additionalNotes') {
+    const note = affirmativeRemainder(transcript) || clean(transcript);
+    if (!note || isAffirmative(transcript) || isNegative(transcript)) {
+      state.awaitingAdditionalNoteContent = true;
+      return;
+    }
+    state.memory.fieldAnswers.additionalNotesRequested = true;
+    state.memory.fieldAnswers.additionalNotes = note;
+    state.awaitingAdditionalNoteContent = false;
+    return;
+  }
 
   if (field === 'preferredSchedule' || field === 'preferredDateOrDay' || field === 'preferredTime') {
     const parsed = parsePreferredScheduleAnswer(transcript, state.estimateWindow);
@@ -402,6 +449,11 @@ WebSocket.prototype.send = function conversationCommandSend(data, ...args) {
     return previousSend.call(this, JSON.stringify(controlledResponse(cancellationLine(state))), ...args);
   }
 
+  if (!instructions && state.awaitingAdditionalNoteContent) {
+    sendStateContext(this, state);
+    return previousSend.call(this, JSON.stringify(controlledResponse('')), ...args);
+  }
+
   if (!instructions) sendStateContext(this, state);
   return previousSend.call(this, JSON.stringify(outgoing), ...args);
 };
@@ -423,6 +475,7 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
         state.cancellationPending = true;
         state.awaitingSummaryConfirmation = false;
         state.summaryConfirmed = false;
+        state.awaitingAdditionalNoteContent = false;
       } else {
         if (state.awaitingSummaryConfirmation && isAffirmative(transcript)) {
           state.summaryConfirmed = true;
@@ -444,6 +497,14 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
         state.memory.stage = RECEPTIONIST_COMMANDS.stages.CONFIRMATION;
       }
       if (call.name === 'submit_estimate_lead') {
+        if (state.awaitingAdditionalNoteContent) {
+          blockedSubmitOutput(this, state, call.callId, 'additional_notes_required');
+          return false;
+        }
+        if (state.memory.fieldAnswers.contactConsent !== true || call.args?.contactConsent !== true) {
+          blockedSubmitOutput(this, state, call.callId, 'contact_consent_required');
+          return false;
+        }
         if (!state.summaryConfirmed) {
           blockedSubmitOutput(this, state, call.callId);
           return false;
@@ -469,6 +530,8 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
         state.memory.currentField = identified.field;
         state.memory.stage = identified.stage;
         if (identified.id === 'estimate_offer') state.memory.estimateOfferCount += 1;
+        if (identified.id === 'additional_notes_details') state.awaitingAdditionalNoteContent = true;
+        if (identified.id === 'contact_consent') state.awaitingAdditionalNoteContent = false;
         if (identified.id === 'final_confirmation') {
           state.awaitingSummaryConfirmation = true;
           state.summaryConfirmed = false;
@@ -482,5 +545,5 @@ WebSocket.prototype.emit = function conversationCommandEmit(eventName, ...args) 
 
 console.log('[Conversation commands]', {
   enabled: true,
-  behavior: 'injects structured call memory, captures combined schedule answers, retries consent once, cancels refused intake, enforces final confirmation, and adapts fixed hold acknowledgements',
+  behavior: 'injects structured call memory, keeps notes and consent states separate, captures combined schedule answers, cancels refused intake, and enforces final confirmation',
 });
