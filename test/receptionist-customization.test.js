@@ -41,15 +41,12 @@ test('central commands contain only server timing rules that still exist', () =>
   assert.equal('thinkingCues' in RECEPTIONIST_COMMANDS, false);
 });
 
-test('groups normal address and schedule intake before itemizing missing parts', () => {
+test('core keeps grouped address and schedule intake before missing-part questions', () => {
   const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
-  assert.equal(
-    questions.project_location.text,
-    'What is the project address? Please give me the city or town, state, street number, and street name.',
-  );
-  assert.match(questions.estimate_schedule.text, /exact date or upcoming day and time works best/i);
+  assert.equal(questions.project_location.text, 'What is your full project address?');
+  assert.match(questions.estimate_schedule.text, /What day works best for you, and what time/i);
   assert.match(questions.estimate_schedule.text, /Monday through Friday/i);
-  assert.match(questions.estimate_schedule.text, /9:00 AM through 5:00 PM/i);
+  assert.match(questions.estimate_schedule.text, /9:00 AM to 5:00 PM/i);
 });
 
 test('always includes the complete service list on the first service question', () => {
@@ -60,16 +57,16 @@ test('always includes the complete service list on the first service question', 
   );
 });
 
-test('prompt requires silence while waiting and forbids a secondary cue voice', () => {
+test('prompt preserves one-question state and silent waiting behavior', () => {
   const prompt = buildReceptionistPrompt({
     business,
     ownerFirstName: 'Andrew',
     currentDateLabel: 'Sunday, July 26, 2026',
   });
   assert.match(prompt, /When waiting for the caller, remain silent/i);
-  assert.match(prompt, /There is no separate thinking cue or secondary voice/i);
-  assert.match(prompt, /Do not itemize the address before the caller has a chance/i);
+  assert.match(prompt, /Treat one normal answer as capable of supplying street number, street name, city or town, and state/i);
   assert.match(prompt, /first service question must always include the complete configured service list/i);
+  assert.match(prompt, /return to the one unanswered intake question/i);
   assert.doesNotMatch(prompt, /1,100 millisecond thinking cue/i);
 });
 
