@@ -24,7 +24,7 @@ test('builds one complete submit command without caller ID or email', () => {
     additionalNotes: '',
     contactConsent: true,
   });
-  assert.match(instructions, /I'm sending your request now/i);
+  assert.match(instructions, /submit the estimate request now/i);
   assert.match(instructions, /submit_estimate_lead exactly once/i);
   assert.match(instructions, /"contactConsent":true/);
   assert.doesNotMatch(instructions, /callerPhone|email/i);
