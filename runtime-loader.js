@@ -62,7 +62,7 @@ async function importCore(runtimeData) {
 
   const profile = runtimeData.profile || {};
   const values = {
-    AI_MODEL: clean(profile.aiModel) || 'gpt-realtime-mini',
+    AI_MODEL: clean(profile.aiModel) || 'gpt-realtime-2.1-mini',
     AI_VOICE: clean(profile.aiVoice) || 'alloy',
     AI_SPEECH_SPEED: Number(profile.aiSpeechSpeed || 0.94),
     AI_SILENCE_MS: Math.round(Number(profile.aiSilenceMs || 1050)),
