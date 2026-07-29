@@ -27,8 +27,8 @@ export function rewriteEstimateFormWording(value = '') {
     .replace(/What is your full project address\?/gi, 'I need the full address for the project.')
     .replace(/What is the project address\? Please say it in this order: street number, street name, city or town, and state\./gi, 'I need the full address for the project.')
     .replace(/What is the project address\? Please (?:give me|include) the city or town, state, street number, and street name\./gi, 'I need the full address for the project.')
-    .replace(/full project address/gi, 'the address')
-    .replace(/full address/gi, 'the address');
+    .replace(/summary of the caller's full address/gi, 'summary of the address')
+    .replace(/summarize the caller's full address/gi, 'summarize the address');
 }
 
 function rewriteMessage(message) {
