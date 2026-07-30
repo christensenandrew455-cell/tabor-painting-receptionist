@@ -4,8 +4,8 @@
 export const RECEPTIONIST_SCRIPT_SECTIONS = Object.freeze({
   opening: [
     'Hi, thank you for calling {{business_name}}.',
-    "I'm {{ai_name}}, the AI receptionist for {{business_name}}.",
-    "I'm here to answer questions about {{business_name}} or help you submit an estimate request.",
+    "I'm the receptionist, {{ai_name}}.",
+    "I'm here to answer questions or guide you through an estimate request.",
     'Would you like to submit an estimate request?',
   ],
 
