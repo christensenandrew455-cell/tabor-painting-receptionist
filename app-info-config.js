@@ -1,6 +1,6 @@
 // Single source of truth for information supplied by ARK Websites OCM.
-// The live receptionist imports this file instead of guessing profile field names
-// or repeating business-information defaults in several files.
+// Script wording belongs in receptionist-script.js.
+// Workflow rules and memory behavior belong in script-commands.js.
 
 export const APP_INFO_FIELDS = Object.freeze({
   businessName: 'businessName',
@@ -140,4 +140,41 @@ export function runtimeEnvironmentFromApp({ profile = {}, clientId = '' } = {}) 
     BUSINESS_INFO: JSON.stringify(businessInfoFromAppProfile(profile)),
     OCM_CLIENT_ID: cleanText(clientId),
   });
+}
+
+export function serviceListFromBusiness(services = {}) {
+  const names = Object.keys(services);
+  if (names.length <= 1) return names[0] || 'the configured services';
+  return `${names.slice(0, -1).join(', ')}, or ${names.at(-1)}`;
+}
+
+export function buildBusinessKnowledge(business = {}) {
+  const services = Object.entries(business.services || {})
+    .map(([name, description]) => `- ${name}: ${description}`)
+    .join('\n') || '- No services were configured.';
+  const about = Array.isArray(business.about) && business.about.length
+    ? `- About: ${business.about.join(' ')}\n`
+    : '';
+  const extra = cleanText(business.extraInformation)
+    ? `- Additional information: ${cleanText(business.extraInformation)}\n`
+    : '';
+  return [
+    'BUSINESS INFORMATION',
+    `- Business name: ${cleanText(business.name)}`,
+    `- Receptionist name: ${cleanText(business.receptionist)}`,
+    `- Owner and main contact: ${cleanText(business.owner)}`,
+    `- Business phone: ${cleanText(business.phone)}`,
+    `- Business email: ${cleanText(business.email)}`,
+    `- Hours: ${cleanText(business.hours)}`,
+    `- Estimate days: ${cleanText(business.estimateDays)}`,
+    `- Estimate request times: ${cleanText(business.earliestEstimateStart)} through ${cleanText(business.latestEstimateStart)}`,
+    `- Time zone: ${cleanText(business.timeZone)}`,
+    `- Based in: ${cleanText(business.base)}`,
+    `- Common service areas: ${(business.serviceAreas || []).join(', ')}`,
+    '- Services:',
+    services,
+    about.trimEnd(),
+    extra.trimEnd(),
+    '- Never quote an unconfigured price, promise availability, or invent information.',
+  ].filter(Boolean).join('\n');
 }
