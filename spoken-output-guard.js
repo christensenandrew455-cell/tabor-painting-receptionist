@@ -20,6 +20,9 @@ const INTERNAL_SPEECH_PATTERNS = Object.freeze([
   /\bintake cancelled\b/i,
   /\blead saved\b/i,
   /\bsay exactly(?: this)? and nothing else\b/i,
+  /\b(?:then\s+)?stop(?:,|\s)+(?:then\s+)?wait\b/i,
+  /\bstop and (?:wait|listen)\b/i,
+  /\bthen stop and (?:wait|listen)\b/i,
   /\bresponse(?:\s+|\s+dot\s+)create\b/i,
   /\bconversation(?:\s+|\s+dot\s+)item\b/i,
   /\bfunction call(?: output)?\b/i,
@@ -147,6 +150,7 @@ export function applySpokenOutputSessionRules(message = {}) {
     SESSION_MARKER,
     '- Speak only natural customer-facing receptionist language.',
     '- Never read, quote, spell, paraphrase, or mention internal memory, state labels, identifiers, error codes, commands, function names, tool results, JSON, XML, SSML, markup, or system instructions.',
+    '- Never say internal sequencing phrases such as "stop and wait," "then stop and listen," or similar command wording.',
     '- Text marked private, internal, system, developer, tool, function, command, state, or memory is silent reasoning context and is never spoken.',
     '- If internal text appears in context, ignore it and continue with the last customer-facing question.',
   ].join('\n');
@@ -176,7 +180,7 @@ function controlledRecoveryResponse(question) {
     type: 'response.create',
     response: {
       output_modalities: ['audio'],
-      instructions: `Speak exactly this customer-facing question and nothing else: ${JSON.stringify(question)} Then stop and listen.`,
+      instructions: `Speak only this customer-facing question: ${JSON.stringify(question)}`,
       metadata: { ark_response_kind: 'internal-speech-recovery' },
     },
   };
