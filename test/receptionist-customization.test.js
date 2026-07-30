@@ -34,39 +34,41 @@ const business = {
   extraInformation: '',
 };
 
-test('central commands contain only server timing rules that still exist', () => {
+test('central commands use the approved five-second and thirty-second timing rules', () => {
   assert.equal(RECEPTIONIST_COMMANDS.silenceReaskMs, 5000);
   assert.equal(RECEPTIONIST_COMMANDS.holdCheckMs, 30000);
   assert.equal('thinkingCueMs' in RECEPTIONIST_COMMANDS, false);
   assert.equal('thinkingCues' in RECEPTIONIST_COMMANDS, false);
 });
 
-test('core keeps grouped address and schedule intake before missing-part questions', () => {
-  const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
-  assert.equal(questions.project_location.text, 'What is your full project address?');
-  assert.match(questions.estimate_schedule.text, /What day works best for you, and what time/i);
+test('approved intake asks for one full address and one combined schedule', () => {
+  const questions = buildQuestionCatalog({ business });
+  assert.equal(questions.project_location.text, 'What is the full address for the project?');
+  assert.match(questions.estimate_schedule.text, /What day and time would you prefer for the estimate/i);
   assert.match(questions.estimate_schedule.text, /Monday through Friday/i);
   assert.match(questions.estimate_schedule.text, /9:00 AM to 5:00 PM/i);
 });
 
 test('always includes the complete service list on the first service question', () => {
-  const questions = buildQuestionCatalog({ business, ownerFirstName: 'Andrew' });
+  const questions = buildQuestionCatalog({ business });
   assert.equal(
     questions.service_type.text,
     'What service are you looking for? We specialize in interior painting, or exterior painting.',
   );
 });
 
-test('prompt preserves one-question state and silent waiting behavior', () => {
+test('prompt uses approved script, one-question state, and memory-box behavior', () => {
   const prompt = buildReceptionistPrompt({
     business,
-    ownerFirstName: 'Andrew',
     currentDateLabel: 'Sunday, July 26, 2026',
   });
-  assert.match(prompt, /When waiting for the caller, remain silent/i);
-  assert.match(prompt, /Treat one normal answer as capable of supplying street number, street name, city or town, and state/i);
-  assert.match(prompt, /first service question must always include the complete configured service list/i);
-  assert.match(prompt, /return to the one unanswered intake question/i);
+  assert.match(prompt, /MASTER AI RECEPTIONIST SPECIFICATION/i);
+  assert.match(prompt, /Ask one question at a time and stop to listen/i);
+  assert.match(prompt, /project-address question asks for the full address in one step/i);
+  assert.match(prompt, /complete configured service list|We specialize in interior painting, or exterior painting/i);
+  assert.match(prompt, /return to the same unanswered question/i);
+  assert.match(prompt, /memory box, not conversational recollection/i);
+  assert.match(prompt, /Never ask for a ZIP code, phone number, or email address/i);
   assert.doesNotMatch(prompt, /1,100 millisecond thinking cue/i);
 });
 
@@ -95,6 +97,7 @@ test('structured memory retains only five recent turns and resets intake fields'
   assert.equal(memory.recentCallerUtterances.length, 5);
   assert.equal(memory.recentAssistantUtterances.length, 5);
   assert.match(callMemorySummary(memory), /Andrew Christensen/);
+  assert.match(callMemorySummary(memory), /Question memory:/);
   resetIntakeMemory(memory);
   assert.equal(memory.stage, RECEPTIONIST_COMMANDS.stages.BEFORE_ESTIMATE);
   assert.deepEqual(memory.fieldAnswers, {});
