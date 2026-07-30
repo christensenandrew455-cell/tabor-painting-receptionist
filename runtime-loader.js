@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { runtimeEnvironmentFromApp } from './app-info-config.js';
 
 const OCM_RUNTIME_ENDPOINT = 'https://ark-websites-ocm-xi.vercel.app/api/receptionist/runtime';
 const runtimeCache = new Map();
@@ -7,33 +8,6 @@ let importSequence = 0;
 
 function clean(value) {
   return String(value || '').trim();
-}
-
-function businessInfoFromProfile(profile = {}) {
-  return {
-    name: clean(profile.businessName),
-    receptionist: clean(profile.receptionistName) || 'Alex',
-    owner: clean(profile.ownerName),
-    phone: clean(profile.businessPhone),
-    email: clean(profile.businessEmail),
-    hours: clean(profile.businessHours) || 'Monday through Friday, 9:00 AM to 5:00 PM',
-    timeZone: clean(profile.timeZone) || 'America/New_York',
-    estimateDays: clean(profile.estimateDays) || 'Monday through Friday',
-    estimateWeekdays: Array.isArray(profile.estimateWeekdays) ? profile.estimateWeekdays : [],
-    earliestEstimateStart: clean(profile.earliestEstimateStart) || '9:00 AM',
-    latestEstimateStart: clean(profile.latestEstimateStart) || '4:30 PM',
-    base: clean(profile.businessBase) || 'the local service area',
-    serviceAreas: Array.isArray(profile.serviceAreas) && profile.serviceAreas.length
-      ? profile.serviceAreas
-      : [clean(profile.businessBase) || 'the local service area'],
-    services: profile.services && typeof profile.services === 'object' && !Array.isArray(profile.services)
-      ? profile.services
-      : {},
-    about: Array.isArray(profile.about) ? profile.about : [],
-    openingLine: clean(profile.openingLine),
-    closingLine: clean(profile.closingLine),
-    extraInformation: clean(profile.extraInformation),
-  };
 }
 
 function cacheKey(runtimeData) {
@@ -60,15 +34,10 @@ async function importCore(runtimeData) {
   const key = cacheKey(runtimeData);
   if (runtimeCache.has(key)) return runtimeCache.get(key);
 
-  const profile = runtimeData.profile || {};
-  const values = {
-    AI_MODEL: clean(profile.aiModel) || 'gpt-realtime-2.1-mini',
-    AI_VOICE: clean(profile.aiVoice) || 'alloy',
-    AI_SPEECH_SPEED: Number(profile.aiSpeechSpeed || 0.94),
-    AI_SILENCE_MS: Math.round(Number(profile.aiSilenceMs || 1050)),
-    BUSINESS_INFO: JSON.stringify(businessInfoFromProfile(profile)),
-    OCM_CLIENT_ID: clean(runtimeData.clientId),
-  };
+  const values = runtimeEnvironmentFromApp({
+    profile: runtimeData.profile || {},
+    clientId: runtimeData.clientId,
+  });
 
   const task = importQueue.then(() => withTemporaryEnvironment(values, async () => {
     importSequence += 1;
