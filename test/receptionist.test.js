@@ -151,13 +151,13 @@ test('fails fast when required runtime configuration is missing', () => {
 });
 
 test('tracks usage outcome and transcript progress', () => {
-  assert.equal(durationSeconds(0, 2500), 3);
-  assert.equal(callUsageOutcome({ answered: false }), 'not-answered');
-  assert.equal(callUsageOutcome({ answered: true, leadSaved: true }), 'lead-saved');
-  const state = {};
-  noteTranscriptProgress(state, 'hello there');
-  assert.equal(state.transcriptReceived, true);
-  assert.ok(state.lastTranscriptAt > 0);
+  assert.equal(durationSeconds(1000, 3500), 3);
+  assert.equal(callUsageOutcome({}), 'ended-no-lead');
+  assert.equal(callUsageOutcome({ leadSaved: true }), 'lead-saved');
+  const seenTokens = new Set();
+  assert.equal(noteTranscriptProgress(seenTokens, 'hello there'), true);
+  assert.equal(seenTokens.has('hello'), true);
+  assert.equal(seenTokens.has('there'), true);
 });
 
 test('save failure wording is honest', () => {
