@@ -1,15 +1,48 @@
-import { decideReceptionistTurn, emptyLead } from './receptionist-brain.js';
+import {
+  QUESTION_IDS,
+  createCallMemory,
+  decideReceptionistTurn,
+  emptyLead,
+} from './receptionist-brain.js';
 import { createTranscriber, synthesizePcmu } from './openai-voice.js';
+
+const REPEATABLE_QUESTION_IDS = new Set([
+  'ask_estimate',
+  'continue_estimate',
+  'more_questions',
+  'clarify',
+]);
+
+const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it|the form) out again)\b/i;
 
 function clean(value) {
   return String(value ?? '').trim();
 }
 
+function mergeUnique(left = [], right = []) {
+  return [...new Set([...left, ...right].filter(Boolean))];
+}
+
+function questionIsLocked(memory, questionId) {
+  if (!questionId || questionId === 'none') return false;
+  if (REPEATABLE_QUESTION_IDS.has(questionId)) return false;
+  return memory.completedQuestionIds.includes(questionId);
+}
+
+function recordAskedQuestion(memory, questionId) {
+  if (!questionId || questionId === 'none') return;
+  memory.currentQuestionId = questionId;
+  memory.askedCounts[questionId] = Number(memory.askedCounts[questionId] || 0) + 1;
+  if (['service', 'name', 'project_location', 'preferred_date_time', 'notes', 'contact_consent', 'confirm_summary'].includes(questionId)) {
+    memory.estimateStarted = true;
+  }
+}
+
 export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clearAudio, saveLead, endCall, log = console }) {
   const state = {
     lead: emptyLead(),
+    memory: createCallMemory(),
     history: [],
-    leadSaved: false,
     speaking: false,
     stopped: false,
     generation: 0,
@@ -58,10 +91,39 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     pumpFrames(generation);
   }
 
+  async function submitLeadSafely() {
+    const validation = runtime.core.validateLead(state.lead);
+    if (!validation.valid) {
+      log.warn('[Brain requested invalid lead submission]', validation.errors);
+      return { ok: false, invalid: true };
+    }
+
+    try {
+      await saveLead({
+        callerPhone,
+        lead: validation.lead,
+        payload: runtime.core.buildOcmPayload(callerPhone, validation.lead),
+      });
+      state.memory.leadSaved = true;
+      state.memory.submissionFailed = false;
+      return { ok: true };
+    } catch (error) {
+      state.memory.leadSaved = false;
+      state.memory.submissionFailed = true;
+      log.error('[Estimate submission failed]', error);
+      return { ok: false, error };
+    }
+  }
+
   async function processTranscript(transcript) {
     const text = clean(transcript);
     if (!text || state.stopped) return;
     remember('caller', text);
+
+    if (state.memory.estimateStarted && !state.memory.leadSaved && RESTART_PATTERN.test(text)) {
+      await speak('You can update the estimate request information when I summarize it at the end.');
+      return;
+    }
 
     try {
       const turn = await decideReceptionistTurn({
@@ -69,32 +131,59 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         transcript: text,
         lead: state.lead,
         history: state.history,
-        leadSaved: state.leadSaved,
+        callMemory: state.memory,
       });
-      state.lead = { ...state.lead, ...(turn.updatedLead || {}) };
 
-      if (turn.submitLead && !state.leadSaved) {
-        const validation = runtime.core.validateLead(state.lead);
-        if (validation.valid) {
-          await saveLead({
-            callerPhone,
-            lead: validation.lead,
-            payload: runtime.core.buildOcmPayload(callerPhone, validation.lead),
-          });
-          state.leadSaved = true;
+      state.lead = { ...state.lead, ...(turn.updatedLead || {}) };
+      state.memory.completedQuestionIds = mergeUnique(
+        state.memory.completedQuestionIds,
+        turn.completedQuestionIds || [],
+      );
+
+      let spokenReply = clean(turn.spokenReply);
+      const askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
+
+      if (questionIsLocked(state.memory, askedQuestionId)) {
+        log.warn('[Blocked repeated completed question]', {
+          askedQuestionId,
+          askedCount: state.memory.askedCounts[askedQuestionId] || 0,
+        });
+        spokenReply = state.memory.leadSaved
+          ? `Do you have any more questions about ${runtime.core.BUSINESS.name}?`
+          : state.memory.estimateStarted
+            ? 'Would you like to continue filling out your estimate request?'
+            : 'Would you like to fill out an estimate request?';
+        recordAskedQuestion(
+          state.memory,
+          state.memory.leadSaved ? 'more_questions' : state.memory.estimateStarted ? 'continue_estimate' : 'ask_estimate',
+        );
+      } else {
+        recordAskedQuestion(state.memory, askedQuestionId);
+      }
+
+      if (turn.submitLead && !state.memory.leadSaved) {
+        const submission = await submitLeadSafely();
+        if (submission.ok) {
+          spokenReply = `The request has been sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. Do you have any questions about ${runtime.core.BUSINESS.name}?`;
+          recordAskedQuestion(state.memory, 'more_questions');
+        } else if (submission.invalid) {
+          spokenReply = "I'm sorry, I didn't catch that. Could you repeat that?";
+          recordAskedQuestion(state.memory, 'clarify');
         } else {
-          log.warn('[Brain requested invalid lead submission]', validation.errors);
+          spokenReply = `I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. Do you have any questions about ${runtime.core.BUSINESS.name}?`;
+          recordAskedQuestion(state.memory, 'more_questions');
         }
       }
 
-      await speak(turn.spokenReply);
+      await speak(spokenReply);
       if (turn.endCall) {
-        const delay = Math.max(600, clean(turn.spokenReply).length * 55);
+        const delay = Math.max(600, spokenReply.length * 55);
         setTimeout(() => endCall?.('completed'), delay);
       }
     } catch (error) {
       log.error('[Voice pipeline turn failed]', error);
-      await speak("I'm sorry, I didn't catch that correctly. Could you say that again?");
+      await speak("I'm sorry, I didn't catch that. Could you repeat that?");
+      recordAskedQuestion(state.memory, 'clarify');
     }
   }
 
@@ -111,6 +200,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
   return {
     async start() {
       await speak(runtime.core.openingLine);
+      recordAskedQuestion(state.memory, 'ask_estimate');
     },
     appendCallerAudio(base64Pcmu) {
       if (!state.stopped) transcriber.append(base64Pcmu);
@@ -124,7 +214,11 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     snapshot() {
       return {
         lead: { ...state.lead },
-        leadSaved: state.leadSaved,
+        memory: {
+          ...state.memory,
+          askedCounts: { ...state.memory.askedCounts },
+          completedQuestionIds: [...state.memory.completedQuestionIds],
+        },
         history: [...state.history],
         speaking: state.speaking,
       };
