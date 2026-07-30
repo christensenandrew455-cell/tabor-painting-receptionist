@@ -15,7 +15,7 @@ export function buildConfirmedSummarySaveInstructions(fieldAnswers = {}) {
     additionalNotes: String(fieldAnswers.additionalNotes || '').trim(),
     contactConsent: fieldAnswers.contactConsent === true,
   };
-  return `${FINAL_SUMMARY_CONFIRMATION_MARKER}\nSay exactly: "Okay, I'm going to submit the estimate request now." In the same turn, call submit_estimate_lead exactly once with this JSON object: ${JSON.stringify(payload)}. Do not ask another question before the tool call.`;
+  return `${FINAL_SUMMARY_CONFIRMATION_MARKER}\nSay exactly: "Okay, great. Sending it in now." In the same turn, call submit_estimate_lead exactly once with this JSON object: ${JSON.stringify(payload)}. Do not ask another question before the tool call.`;
 }
 
 export function shouldTriggerConfirmedSummarySave({ awaitingSummaryConfirmation = false, transcript = '' } = {}) {
@@ -119,7 +119,7 @@ WebSocket.prototype.emit = function summarySaveEmit(eventName, ...args) {
 
   if (message?.type === 'response.audio_transcript.done' || message?.type === 'response.output_audio_transcript.done') {
     const transcript = clean(message.transcript);
-    if (/does all of that sound correct\?/i.test(transcript)) state.awaitingSummaryConfirmation = true;
+    if (/does all (?:of )?that sound (?:right|correct)\?/i.test(transcript)) state.awaitingSummaryConfirmation = true;
   }
 
   if (message?.type === 'conversation.item.input_audio_transcription.completed') {
