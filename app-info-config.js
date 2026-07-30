@@ -2,6 +2,8 @@
 // Script wording belongs in receptionist-script.js.
 // Workflow rules and memory behavior belong in script-commands.js.
 
+import { RECEPTIONIST_SCRIPT_SECTIONS } from './receptionist-script.js';
+
 export const APP_INFO_FIELDS = Object.freeze({
   businessName: 'businessName',
   receptionistName: 'receptionistName',
@@ -68,6 +70,14 @@ function finiteNumber(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function renderScript(value, replacements = {}) {
+  const text = Array.isArray(value) ? value.join(' ') : String(value || '');
+  return text.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (match, key) => {
+    const replacement = replacements[String(key).toLowerCase()];
+    return replacement === undefined ? match : replacement;
+  }).replace(/\s+/g, ' ').trim();
+}
+
 export function describeAppInfo(profile = {}) {
   const base = textOrDefault(profile[APP_INFO_FIELDS.businessBase], APP_INFO_DEFAULTS.businessBase);
   const configuredAreas = listOrDefault(profile[APP_INFO_FIELDS.serviceAreas]);
@@ -107,6 +117,11 @@ export function describeAppInfo(profile = {}) {
 // Maps ARK OCM profile names to the stable names consumed by receptionist-core.js.
 export function businessInfoFromAppProfile(profile = {}) {
   const info = describeAppInfo(profile);
+  const replacements = {
+    business_name: info.businessName,
+    ai_name: info.receptionistName,
+    receptionist_name: info.receptionistName,
+  };
   return Object.freeze({
     name: info.businessName,
     receptionist: info.receptionistName,
@@ -123,8 +138,8 @@ export function businessInfoFromAppProfile(profile = {}) {
     serviceAreas: info.serviceAreas,
     services: info.services,
     about: info.about,
-    openingLine: info.openingLine,
-    closingLine: info.closingLine,
+    openingLine: renderScript(RECEPTIONIST_SCRIPT_SECTIONS.opening, replacements),
+    closingLine: renderScript(RECEPTIONIST_SCRIPT_SECTIONS.closing, replacements),
     extraInformation: info.extraInformation,
   });
 }
