@@ -22,11 +22,11 @@ export const RECEPTIONIST_SCRIPT_SECTIONS = Object.freeze({
     'We specialize in {{service_list}}.',
   ],
 
-  projectAddressQuestion: 'What is the full address for the project?',
+  projectAddressQuestion: 'Next, I need your full address for the project.',
 
   estimateScheduleQuestion: [
     'What day and time would you prefer for the estimate?',
-    'We schedule estimates {{estimate_days}} from {{earliest_estimate_time}} to {{latest_estimate_time}}.',
+    'We do estimates {{estimate_days}} from {{earliest_estimate_time}} to {{latest_estimate_time}}.',
   ],
 
   estimateScheduleNotice: [
@@ -34,31 +34,22 @@ export const RECEPTIONIST_SCRIPT_SECTIONS = Object.freeze({
     '{{business_name}} may need to adjust it, but they will discuss any changes with you first.',
   ],
 
-  additionalNotesQuestion: 'Do you have any additional notes about the project?',
+  additionalNotesQuestion: 'Do you have any additional notes?',
 
-  contactConsentQuestion: 'Do you consent to being contacted by {{business_name}} regarding your estimate request?',
+  contactConsentQuestion: 'Do you consent to being contacted by {{business_name}}?',
 
-  confirmationIntro: [
-    'Okay, thank you.',
-    "Before I send this in, I'm going to read everything back to make sure I didn't miss anything.",
-  ],
+  confirmationIntro: "Before I send this in, I'm just going to read it all back to you to make sure I didn't miss anything.",
 
-  confirmationQuestion: 'Does everything sound correct?',
+  confirmationQuestion: 'Does all that sound right?',
 
-  submissionStart: [
-    'Great.',
-    "I'm sending your estimate request now.",
-  ],
+  submissionStart: 'Okay, great. Sending it in now.',
 
   submissionSuccess: [
-    'Your estimate request has been submitted successfully.',
+    'The request has been sent out.',
     '{{business_name}} will follow up with you shortly.',
   ],
 
-  submissionFailure: [
-    "I'm sorry, but I couldn't submit your estimate request.",
-    'Please call back later or contact {{business_name}} directly.',
-  ],
+  submissionFailure: "I'm sorry. The request couldn't get sent out.",
 
   afterSubmissionQuestion: 'Do you have any questions about {{business_name}}?',
 
