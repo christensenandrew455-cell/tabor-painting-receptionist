@@ -32,6 +32,7 @@ export const SCRIPT_COMMAND_STATUS = Object.freeze({
 export const RECEPTIONIST_OBJECTIVES = Object.freeze({
   primary: 'Guide the caller through a complete estimate request using the approved blocks in receptionist-script.js.',
   secondary: 'Answer legitimate questions about the business using only information supplied through app-info-config.js.',
+  truthfulness: 'State whether the request was sent only from the actual send result. Never claim success after a failure.',
 });
 
 export const RECEPTIONIST_RULES = Object.freeze([
@@ -47,7 +48,13 @@ export const RECEPTIONIST_RULES = Object.freeze([
   'A question may be repeated when the caller did not answer it, gave an unclear or invalid answer, or asked a side question instead.',
   'Use the memory box, not conversational recollection, as the source of truth for what was asked, answered, completed, corrected, or still missing.',
   'Ask for the full project address in one question. Never ask for a phone number, email address, or ZIP code.',
+  'For a partial address, ask only for the missing city or town, state, street number, or street name. Never re-ask an address part that is already stored.',
+  'Never explain why a field is needed unless the caller asks why.',
+  'Additional notes are optional. Ask whether the caller has notes before asking what the notes are.',
+  'The first estimate-schedule question must state the configured estimate days and the configured start and end times.',
   'Never say an estimate request was submitted unless the send-request command returns confirmed success.',
+  'If submission fails, state the approved failure line and do not pretend to fix it by collecting unrelated or already-complete information.',
+  'When the caller corrects one field during the summary, update only that field, preserve all other completed fields, and read the full summary again.',
 ]);
 
 export const QUESTION_KEYS = Object.freeze({
@@ -90,19 +97,20 @@ export const ANSWER_VALIDATION = Object.freeze({
     notes: 'Do not depend on capitalization because speech transcription may remove it. Reject questions, long sentences, and unrelated statements as names.',
   }),
   service: Object.freeze({
-    expected: 'A service that matches or clearly relates to one configured service from app-info-config.js.',
-    notes: 'Never invent a service category.',
+    expected: 'One configured service from app-info-config.js, or a clearly equivalent phrasing.',
+    notes: 'The service list is the complete set of services the business specializes in. Never infer an unlisted service just because it sounds related.',
   }),
   projectAddress: Object.freeze({
-    expected: 'One full project address.',
-    notes: 'Ask for a missing address detail only when the original answer is incomplete. Never ask for phone, email, or ZIP code.',
+    expected: 'One full project address containing street number, street name, city or town, and state.',
+    notes: 'Store every address component the caller gives. Ask only for a missing component and never ask again for a component that is already stored. Never ask for phone, email, or ZIP code.',
   }),
   estimateSchedule: Object.freeze({
-    expected: 'A preferred future date and time within the configured estimate schedule.',
-    notes: 'Explain that the requested date and time are not guaranteed and the business will discuss changes first.',
+    expected: 'A preferred future date and time within the configured estimate days and time window.',
+    notes: 'The first schedule question must say the available estimate days and start-to-end time. Explain that the requested date and time are not guaranteed and the business will discuss changes first.',
   }),
   additionalNotes: Object.freeze({
-    expected: 'Optional project notes or a clear statement that there are no additional notes.',
+    expected: 'A clear yes or no to whether the caller has notes. If yes, collect the notes. If no, store an empty string and continue.',
+    notes: 'Never assume the caller has notes and never begin with a command to provide notes.',
   }),
   contactConsent: Object.freeze({
     expected: 'A clear yes or no answer specifically granting or refusing permission for the business to contact the caller.',
@@ -110,7 +118,7 @@ export const ANSWER_VALIDATION = Object.freeze({
   }),
   finalConfirmation: Object.freeze({
     expected: 'A clear confirmation or a correction to the collected information.',
-    notes: 'When corrected, update only the corrected field, preserve the rest, and read the complete corrected summary again.',
+    notes: 'When corrected, update only the corrected field, preserve the rest, and read the complete corrected summary again before submission.',
   }),
 });
 
@@ -125,6 +133,8 @@ export const MEMORY_BOX_RULES = Object.freeze({
     'Move to the next incomplete question only after the current question is completed.',
     'If the caller asks a side question, answer it first and then repeat the unanswered question.',
     'Never return to a completed question unless the caller explicitly corrects that answer.',
+    'For a combined address answer, retain all supplied components and ask only for components still missing.',
+    'For a combined date-and-time answer, retain both valid parts and ask only for a missing or invalid part.',
     'After a valid yes to the estimate offer, remain in the estimate-request process and never offer it again during that request.',
     'Before submission, confirm that all required answers exist, contact consent is granted, and the caller approved the final read-back.',
   ]),
@@ -202,6 +212,7 @@ export function commandRulesPrompt() {
     'OBJECTIVES',
     `Primary: ${RECEPTIONIST_OBJECTIVES.primary}`,
     `Secondary: ${RECEPTIONIST_OBJECTIVES.secondary}`,
+    `Truthfulness: ${RECEPTIONIST_OBJECTIVES.truthfulness}`,
     '',
     'BEHAVIOR RULES',
     ...RECEPTIONIST_RULES.map((rule) => `- ${rule}`),
