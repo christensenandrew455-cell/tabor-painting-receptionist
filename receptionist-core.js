@@ -122,14 +122,10 @@ if (!CLIENT_ID) throw new Error('OCM_CLIENT_ID must contain letters, numbers, hy
 const OWNER_FIRST_NAME = BUSINESS.owner.split(/\s+/).filter(Boolean)[0] || 'the owner';
 const SERVICE_TYPES = Object.freeze(Object.keys(BUSINESS.services));
 const WEEKDAYS = Object.freeze(BUSINESS.estimateWeekdays);
-const WEEKDAY_INDEX = Object.freeze({
-  sunday: 0,
-  monday: 1,
-  tuesday: 2,
-  wednesday: 3,
-  thursday: 4,
-  friday: 5,
-  saturday: 6,
+const WEEKDAY_INDEX = Object.freeze({ sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 });
+const MONTH_INDEX = Object.freeze({
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
 });
 
 function serviceList() {
@@ -172,7 +168,7 @@ export const contactConsentFinalLine = `${contactConsentRefusalLine} Goodbye.`;
 export const saveFailureLine = "I'm sorry. The request couldn't get sent out.";
 export const cancellationLine = `Okay, no problem. I've canceled the estimate request. Do you have any questions about ${BUSINESS.name} or its services?`;
 export const SAFETY_IDENTIFIER = CLIENT_ID || 'ark-receptionist';
-export const TRANSCRIPTION_PROMPT = `Natural phone calls for ${BUSINESS.name}: names, service requests, cities or towns, states, street numbers, street names, dates, times, and additional notes.`;
+export const TRANSCRIPTION_PROMPT = '';
 export const questionCatalog = buildQuestionCatalog({ business: BUSINESS, ownerFirstName: OWNER_FIRST_NAME });
 
 export {
@@ -196,7 +192,13 @@ export function getCallerPhone(payload = {}) {
 }
 
 function clockMinutes(value) {
-  const raw = cleanText(value).toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  const raw = cleanText(value)
+    .toLowerCase()
+    .replace(/[’']/g, "'")
+    .replace(/\bo\s*'?clock\b/g, '')
+    .replace(/\./g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   const match = raw.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?$/);
   if (!match) return null;
 
@@ -208,6 +210,16 @@ function clockMinutes(value) {
     if (hour < 1 || hour > 12) return null;
     if (hour === 12) hour = 0;
     if (meridiem === 'pm') hour += 12;
+  } else if (hour >= 1 && hour <= 12) {
+    const earliest = clockMinutes(BUSINESS.earliestEstimateStart);
+    const latest = clockMinutes(BUSINESS.latestEstimateStart);
+    const morning = hour * 60 + minute;
+    const afternoon = (hour === 12 ? 12 : hour + 12) * 60 + minute;
+    if (earliest !== null && latest !== null) {
+      if (morning >= earliest && morning <= latest) return morning;
+      if (afternoon >= earliest && afternoon <= latest) return afternoon;
+    }
+    return morning;
   } else if (hour < 0 || hour > 23) {
     return null;
   }
@@ -261,11 +273,27 @@ function weekdayAllowed(date) {
   return WEEKDAYS.includes(weekday);
 }
 
+function nextAllowedDayOfMonth(day, today, monthIndex = null, year = null) {
+  const candidates = [];
+  const startYear = year ?? today.getUTCFullYear();
+  const startMonth = monthIndex ?? today.getUTCMonth();
+  for (let offset = 0; offset < 14; offset += 1) {
+    const month = monthIndex === null ? startMonth + offset : startMonth;
+    const candidate = new Date(Date.UTC(year ?? startYear, month, day, 12));
+    if (candidate.getUTCDate() !== day) continue;
+    if (candidate <= today) continue;
+    candidates.push(candidate);
+    if (monthIndex !== null) break;
+  }
+  return candidates.find(weekdayAllowed) || null;
+}
+
 export function resolvePreferredDate(value = '', now = new Date()) {
   const raw = cleanText(value);
   if (!raw) return '';
   const today = todayInBusinessTimeZone(now);
-  const normalizedWeekday = raw.toLowerCase();
+  const normalized = raw.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  const normalizedWeekday = normalized.replace(/^(?:this|next)\s+/, '');
 
   if (WEEKDAY_INDEX[normalizedWeekday] !== undefined) {
     const target = new Date(today);
@@ -277,10 +305,26 @@ export function resolvePreferredDate(value = '', now = new Date()) {
   let candidate = '';
   if (validIsoDate(raw)) candidate = raw;
   else {
-    const match = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-    if (match) {
-      const [, month, day, year] = match;
-      candidate = `${year}-${String(Number(month)).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`;
+    const numeric = normalized.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$/);
+    if (numeric) {
+      const [, month, day, rawYear] = numeric;
+      let year = rawYear ? Number(rawYear) : today.getUTCFullYear();
+      if (rawYear && rawYear.length === 2) year += 2000;
+      let date = new Date(Date.UTC(year, Number(month) - 1, Number(day), 12));
+      if (!rawYear && date <= today) date = new Date(Date.UTC(year + 1, Number(month) - 1, Number(day), 12));
+      candidate = formatIsoDate(date);
+    } else {
+      const named = normalized.match(/^(?:on\s+)?(?:the\s+)?(?:(january|february|march|april|may|june|july|august|september|october|november|december)\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?$/);
+      if (named) {
+        const [, monthName, dayText, yearText] = named;
+        const date = nextAllowedDayOfMonth(
+          Number(dayText),
+          today,
+          monthName ? MONTH_INDEX[monthName] : null,
+          yearText ? Number(yearText) : null,
+        );
+        if (date) candidate = formatIsoDate(date);
+      }
     }
   }
 
@@ -370,17 +414,7 @@ export const tools = Object.freeze([
         additionalNotes: { type: 'string' },
         contactConsent: { type: 'boolean' },
       },
-      required: [
-        'fullName',
-        'serviceType',
-        'cityOrTown',
-        'state',
-        'streetNumber',
-        'streetName',
-        'preferredDateOrDay',
-        'preferredTime',
-        'contactConsent',
-      ],
+      required: ['fullName', 'serviceType', 'cityOrTown', 'state', 'streetNumber', 'streetName', 'preferredDateOrDay', 'preferredTime', 'contactConsent'],
     },
   },
   {
@@ -390,9 +424,7 @@ export const tools = Object.freeze([
     parameters: {
       type: 'object',
       additionalProperties: false,
-      properties: {
-        agreed: { type: 'boolean' },
-      },
+      properties: { agreed: { type: 'boolean' } },
       required: ['agreed'],
     },
   },
@@ -400,12 +432,7 @@ export const tools = Object.freeze([
     type: 'function',
     name: 'finish_call',
     description: 'Finish the call only after the estimate has been saved or a save attempt has failed and the caller has no more questions.',
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {},
-      required: [],
-    },
+    parameters: { type: 'object', additionalProperties: false, properties: {}, required: [] },
   },
 ]);
 
