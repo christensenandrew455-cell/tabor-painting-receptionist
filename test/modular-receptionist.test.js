@@ -6,11 +6,16 @@ import { businessInfoFromAppProfile, runtimeEnvironmentFromApp } from '../app-in
 import { pcm24kToPcmu8k, splitPcmuFrames } from '../audio-codec.js';
 import {
   baseQuestionFor,
+  callerAffirmsSummary,
   captureDeterministicLead,
+  changedLeadFields,
+  controlSpeechReply,
   enforceQuestionBlock,
+  isControlSpeech,
   isObviouslyIncompleteTranscript,
   mergeCallerFragment,
   nextRequiredQuestion,
+  reopenConfirmation,
   repeatQuestionFor,
   shouldKeepHoldingFragment,
   validationLeadFromModular,
@@ -152,7 +157,7 @@ test('field blocks sound natural, include required context, and end at the quest
   const serviceBlock = baseQuestionFor(coreStub, 'service', completeLead);
   assert.equal(
     serviceBlock,
-    'Next, we need to collect the service you need. Which service is this for: wood staining, exterior painting, interior painting, or small paint repair?',
+    'Which service are you calling about: wood staining, exterior painting, interior painting, or small paint repair?',
   );
 
   const dateBlock = baseQuestionFor(coreStub, 'preferred_date_time', completeLead);
@@ -229,6 +234,44 @@ test('the requested weekday is the final relevant weekday mentioned by the calle
   assert.equal(outsideHours.preferredTime, null);
 });
 
+test('control speech is never captured as a field answer', () => {
+  assert.equal(isControlSpeech('Hello?'), true);
+  assert.equal(isControlSpeech('Can you hear me?'), true);
+  assert.equal(isControlSpeech('small paint repair'), false);
+
+  const notes = captureDeterministicLead(coreStub, 'notes', 'Hello.', { ...completeLead, notes: null });
+  assert.equal(notes.notes, null);
+  assert.equal(
+    controlSpeechReply(coreStub, 'notes', completeLead),
+    "I'm here. Is there anything else you'd like the estimator to know about the project?",
+  );
+});
+
+test('deterministic date and time facts are independent from a later cancelled reply', () => {
+  const before = { ...completeLead, preferredDate: null, preferredTime: null };
+  const captured = captureDeterministicLead(coreStub, 'preferred_date_time', 'Probably Monday at 9.', before);
+  assert.deepEqual(changedLeadFields(before, captured), ['preferredDate', 'preferredTime']);
+  assert.equal(captured.preferredDate, 'Monday');
+  assert.equal(captured.preferredTime, '9:00 AM');
+});
+
+test('a notes correction reopens confirmation and an affirmative correction can confirm it', () => {
+  const corrected = captureDeterministicLead(
+    coreStub,
+    'confirm_summary',
+    "There were no additional notes, but other than that, yeah.",
+    { ...completeLead, notes: 'Hello.' },
+  );
+  assert.equal(corrected.notes, 'none');
+  assert.equal(callerAffirmsSummary("There were no additional notes, but other than that, yeah."), true);
+
+  const memory = createCallMemory();
+  memory.completedQuestionIds = [...QUESTION_IDS.filter((id) => ['service', 'name', 'project_location', 'preferred_date_time', 'notes', 'contact_consent', 'confirm_summary'].includes(id))];
+  reopenConfirmation(memory);
+  assert.equal(memory.completedQuestionIds.includes('confirm_summary'), false);
+  assert.equal(nextRequiredQuestion(memory, corrected), 'confirm_summary');
+});
+
 test('unfinished caller phrases are held across filler turns until the real answer arrives', () => {
   assert.equal(isObviouslyIncompleteTranscript('Um...'), true);
   assert.equal(shouldKeepHoldingFragment('Um...', 'Can I do...'), true);
@@ -236,15 +279,19 @@ test('unfinished caller phrases are held across filler turns until the real answ
   assert.equal(mergeCallerFragment('Um Can I do Right.', 'Tuesday at 4?'), 'Um Can I do Right. Tuesday at 4?');
 });
 
-test('identity, stale-turn cancellation, field order, and failed-save guards are hard enforced', () => {
+test('identity, stale-turn cancellation, durable facts, correction routing, and failed-save guards are hard enforced', () => {
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /IDENTITY_PATTERN/);
   assert.match(controller, /FALSE_HUMAN_CLAIM_PATTERN/);
   assert.match(controller, /guard\.stale_turn_discarded/);
-  assert.match(controller, /guard\.field_order_enforced/);
+  assert.match(controller, /lead\.deterministic_committed/);
+  assert.match(controller, /guard\.control_speech/);
+  assert.match(controller, /guard\.summary_reopened_after_change/);
+  assert.match(controller, /guard\.summary_affirmation_committed/);
+  assert.match(controller, /state\.memory\.leadSaved \? 'more_questions' : 'confirm_summary'/);
+  assert.doesNotMatch(controller, /state\.memory\.leadSaved \? 'more_questions' : 'continue_estimate'/);
   assert.match(controller, /validationLeadFromModular\(state\.lead\)/);
   assert.match(controller, /guard\.submit_before_complete_blocked/);
-  assert.match(controller, /shouldEndCall = false/);
   assert.match(controller, /lead\.validation_failed/);
 });
 
@@ -257,11 +304,12 @@ test('five-second silence repeats use only the short question', () => {
   assert.match(controller, /silence\.base_question_repeat/);
 });
 
-test('a generic hello can never close a follow-up-question call', () => {
+test('a generic hello can never close a follow-up-question call or poison completions', () => {
   const brain = read('receptionist-brain.js');
   assert.match(brain, /EXPLICIT_GOODBYE_PATTERN/);
   assert.match(brain, /NO_MORE_QUESTIONS_PATTERN/);
   assert.match(brain, /guardUnexpectedEnd/);
+  assert.match(brain, /completedQuestionIds: \[\.\.\.\(callMemory\?\.completedQuestionIds \|\| \[\]\)\]/);
   assert.match(brain, /I'm still here\. Do you have any more questions about/);
   assert.match(brain, /Never end the call because the caller says "hello/);
 });
@@ -284,6 +332,7 @@ test('the brain requires notes, full readback, availability, and save-before-clo
   assert.match(brain, /always state the configured estimate availability/);
   assert.match(brain, /read back the caller's name, service, full project address/);
   assert.match(brain, /When submitLead is true, endCall must be false/);
+  assert.match(brain, /A plain greeting such as "hello" is not an identity question/);
 });
 
 test('the production server uses the modular pipeline and never opens a reasoning Realtime socket', () => {
