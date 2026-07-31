@@ -23,8 +23,8 @@ export function createTranscriber({
   let closed = false;
   let ready = false;
 
-  // The Realtime API is GA. Sending the retired OpenAI-Beta header causes the
-  // server to close the socket before any caller audio can be transcribed.
+  // The GA Realtime endpoint authenticates with the bearer token only. Legacy
+  // preview headers cause the server to close before caller audio is accepted.
   const ws = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.transcription)}`,
     {
