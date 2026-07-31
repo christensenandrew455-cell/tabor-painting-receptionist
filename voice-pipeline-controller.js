@@ -4,7 +4,7 @@ import {
   decideReceptionistTurn,
   emptyLead,
 } from './receptionist-brain.js';
-import { createTranscriber, synthesizePcmu } from './openai-voice.js';
+import { createRealtimeVoice } from './openai-voice.js';
 import {
   ESTIMATE_ORDER,
   baseQuestionFor,
@@ -139,6 +139,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.endAfterPlaybackReason = '';
     if (state.audioTimer) clearTimeout(state.audioTimer);
     state.audioTimer = null;
+    realtimeVoice.cancelSpeech();
     clearAudio?.();
   }
 
@@ -190,6 +191,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     if (!reply || state.stopped) return;
     stopSpeaking();
     debug('tts.requested', {
+      engine: 'realtime',
       reply,
       currentQuestionId: state.memory.currentQuestionId,
       pendingQuestionId: questionId,
@@ -203,13 +205,15 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
     let frames;
     try {
-      frames = await synthesizePcmu(reply, { voice: runtime.core.REALTIME_VOICE });
+      frames = await realtimeVoice.synthesize(reply, {
+        voice: runtime.core.REALTIME_VOICE,
+        speed: runtime.core.SPEECH_SPEED,
+      });
     } catch (error) {
-      if (generation === state.generation) {
-        state.ttsPending = false;
-        state.pendingReplyText = '';
-        state.pendingQuestionId = 'none';
-      }
+      if (generation !== state.generation || state.stopped) return;
+      state.ttsPending = false;
+      state.pendingReplyText = '';
+      state.pendingQuestionId = 'none';
       throw error;
     }
 
@@ -546,8 +550,16 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
   }
 
-  const transcriber = createTranscriber({
+  const realtimeVoice = createRealtimeVoice({
     silenceMs: runtime.core.SILENCE_DURATION_MS,
+    voice: runtime.core.REALTIME_VOICE,
+    speed: runtime.core.SPEECH_SPEED,
+    onReady: (session) => {
+      debug('realtime_voice.ready', {
+        realtimeVoiceModel: session.realtimeVoiceModel,
+        transcriptionModel: session.transcriptionModel,
+      });
+    },
     onSpeechStarted: () => {
       state.turnRevision += 1;
       clearSilenceTimer();
@@ -562,8 +574,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       processTranscript(transcript).catch((error) => log.error('[Transcript processing failed]', error));
     },
     onError: (error) => {
-      log.error('[Transcriber failed]', error);
-      debug('transcriber.error', { error: error?.stack || error?.message || String(error) });
+      log.error('[Realtime voice failed]', error);
+      debug('realtime_voice.error', { error: error?.stack || error?.message || String(error) });
     },
   });
 
@@ -582,7 +594,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       await speak(text, { scheduleRepeat: true });
     },
     appendCallerAudio(base64Pcmu) {
-      if (!state.stopped && !state.closingStarted) transcriber.append(base64Pcmu);
+      if (!state.stopped && !state.closingStarted) realtimeVoice.append(base64Pcmu);
     },
     stop(reason = 'stopped') {
       state.stopped = true;
@@ -590,7 +602,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       state.pendingCallerFragment = '';
       clearSilenceTimer();
       stopSpeaking();
-      transcriber.close();
+      realtimeVoice.close();
       debug('pipeline.stopped', { reason });
     },
     snapshot() {
