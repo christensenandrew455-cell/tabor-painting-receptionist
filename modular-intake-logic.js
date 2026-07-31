@@ -19,8 +19,20 @@ function clean(value) {
   return String(value ?? '').trim();
 }
 
+function serviceNames(core) {
+  return Object.keys(core.BUSINESS.services || {});
+}
+
+function naturalList(values = []) {
+  const items = values.map((value) => clean(value)).filter(Boolean);
+  if (!items.length) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} or ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, or ${items.at(-1)}`;
+}
+
 function listServices(core) {
-  return Object.keys(core.BUSINESS.services || {}).join(', ');
+  return naturalList(serviceNames(core));
 }
 
 export function mergeLead(current = {}, updates = {}) {
@@ -75,8 +87,8 @@ function rawTimeFromTranscript(transcript = '') {
 
 function rawDateFromTranscript(transcript = '') {
   const text = clean(transcript);
-  const weekday = text.match(WEEKDAY_PATTERN);
-  if (weekday) return weekday[1];
+  const weekdays = [...text.matchAll(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi)];
+  if (weekdays.length) return weekdays.at(-1)[1];
   const monthDay = text.match(MONTH_DAY_PATTERN);
   if (monthDay) return monthDay[0];
   const ordinal = text.match(ORDINAL_DAY_PATTERN);
@@ -89,7 +101,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   const text = clean(transcript);
 
   if (currentQuestionId === 'service') {
-    const service = Object.keys(core.BUSINESS.services || {})
+    const service = serviceNames(core)
       .find((candidate) => text.toLowerCase().includes(candidate.toLowerCase()));
     if (service) captured.service = service;
   }
@@ -151,7 +163,7 @@ export function summaryStatement(lead = {}) {
   const notesClause = notes && notes.toLowerCase() !== 'none'
     ? ` The additional notes are: ${notes}.`
     : ' There are no additional notes.';
-  return `Here is what I have: ${clean(lead.name)} is requesting ${clean(lead.service)} at ${clean(lead.projectLocation)}, with an estimate preferred for ${clean(lead.preferredDate)} at ${clean(lead.preferredTime)}.${notesClause}`;
+  return `Let me read that back. I have ${clean(lead.name)} requesting ${clean(lead.service)} at ${clean(lead.projectLocation)}, with an estimate preferred for ${clean(lead.preferredDate)} at ${clean(lead.preferredTime)}.${notesClause}`;
 }
 
 export function baseQuestionFor(core, questionId, lead = {}) {
@@ -159,13 +171,30 @@ export function baseQuestionFor(core, questionId, lead = {}) {
     ask_estimate: 'Would you like to fill out an estimate request?',
     continue_estimate: 'Would you like to continue filling out your estimate request?',
     more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `We specialize in ${listServices(core)}. What service would you like?`,
+    service: `Next, we need to collect the service you need. Which service is this for: ${listServices(core)}?`,
     name: 'What is your full name?',
     project_location: 'What is the full address for the project?',
     preferred_date_time: `${availabilityStatement(core)} What is your preferred estimate date and time?`,
-    notes: 'Before I submit the request, you can add anything else the estimator should know. Do you have any additional notes about this project?',
+    notes: "Before I send the request, is there anything else you'd like the estimator to know about the project?",
     contact_consent: core.contactConsentQuestion,
     confirm_summary: `${summaryStatement(lead)} Does all of that sound right?`,
+    clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
+  };
+  return clean(questions[questionId]);
+}
+
+export function repeatQuestionFor(core, questionId) {
+  const questions = {
+    ask_estimate: 'Would you like to fill out an estimate request?',
+    continue_estimate: 'Would you like to continue filling out your estimate request?',
+    more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
+    service: `Which service is this for: ${listServices(core)}?`,
+    name: 'What is your full name?',
+    project_location: 'What is the full address for the project?',
+    preferred_date_time: 'What is your preferred estimate date and time?',
+    notes: "Is there anything else you'd like the estimator to know about the project?",
+    contact_consent: core.contactConsentQuestion,
+    confirm_summary: 'Does all of that sound right?',
     clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
   };
   return clean(questions[questionId]);
