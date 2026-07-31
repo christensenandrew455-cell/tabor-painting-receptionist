@@ -15,6 +15,9 @@ export const QUESTION_IDS = Object.freeze([
   'clarify',
 ]);
 
+const EXPLICIT_GOODBYE_PATTERN = /\b(?:goodbye|bye|hang up|hangup|end (?:the )?call|disconnect|i(?:'m| am) done|stop the call)\b/i;
+const NO_MORE_QUESTIONS_PATTERN = /^(?:no|nope|nah|nothing else|no more questions?|that(?:'s| is) all|i(?:'m| am) all set)[.!\s]*$/i;
+
 function clean(value) {
   return String(value ?? '').trim();
 }
@@ -23,6 +26,27 @@ function serviceSummary(core) {
   return Object.entries(core.BUSINESS.services || {})
     .map(([name, description]) => `${name}: ${description}`)
     .join('\n');
+}
+
+function callerExplicitlyWantsEnd(transcript, callMemory = {}) {
+  const text = clean(transcript);
+  if (EXPLICIT_GOODBYE_PATTERN.test(text)) return true;
+  return callMemory.currentQuestionId === 'more_questions' && NO_MORE_QUESTIONS_PATTERN.test(text);
+}
+
+function guardUnexpectedEnd(core, transcript, callMemory, turn) {
+  if (!turn?.endCall || callerExplicitlyWantsEnd(transcript, callMemory)) return turn;
+  const inFollowUp = callMemory?.leadSaved === true || callMemory?.currentQuestionId === 'more_questions';
+  return {
+    ...turn,
+    endCall: false,
+    submitLead: false,
+    intent: inFollowUp ? 'question' : 'unknown',
+    askedQuestionId: inFollowUp ? 'more_questions' : 'clarify',
+    spokenReply: inFollowUp
+      ? `I'm still here. Do you have any more questions about ${core.BUSINESS.name}?`
+      : "I'm still here. Could you repeat that?",
+  };
 }
 
 function systemPrompt(core) {
@@ -61,6 +85,8 @@ MEMORY AND QUESTION RULES
 - If a requested date or time is invalid, clearly state why and repeat the configured availability before the fixed date-and-time question.
 - For confirm_summary, read back the caller's name, service, full project address, preferred estimate date and time, and notes before asking whether it sounds right.
 - When submitLead is true, endCall must be false. The application—not you—handles save success or failure and decides what happens next.
+- Never end the call because the caller says "hello," "are you there," repeats a question, interrupts, sounds confused, or gives an unclear answer.
+- Only set endCall true for an explicit goodbye, an explicit request to hang up or end the call, or an explicit no-more-questions answer while the current question is more_questions.
 
 ESTIMATE ORDER
 1. service
@@ -80,11 +106,11 @@ FIELD REQUIREMENTS
 - contactConsent must be an explicit yes or no.
 
 FIXED QUESTIONS
-- service ends with: "What service would you like?"
+- service ends by listing the configured services in: "Which service is this for: [services]?"
 - name ends with: "What is your full name?"
 - project_location ends with: "What is the full address for the project?"
 - preferred_date_time ends with: "What is your preferred estimate date and time?"
-- notes ends with: "Do you have any additional notes about this project?"
+- notes ends with: "Is there anything else you'd like the estimator to know about the project?"
 - contact_consent uses the locked consent wording below.
 - confirm_summary ends with: "Does all of that sound right?"
 
@@ -213,5 +239,6 @@ export async function decideReceptionistTurn({ core, transcript, lead, history, 
   const data = JSON.parse(raw);
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error('Brain returned no structured response.');
-  return JSON.parse(content);
+  const turn = JSON.parse(content);
+  return guardUnexpectedEnd(core, transcript, callMemory, turn);
 }
