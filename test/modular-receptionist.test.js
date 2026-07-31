@@ -60,17 +60,18 @@ test('the Telnyx stream linker carries the call ID and locks clean PCMU transpor
   assert.match(linker, /send_silence_when_idle: true/);
 });
 
-test('the transcriber uses the GA Realtime API and waits for session readiness', () => {
+test('the transcriber separates the Realtime session model from the transcription model', () => {
   const voice = read('openai-voice.js');
   assert.doesNotMatch(voice, /OpenAI-Beta/);
-  assert.match(voice, /wss:\/\/api\.openai\.com\/v1\/realtime/);
+  assert.match(voice, /wss:\/\/api\.openai\.com\/v1\/realtime\?model=\$\{encodeURIComponent\(MODELS\.transcriptionSession\)\}/);
+  assert.doesNotMatch(voice, /realtime\?model=\$\{encodeURIComponent\(MODELS\.transcription\)\}/);
   assert.match(voice, /type: 'session\.update'/);
   assert.match(voice, /type: 'transcription'/);
   assert.match(voice, /format: \{ type: 'audio\/pcmu' \}/);
   assert.match(voice, /noise_reduction: \{ type: 'near_field' \}/);
+  assert.match(voice, /transcription:[\s\S]*model: MODELS\.transcription/);
   assert.match(voice, /event\.type === 'session\.updated'/);
-  assert.match(voice, /create_response: false/);
-  assert.match(voice, /interrupt_response: false/);
+  assert.match(voice, /terminalErrorReported/);
 });
 
 test('24 kHz PCM silence becomes one clean 20 ms PCMU telephone frame', () => {
@@ -84,6 +85,7 @@ test('24 kHz PCM silence becomes one clean 20 ms PCMU telephone frame', () => {
 });
 
 test('each OpenAI model has exactly one fixed job', () => {
+  assert.equal(MODELS.transcriptionSession, 'gpt-realtime-mini');
   assert.equal(MODELS.transcription, 'gpt-4o-mini-transcribe');
   assert.equal(MODELS.brain, 'gpt-4.1-mini');
   assert.equal(MODELS.speech, 'gpt-4o-mini-tts');
