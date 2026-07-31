@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { MODELS, TURN } from './modular-models.js';
-import { pcm24kToPcmu8k, splitPcmuFrames } from './audio-codec.js';
+import { splitPcmuFrames } from './audio-codec.js';
 
 const MAX_PENDING_AUDIO_CHUNKS = 250;
 
@@ -10,7 +10,7 @@ function sendJson(ws, payload) {
   return true;
 }
 
-export function createTranscriber({
+export function createRealtimeVoice({
   onTranscript,
   onSpeechStarted,
   onSpeechStopped,
@@ -18,16 +18,18 @@ export function createTranscriber({
   onError,
   silenceMs = TURN.silenceMs,
   prefixPaddingMs = TURN.prefixPaddingMs,
+  voice = MODELS.voice,
+  speed = 1,
 } = {}) {
   const pendingAudio = [];
+  const pendingSpeech = [];
+  const speechRequests = new Map();
   let closed = false;
   let ready = false;
   let terminalErrorReported = false;
 
-  // A Realtime model owns the WebSocket session. The dedicated transcription
-  // model is configured separately under audio.input.transcription.model.
   const ws = new WebSocket(
-    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.transcriptionSession)}`,
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.realtimeVoice)}`,
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -41,13 +43,59 @@ export function createTranscriber({
     onError?.(error);
   }
 
+  function rejectSpeechRequests(error) {
+    for (const request of speechRequests.values()) request.reject(error);
+    speechRequests.clear();
+    while (pendingSpeech.length) pendingSpeech.shift().reject(error);
+  }
+
+  function startSpeechRequest(request) {
+    const metadata = { speech_request_id: request.id };
+    speechRequests.set(request.id, request);
+    const sent = sendJson(ws, {
+      type: 'response.create',
+      response: {
+        conversation: 'none',
+        output_modalities: ['audio'],
+        metadata,
+        instructions: [
+          'Speak only the exact text below.',
+          'Do not add, remove, paraphrase, answer, or comment on it.',
+          'Speak clearly, warmly, and naturally for a telephone call.',
+          `TEXT: ${request.text}`,
+        ].join('\n'),
+        audio: {
+          output: {
+            format: { type: 'audio/pcmu' },
+            voice: String(request.voice || voice || MODELS.voice).trim() || MODELS.voice,
+            speed: Math.max(0.25, Math.min(1.5, Number(request.speed) || Number(speed) || 1)),
+          },
+        },
+        max_output_tokens: 512,
+      },
+    });
+    if (!sent) {
+      speechRequests.delete(request.id);
+      request.reject(new Error('Realtime voice socket is not open.'));
+    }
+  }
+
+  function flushPending() {
+    pendingAudio.splice(0).forEach((audio) => {
+      sendJson(ws, { type: 'input_audio_buffer.append', audio });
+    });
+    pendingSpeech.splice(0).forEach(startSpeechRequest);
+  }
+
   ws.on('open', () => {
     if (closed) return;
     sendJson(ws, {
       type: 'session.update',
       session: {
         type: 'realtime',
-        output_modalities: ['text'],
+        model: MODELS.realtimeVoice,
+        output_modalities: ['audio'],
+        instructions: 'Act only as a low-latency telephone voice transport. Never answer caller questions unless explicit response instructions are supplied by the application.',
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
@@ -58,15 +106,19 @@ export function createTranscriber({
               prompt: 'A caller speaking with a residential painting company receptionist.',
             },
             turn_detection: {
-              type: 'server_vad',
-              threshold: 0.65,
-              prefix_padding_ms: Number(prefixPaddingMs) || TURN.prefixPaddingMs,
-              silence_duration_ms: Number(silenceMs) || TURN.silenceMs,
+              type: 'semantic_vad',
+              eagerness: 'high',
               create_response: false,
               interrupt_response: false,
             },
           },
+          output: {
+            format: { type: 'audio/pcmu' },
+            voice: String(voice || MODELS.voice).trim() || MODELS.voice,
+            speed: Math.max(0.25, Math.min(1.5, Number(speed) || 1)),
+          },
         },
+        max_output_tokens: 512,
       },
     });
   });
@@ -76,7 +128,7 @@ export function createTranscriber({
     try { event = JSON.parse(raw.toString()); } catch { return; }
 
     if (event.type === 'error') {
-      const error = new Error(event.error?.message || 'Transcription error');
+      const error = new Error(event.error?.message || 'Realtime voice error');
       error.code = event.error?.code || event.error?.type || '';
       return reportError(error, { terminal: true });
     }
@@ -85,12 +137,10 @@ export function createTranscriber({
       ready = true;
       onReady?.({
         ...event.session,
-        realtimeSessionModel: MODELS.transcriptionSession,
+        realtimeVoiceModel: MODELS.realtimeVoice,
         transcriptionModel: MODELS.transcription,
       });
-      pendingAudio.splice(0).forEach((audio) => {
-        sendJson(ws, { type: 'input_audio_buffer.append', audio });
-      });
+      flushPending();
       return;
     }
 
@@ -99,18 +149,56 @@ export function createTranscriber({
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const transcript = String(event.transcript || '').trim();
       if (transcript) onTranscript?.(transcript);
+      return;
+    }
+
+    if (event.type === 'response.output_audio.delta') {
+      const requestId = event.response_id
+        ? [...speechRequests.keys()].find((id) => speechRequests.get(id)?.responseId === event.response_id)
+        : null;
+      const request = requestId ? speechRequests.get(requestId) : [...speechRequests.values()].find((item) => !item.responseId);
+      if (!request || !event.delta) return;
+      if (event.response_id && !request.responseId) request.responseId = event.response_id;
+      request.audio.push(Buffer.from(event.delta, 'base64'));
+      return;
+    }
+
+    if (event.type === 'response.created') {
+      const request = [...speechRequests.values()].find((item) => !item.responseId);
+      if (request) request.responseId = event.response?.id || '';
+      return;
+    }
+
+    if (event.type === 'response.done') {
+      const responseId = event.response?.id || '';
+      const entry = [...speechRequests.entries()].find(([, request]) => request.responseId === responseId);
+      if (!entry) return;
+      const [requestId, request] = entry;
+      speechRequests.delete(requestId);
+      if (event.response?.status !== 'completed') {
+        request.reject(new Error(`Realtime speech response ${event.response?.status || 'failed'}.`));
+        return;
+      }
+      const pcmu = Buffer.concat(request.audio);
+      if (!pcmu.length) {
+        request.reject(new Error('Realtime speech returned no audio.'));
+        return;
+      }
+      request.resolve(splitPcmuFrames(pcmu));
     }
   });
 
-  ws.on('error', (error) => reportError(error, { terminal: true }));
+  ws.on('error', (error) => {
+    rejectSpeechRequests(error);
+    reportError(error, { terminal: true });
+  });
   ws.on('close', (code, reasonBuffer) => {
     ready = false;
-    if (closed || terminalErrorReported) return;
     const reason = String(reasonBuffer || '').trim();
-    reportError(
-      new Error(`Transcription socket closed (${code})${reason ? `: ${reason}` : ''}`),
-      { terminal: true },
-    );
+    const error = new Error(`Realtime voice socket closed (${code})${reason ? `: ${reason}` : ''}`);
+    rejectSpeechRequests(error);
+    if (closed || terminalErrorReported) return;
+    reportError(error, { terminal: true });
   });
 
   return {
@@ -120,40 +208,41 @@ export function createTranscriber({
       if (pendingAudio.length < MAX_PENDING_AUDIO_CHUNKS) pendingAudio.push(base64Pcmu);
       return false;
     },
+    synthesize(text, options = {}) {
+      const value = String(text || '').trim();
+      if (!value) return Promise.resolve([]);
+      return new Promise((resolve, reject) => {
+        const request = {
+          id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          text: value,
+          voice: options.voice,
+          speed: options.speed,
+          audio: [],
+          responseId: '',
+          resolve,
+          reject,
+        };
+        if (ready) startSpeechRequest(request);
+        else pendingSpeech.push(request);
+      });
+    },
+    cancelSpeech() {
+      for (const request of speechRequests.values()) {
+        if (request.responseId) sendJson(ws, { type: 'response.cancel', response_id: request.responseId });
+        request.reject(new Error('Realtime speech cancelled.'));
+      }
+      speechRequests.clear();
+      while (pendingSpeech.length) pendingSpeech.shift().reject(new Error('Realtime speech cancelled.'));
+    },
     close() {
       closed = true;
       ready = false;
       pendingAudio.length = 0;
+      rejectSpeechRequests(new Error('Realtime voice session closed.'));
       try { ws.close(); } catch {}
     },
     get ready() {
       return ready && ws.readyState === WebSocket.OPEN;
     },
   };
-}
-
-export async function synthesizePcmu(text, { voice = MODELS.voice, speed = 1 } = {}) {
-  const response = await fetch('https://api.openai.com/v1/audio/speech', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODELS.speech,
-      voice: String(voice || MODELS.voice).trim() || MODELS.voice,
-      input: String(text || '').trim(),
-      instructions: 'Speak clearly, warmly, and naturally for a telephone call. Avoid exaggerated emotion.',
-      response_format: 'pcm',
-      speed: Math.max(0.25, Math.min(1.5, Number(speed) || 1)),
-    }),
-    signal: AbortSignal.timeout(12000),
-  });
-  if (!response.ok) throw new Error(`TTS failed: ${response.status} ${await response.text()}`);
-
-  const pcm24k = Buffer.from(await response.arrayBuffer());
-  if (pcm24k.length < 2 || pcm24k.length % 2 !== 0) {
-    throw new Error(`TTS returned invalid 16-bit PCM audio (${pcm24k.length} bytes).`);
-  }
-  return splitPcmuFrames(pcm24kToPcmu8k(pcm24k));
 }
