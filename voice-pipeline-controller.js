@@ -28,6 +28,8 @@ const BASE_QUESTIONS = Object.freeze({
 });
 
 const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it|the form) out again)\b/i;
+const IDENTITY_PATTERN = /\b(?:are you|is this)\s+(?:an?\s+)?(?:ai|bot|robot|human|person|real person)\b/i;
+const FALSE_HUMAN_CLAIM_PATTERN = /\b(?:i am|i'm)\s+(?:a\s+)?(?:person|human|real person)\b/i;
 const SILENCE_REPEAT_MS = 5000;
 
 function clean(value) {
@@ -55,8 +57,15 @@ function recordAskedQuestion(memory, questionId) {
 
 function baseQuestionFor(runtime, questionId) {
   const value = BASE_QUESTIONS[questionId];
-  if (typeof value === 'function') return clean(value(runtime));
+  if (typeof value === 'function') {
+    if (questionId === 'more_questions') return clean(value(runtime.core.BUSINESS.name));
+    return clean(value(runtime));
+  }
   return clean(value);
+}
+
+function identityLine(runtime) {
+  return `I am an AI receptionist working for ${runtime.core.BUSINESS.name}, managed by our client center.`;
 }
 
 export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clearAudio, saveLead, endCall, log = console }) {
@@ -73,6 +82,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     greetingSent: false,
     closingStarted: false,
   };
+
+  function debug(event, payload = {}) {
+    log.log('[Modular receptionist debug]', JSON.stringify({
+      timestamp: new Date().toISOString(),
+      event,
+      ...payload,
+    }));
+  }
 
   function remember(role, text) {
     const content = clean(text);
@@ -93,6 +110,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.silenceTimer = setTimeout(() => {
       state.silenceTimer = null;
       if (state.stopped || state.closingStarted || state.memory.currentQuestionId !== questionId) return;
+      debug('silence.base_question_repeat', { questionId, baseQuestion });
       speak(baseQuestion, { scheduleRepeat: false }).catch((error) => log.error('[Question repeat failed]', error));
     }, SILENCE_REPEAT_MS);
   }
@@ -123,6 +141,11 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     if (!reply || state.stopped) return;
     stopSpeaking();
     remember('assistant', reply);
+    debug('tts.requested', {
+      reply,
+      currentQuestionId: state.memory.currentQuestionId,
+      scheduleRepeat,
+    });
     const generation = state.generation;
     const frames = await synthesizePcmu(reply);
     if (state.stopped || generation !== state.generation) return;
@@ -137,6 +160,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.closingStarted = true;
     clearSilenceTimer();
     const closing = clean(runtime.core.closingLine);
+    debug('closing.started', { closing });
     await speak(closing, { scheduleRepeat: false });
     const delay = Math.max(600, closing.length * 55);
     setTimeout(() => endCall?.('completed'), delay);
@@ -146,10 +170,12 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     const validation = runtime.core.validateLead(state.lead);
     if (!validation.valid) {
       log.warn('[Brain requested invalid lead submission]', validation.errors);
+      debug('lead.validation_failed', { errors: validation.errors, lead: state.lead });
       return { ok: false, invalid: true };
     }
 
     try {
+      debug('lead.submission_started', { lead: validation.lead });
       await saveLead({
         callerPhone,
         lead: validation.lead,
@@ -157,11 +183,13 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       });
       state.memory.leadSaved = true;
       state.memory.submissionFailed = false;
+      debug('lead.submission_succeeded');
       return { ok: true };
     } catch (error) {
       state.memory.leadSaved = false;
       state.memory.submissionFailed = true;
       log.error('[Estimate submission failed]', error);
+      debug('lead.submission_failed', { error: error?.message || String(error) });
       return { ok: false, error };
     }
   }
@@ -171,13 +199,33 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     if (!text || state.stopped || state.closingStarted) return;
     clearSilenceTimer();
     remember('caller', text);
+    debug('caller.transcript', {
+      transcript: text,
+      lead: state.lead,
+      memory: state.memory,
+    });
+
+    if (IDENTITY_PATTERN.test(text)) {
+      const reply = identityLine(runtime);
+      debug('guard.identity', { transcript: text, reply });
+      await speak(reply);
+      return;
+    }
 
     if (state.memory.estimateStarted && !state.memory.leadSaved && RESTART_PATTERN.test(text)) {
-      await speak('You can update the estimate request information when I summarize it at the end.');
+      const reply = 'You can update the estimate request information when I summarize it at the end.';
+      debug('guard.restart', { transcript: text, reply });
+      await speak(reply);
       return;
     }
 
     try {
+      debug('brain.request', {
+        transcript: text,
+        lead: state.lead,
+        memory: state.memory,
+        recentConversation: state.history.slice(-12),
+      });
       const turn = await decideReceptionistTurn({
         core: runtime.core,
         transcript: text,
@@ -185,6 +233,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         history: state.history,
         callMemory: state.memory,
       });
+      debug('brain.response', { turn });
 
       state.lead = { ...state.lead, ...(turn.updatedLead || {}) };
       state.memory.completedQuestionIds = mergeUnique(
@@ -195,12 +244,20 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       let spokenReply = clean(turn.spokenReply);
       let askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
 
+      if (FALSE_HUMAN_CLAIM_PATTERN.test(spokenReply)) {
+        spokenReply = identityLine(runtime);
+        askedQuestionId = 'none';
+        debug('guard.false_human_claim_blocked', { modelReply: turn.spokenReply, replacement: spokenReply });
+      }
+
       if (state.memory.estimateStarted && !state.memory.completedQuestionIds.includes('service')) {
         askedQuestionId = 'service';
         spokenReply = baseQuestionFor(runtime, 'service');
+        debug('guard.service_first', { spokenReply });
       } else if (state.memory.estimateStarted && askedQuestionId !== 'service' && !state.lead.service) {
         askedQuestionId = 'service';
         spokenReply = baseQuestionFor(runtime, 'service');
+        debug('guard.service_missing', { spokenReply });
       }
 
       if (questionIsLocked(state.memory, askedQuestionId)) {
@@ -208,12 +265,18 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
           askedQuestionId,
           askedCount: state.memory.askedCounts[askedQuestionId] || 0,
         });
+        const blockedQuestionId = askedQuestionId;
         askedQuestionId = state.memory.leadSaved
           ? 'more_questions'
           : state.memory.estimateStarted
             ? 'continue_estimate'
             : 'ask_estimate';
         spokenReply = baseQuestionFor(runtime, askedQuestionId);
+        debug('guard.completed_question_repeat_blocked', {
+          blockedQuestionId,
+          replacementQuestionId: askedQuestionId,
+          spokenReply,
+        });
       }
 
       recordAskedQuestion(state.memory, askedQuestionId);
@@ -236,13 +299,25 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       }
 
       if (turn.endCall) {
+        debug('turn.final', {
+          action: 'closing',
+          lead: state.lead,
+          memory: state.memory,
+        });
         await speakClosingAndEnd();
         return;
       }
 
+      debug('turn.final', {
+        spokenReply,
+        askedQuestionId,
+        lead: state.lead,
+        memory: state.memory,
+      });
       await speak(spokenReply);
     } catch (error) {
       log.error('[Voice pipeline turn failed]', error);
+      debug('turn.error', { error: error?.stack || error?.message || String(error) });
       recordAskedQuestion(state.memory, 'clarify');
       await speak(baseQuestionFor(runtime, 'clarify'));
     }
@@ -251,12 +326,16 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
   const transcriber = createTranscriber({
     onSpeechStarted: () => {
       clearSilenceTimer();
+      debug('caller.speech_started', { speaking: state.speaking });
       if (state.speaking) stopSpeaking();
     },
     onTranscript: (transcript) => {
       processTranscript(transcript).catch((error) => log.error('[Transcript processing failed]', error));
     },
-    onError: (error) => log.error('[Transcriber failed]', error),
+    onError: (error) => {
+      log.error('[Transcriber failed]', error);
+      debug('transcriber.error', { error: error?.stack || error?.message || String(error) });
+    },
   });
 
   return {
@@ -264,7 +343,16 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       if (state.greetingSent || state.stopped) return;
       state.greetingSent = true;
       recordAskedQuestion(state.memory, 'ask_estimate');
+      debug('pipeline.started', {
+        business: runtime.core.BUSINESS.name,
+        openingLine: runtime.core.openingLine,
+      });
       await speak(runtime.core.openingLine);
+    },
+    async announce(text) {
+      if (state.stopped || state.closingStarted) return;
+      await speak(text, { scheduleRepeat: false });
+      scheduleBaseQuestionRepeat(state.memory.currentQuestionId);
     },
     appendCallerAudio(base64Pcmu) {
       if (!state.stopped && !state.closingStarted) transcriber.append(base64Pcmu);
@@ -274,7 +362,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       clearSilenceTimer();
       stopSpeaking();
       transcriber.close();
-      log.log('[Voice pipeline stopped]', reason);
+      debug('pipeline.stopped', { reason });
     },
     snapshot() {
       return {
