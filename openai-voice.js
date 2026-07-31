@@ -64,13 +64,6 @@ export function createRealtimeVoice({
           'Speak clearly, warmly, and naturally for a telephone call.',
           `TEXT: ${request.text}`,
         ].join('\n'),
-        audio: {
-          output: {
-            format: { type: 'audio/pcmu' },
-            voice: String(request.voice || voice || MODELS.voice).trim() || MODELS.voice,
-            speed: Math.max(0.25, Math.min(1.5, Number(request.speed) || Number(speed) || 1)),
-          },
-        },
         max_output_tokens: 512,
       },
     });
@@ -130,7 +123,11 @@ export function createRealtimeVoice({
     if (event.type === 'error') {
       const error = new Error(event.error?.message || 'Realtime voice error');
       error.code = event.error?.code || event.error?.type || '';
-      return reportError(error, { terminal: true });
+      error.param = event.error?.param || '';
+      error.eventId = event.event_id || '';
+      rejectSpeechRequests(error);
+      reportError(error);
+      return;
     }
 
     if (event.type === 'session.updated') {
@@ -208,15 +205,13 @@ export function createRealtimeVoice({
       if (pendingAudio.length < MAX_PENDING_AUDIO_CHUNKS) pendingAudio.push(base64Pcmu);
       return false;
     },
-    synthesize(text, options = {}) {
+    synthesize(text) {
       const value = String(text || '').trim();
       if (!value) return Promise.resolve([]);
       return new Promise((resolve, reject) => {
         const request = {
           id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`,
           text: value,
-          voice: options.voice,
-          speed: options.speed,
           audio: [],
           responseId: '',
           resolve,
