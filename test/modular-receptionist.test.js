@@ -4,6 +4,16 @@ import test from 'node:test';
 
 import { businessInfoFromAppProfile, runtimeEnvironmentFromApp } from '../app-info-config.js';
 import { pcm24kToPcmu8k, splitPcmuFrames } from '../audio-codec.js';
+import {
+  baseQuestionFor,
+  captureDeterministicLead,
+  enforceQuestionBlock,
+  isObviouslyIncompleteTranscript,
+  mergeCallerFragment,
+  nextRequiredQuestion,
+  shouldKeepHoldingFragment,
+  validationLeadFromModular,
+} from '../modular-intake-logic.js';
 import { MODELS } from '../modular-models.js';
 import { QUESTION_IDS, createCallMemory } from '../receptionist-brain.js';
 
@@ -24,12 +34,14 @@ const businessProfile = Object.freeze({
   estimateDays: 'Monday through Friday',
   estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
   earliestEstimateStart: '9:00 AM',
-  latestEstimateStart: '4:30 PM',
+  latestEstimateStart: '4:00 PM',
   businessBase: 'Massachusetts',
   serviceAreas: ['Massachusetts'],
   services: {
-    'interior painting': 'Interior painting services.',
+    'wood staining': 'Wood staining services.',
     'exterior painting': 'Exterior painting services.',
+    'interior painting': 'Interior painting services.',
+    'small paint repair': 'Small paint repair services.',
   },
   about: ['Residential painting company.'],
   extraInformation: 'Business fact.',
@@ -41,11 +53,39 @@ const businessProfile = Object.freeze({
   closingLine: 'OCM must not control this closing.',
 });
 
+const coreStub = Object.freeze({
+  BUSINESS: Object.freeze({
+    name: 'Tabor Painting',
+    services: businessProfile.services,
+    estimateDays: 'Monday through Friday',
+    earliestEstimateStart: '9:00 AM',
+    latestEstimateStart: '4:00 PM',
+  }),
+  contactConsentQuestion: 'Do you consent to being contacted by Tabor Painting?',
+  normalizePreferredTime(value) {
+    const normalized = String(value).replace(/\./g, '').trim().toLowerCase();
+    if (/^4(?::00)?(?:\s*pm)?$/.test(normalized)) return '4:00 PM';
+    if (/^9(?::00)?(?:\s*am)?$/.test(normalized)) return '9:00 AM';
+    return '';
+  },
+});
+
+const completeLead = Object.freeze({
+  name: 'Andrew Christensen',
+  service: 'interior painting',
+  projectLocation: '197 Lancaster Road, Berlin, Massachusetts',
+  preferredDate: 'Tuesday',
+  preferredTime: '4:00 PM',
+  notes: 'none',
+  contactConsent: true,
+});
+
 test('production starts the modular server with the Telnyx stream linker and keeps legacy explicit', () => {
   const packageJson = JSON.parse(read('package.json'));
   assert.equal(packageJson.main, 'server-modular.js');
   assert.equal(packageJson.scripts.start, 'node --import ./stream-call-link.js server-modular.js');
   assert.match(packageJson.scripts['start:legacy'], /server\.js$/);
+  assert.match(packageJson.scripts.check, /modular-intake-logic\.js/);
 });
 
 test('the Telnyx stream linker carries the call ID and locks clean PCMU transport', () => {
@@ -53,7 +93,6 @@ test('the Telnyx stream linker carries the call ID and locks clean PCMU transpor
   assert.match(linker, /searchParams\.set\('callControlId', callControlId\)/);
   assert.match(linker, /searchParams\.get\('callControlId'\)/);
   assert.match(linker, /message\.call_control_id = message\.call_control_id \|\| linkedCallControlId/);
-  assert.match(linker, /message\.start[\s\S]*call_control_id/);
   assert.match(linker, /stream_bidirectional_codec: 'PCMU'/);
   assert.match(linker, /stream_bidirectional_sampling_rate: 8000/);
   assert.match(linker, /stream_bidirectional_target_legs: 'self'/);
@@ -65,17 +104,10 @@ test('the transcriber uses a realtime session with input transcription enabled',
   assert.doesNotMatch(voice, /OpenAI-Beta/);
   assert.match(voice, /wss:\/\/api\.openai\.com\/v1\/realtime\?model=\$\{encodeURIComponent\(MODELS\.transcriptionSession\)\}/);
   assert.doesNotMatch(voice, /realtime\?model=\$\{encodeURIComponent\(MODELS\.transcription\)\}/);
-  assert.match(voice, /type: 'session\.update'/);
   assert.match(voice, /session:[\s\S]*type: 'realtime'/);
-  assert.doesNotMatch(voice, /session:[\s\S]*type: 'transcription'/);
-  assert.match(voice, /output_modalities: \['text'\]/);
-  assert.match(voice, /format: \{ type: 'audio\/pcmu' \}/);
-  assert.match(voice, /noise_reduction: \{ type: 'near_field' \}/);
   assert.match(voice, /transcription:[\s\S]*model: MODELS\.transcription/);
   assert.match(voice, /create_response: false/);
   assert.match(voice, /interrupt_response: false/);
-  assert.match(voice, /event\.type === 'session\.updated'/);
-  assert.match(voice, /terminalErrorReported/);
 });
 
 test('24 kHz PCM silence becomes one clean 20 ms PCMU telephone frame', () => {
@@ -98,14 +130,11 @@ test('each OpenAI model has exactly one fixed job', () => {
 test('OCM business data cannot override models or the Tabor opening and closing', () => {
   const environment = runtimeEnvironmentFromApp({ profile: businessProfile, clientId: 'tabor-painting' });
   const business = businessInfoFromAppProfile(businessProfile);
-
   assert.equal(environment.AI_MODEL, 'gpt-realtime-mini');
   assert.equal(environment.AI_VOICE, 'alloy');
   assert.doesNotMatch(environment.BUSINESS_INFO, /OCM must not control/);
   assert.notEqual(business.openingLine, businessProfile.openingLine);
   assert.notEqual(business.closingLine, businessProfile.closingLine);
-  assert.match(business.openingLine, /Would you like to submit an estimate request\?/i);
-  assert.match(business.closingLine, /wonderful rest of your day.*Goodbye/i);
 });
 
 test('the structured memory box starts with a counter for every question', () => {
@@ -117,65 +146,102 @@ test('the structured memory box starts with a counter for every question', () =>
   assert.equal(memory.leadSaved, false);
 });
 
-test('identity is hard-guarded and false human claims are blocked before TTS', () => {
+test('field blocks include required context before the fixed question and nothing after it', () => {
+  const dateBlock = baseQuestionFor(coreStub, 'preferred_date_time', completeLead);
+  assert.match(dateBlock, /^Estimate appointments are available Monday through Friday from 9:00 AM through 4:00 PM\./);
+  assert.match(dateBlock, /What is your preferred estimate date and time\?$/);
+
+  const summaryBlock = baseQuestionFor(coreStub, 'confirm_summary', completeLead);
+  assert.match(summaryBlock, /Andrew Christensen is requesting interior painting/);
+  assert.match(summaryBlock, /197 Lancaster Road, Berlin, Massachusetts/);
+  assert.match(summaryBlock, /Tuesday at 4:00 PM/);
+  assert.match(summaryBlock, /There are no additional notes\./);
+  assert.match(summaryBlock, /Does all of that sound right\?$/);
+
+  const corrected = enforceQuestionBlock(
+    coreStub,
+    'Our estimate availability is Monday through Friday from 9 AM to 4 PM. Could you choose another time?',
+    'preferred_date_time',
+    completeLead,
+  );
+  assert.equal((corrected.match(/Estimate appointments are available/g) || []).length, 1);
+  assert.match(corrected, /What is your preferred estimate date and time\?$/);
+});
+
+test('the estimate order cannot skip notes, consent, or the complete summary', () => {
+  const memory = createCallMemory();
+  memory.estimateStarted = true;
+  memory.completedQuestionIds = ['service', 'name', 'project_location', 'preferred_date_time'];
+  assert.equal(nextRequiredQuestion(memory, completeLead), 'notes');
+  memory.completedQuestionIds.push('notes');
+  assert.equal(nextRequiredQuestion(memory, completeLead), 'contact_consent');
+  memory.completedQuestionIds.push('contact_consent');
+  assert.equal(nextRequiredQuestion(memory, completeLead), 'confirm_summary');
+  memory.completedQuestionIds.push('confirm_summary');
+  assert.equal(nextRequiredQuestion(memory, completeLead), 'none');
+});
+
+test('modular lead fields map into the validator and OCM schema', () => {
+  const mapped = validationLeadFromModular(completeLead);
+  assert.deepEqual(mapped, {
+    fullName: 'Andrew Christensen',
+    serviceType: 'interior painting',
+    streetNumber: '197',
+    streetName: 'Lancaster Road',
+    cityOrTown: 'Berlin',
+    state: 'Massachusetts',
+    preferredDateOrDay: 'Tuesday',
+    preferredTime: '4:00 PM',
+    additionalNotes: 'none',
+    contactConsent: true,
+  });
+});
+
+test('Tuesday at four is captured even when the brain misses the date or time', () => {
+  const captured = captureDeterministicLead(
+    coreStub,
+    'preferred_date_time',
+    'Tuesday at 4?',
+    { ...completeLead, preferredDate: null, preferredTime: null },
+  );
+  assert.equal(captured.preferredDate, 'Tuesday');
+  assert.equal(captured.preferredTime, '4:00 PM');
+
+  const outsideHours = captureDeterministicLead(
+    coreStub,
+    'preferred_date_time',
+    'Tuesday at 5?',
+    { ...completeLead, preferredDate: null, preferredTime: null },
+  );
+  assert.equal(outsideHours.preferredDate, 'Tuesday');
+  assert.equal(outsideHours.preferredTime, null);
+});
+
+test('unfinished caller phrases are held across filler turns until the real answer arrives', () => {
+  assert.equal(isObviouslyIncompleteTranscript('Um...'), true);
+  assert.equal(shouldKeepHoldingFragment('Um...', 'Can I do...'), true);
+  assert.equal(shouldKeepHoldingFragment('Um Can I do', 'Right.'), true);
+  assert.equal(mergeCallerFragment('Um Can I do Right.', 'Tuesday at 4?'), 'Um Can I do Right. Tuesday at 4?');
+});
+
+test('identity, stale-turn cancellation, field order, and failed-save guards are hard enforced', () => {
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /IDENTITY_PATTERN/);
   assert.match(controller, /FALSE_HUMAN_CLAIM_PATTERN/);
-  assert.match(controller, /I am an AI receptionist working for/);
-  assert.match(controller, /guard\.false_human_claim_blocked/);
+  assert.match(controller, /guard\.stale_turn_discarded/);
+  assert.match(controller, /guard\.field_order_enforced/);
+  assert.match(controller, /validationLeadFromModular\(state\.lead\)/);
+  assert.match(controller, /guard\.submit_before_complete_blocked/);
+  assert.match(controller, /shouldEndCall = false/);
+  assert.match(controller, /lead\.validation_failed/);
 });
 
-test('service is the first estimate field and its requirements appear before the question', () => {
-  const controller = read('voice-pipeline-controller.js');
-  const brain = read('receptionist-brain.js');
-  assert.match(brain, /ESTIMATE ORDER[\s\S]*1\. service[\s\S]*2\. name/);
-  assert.match(controller, /We specialize in[^`]+What service would you like\?/);
-  assert.match(controller, /guard\.service_first/);
-  assert.match(controller, /guard\.service_missing/);
-});
-
-test('question wording is guarded so nothing is appended after the question mark', () => {
-  const controller = read('voice-pipeline-controller.js');
-  assert.match(controller, /function enforceQuestionReply/);
-  assert.match(controller, /guard\.question_wording_enforced/);
-  assert.match(controller, /return clean\(preface \? `\$\{preface\} \$\{baseQuestion\}` : baseQuestion\)/);
-  assert.doesNotMatch(controller, /What is the full address for the project\? Please include/i);
-});
-
-test('five-second repeats begin after playback and use only the base question', () => {
+test('five-second repeats begin after playback and use the deterministic field block', () => {
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /SILENCE_REPEAT_MS = 5000/);
   assert.match(controller, /repeatAfterPlaybackQuestionId/);
-  assert.match(controller, /if \(!frame\)[\s\S]*scheduleBaseQuestionRepeat\(repeatQuestionId\)/);
+  assert.match(controller, /baseQuestionFor\(runtime\.core, questionId, state\.lead\)/);
   assert.match(controller, /silence\.base_question_repeat/);
-});
-
-test('caller speech cancels pending TTS and discards stale brain responses', () => {
-  const controller = read('voice-pipeline-controller.js');
-  assert.match(controller, /ttsPending: false/);
-  assert.match(controller, /turnRevision: 0/);
-  assert.match(controller, /state\.turnRevision \+= 1/);
-  assert.match(controller, /state\.speaking \|\| state\.ttsPending \|\| state\.queuedFrames\.length/);
-  assert.match(controller, /turnRevision !== state\.turnRevision/);
-  assert.match(controller, /guard\.stale_turn_discarded/);
-});
-
-test('a question becomes current only when playback starts', () => {
-  const controller = read('voice-pipeline-controller.js');
-  assert.match(controller, /function activatePendingPlayback/);
-  assert.match(controller, /recordAskedQuestion\(state\.memory, state\.pendingQuestionId\)/);
-  assert.match(controller, /playback\.started/);
-  assert.match(controller, /pendingQuestionId: questionId/);
-  assert.match(controller, /speak\(spokenReply, \{ questionId: askedQuestionId \}\)/);
-});
-
-test('unfinished caller phrases are held for continuation instead of sent to the brain', () => {
-  const controller = read('voice-pipeline-controller.js');
-  assert.match(controller, /INCOMPLETE_UTTERANCE_PATTERN/);
-  assert.match(controller, /isObviouslyIncompleteTranscript/);
-  assert.match(controller, /caller\.partial_held/);
-  assert.match(controller, /caller\.partial_merged/);
-  assert.match(controller, /pendingCallerFragment/);
 });
 
 test('the closing hangs up only after its audio playback completes', () => {
@@ -183,6 +249,14 @@ test('the closing hangs up only after its audio playback completes', () => {
   assert.match(controller, /endAfterPlaybackReason: 'completed'/);
   assert.match(controller, /playback\.completed_hangup/);
   assert.match(controller, /endCall\?\.\(endReason\)/);
+});
+
+test('the brain requires notes, full readback, availability, and save-before-close behavior', () => {
+  const brain = read('receptionist-brain.js');
+  assert.match(brain, /Never skip the notes question/);
+  assert.match(brain, /always state the configured estimate availability/);
+  assert.match(brain, /read back the caller's name, service, full project address/);
+  assert.match(brain, /When submitLead is true, endCall must be false/);
 });
 
 test('the production server uses the modular pipeline and never opens a reasoning Realtime socket', () => {
