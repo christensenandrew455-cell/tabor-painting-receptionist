@@ -138,10 +138,11 @@ export function businessInfoFromAppProfile(profile = {}) {
 }
 
 // Creates temporary runtime values for business-specific information only.
-// The reasoning, transcription, and speech models are fixed in modular-models.js.
+// AI_MODEL is a local legacy compatibility value; the modular models are fixed in modular-models.js.
 export function runtimeEnvironmentFromApp({ profile = {}, clientId = '' } = {}) {
   const info = describeAppInfo(profile);
   return Object.freeze({
+    AI_MODEL: 'gpt-realtime-mini',
     AI_VOICE: info.aiVoice,
     AI_SPEECH_SPEED: info.aiSpeechSpeed,
     AI_SILENCE_MS: info.aiSilenceMs,
