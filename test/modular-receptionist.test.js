@@ -40,11 +40,19 @@ const businessProfile = Object.freeze({
   closingLine: 'OCM must not control this closing.',
 });
 
-test('production starts the modular server and keeps legacy as an explicit fallback', () => {
+test('production starts the modular server with the Telnyx stream linker and keeps legacy explicit', () => {
   const packageJson = JSON.parse(read('package.json'));
   assert.equal(packageJson.main, 'server-modular.js');
-  assert.equal(packageJson.scripts.start, 'node server-modular.js');
+  assert.equal(packageJson.scripts.start, 'node --import ./stream-call-link.js server-modular.js');
   assert.match(packageJson.scripts['start:legacy'], /server\.js$/);
+});
+
+test('the Telnyx stream linker carries the webhook call ID into the media socket', () => {
+  const linker = read('stream-call-link.js');
+  assert.match(linker, /searchParams\.set\('callControlId', callControlId\)/);
+  assert.match(linker, /searchParams\.get\('callControlId'\)/);
+  assert.match(linker, /message\.call_control_id = message\.call_control_id \|\| linkedCallControlId/);
+  assert.match(linker, /message\.start[\s\S]*call_control_id/);
 });
 
 test('each OpenAI model has exactly one fixed job', () => {
