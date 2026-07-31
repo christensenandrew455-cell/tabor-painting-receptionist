@@ -5,6 +5,22 @@ import {
   emptyLead,
 } from './receptionist-brain.js';
 import { createTranscriber, synthesizePcmu } from './openai-voice.js';
+import {
+  ESTIMATE_ORDER,
+  baseQuestionFor,
+  captureDeterministicLead,
+  enforceQuestionBlock,
+  isObviouslyIncompleteTranscript,
+  markDeterministicCompletions,
+  mergeCallerFragment,
+  mergeLead,
+  nextRequiredQuestion,
+  removeCompletion,
+  shouldKeepHoldingFragment,
+  validationLeadFromModular,
+  validationPreface,
+  validationQuestion,
+} from './modular-intake-logic.js';
 
 const REPEATABLE_QUESTION_IDS = new Set([
   'ask_estimate',
@@ -13,35 +29,10 @@ const REPEATABLE_QUESTION_IDS = new Set([
   'clarify',
 ]);
 
-const ESTIMATE_QUESTION_IDS = new Set([
-  'service',
-  'name',
-  'project_location',
-  'preferred_date_time',
-  'notes',
-  'contact_consent',
-  'confirm_summary',
-]);
-
-const BASE_QUESTIONS = Object.freeze({
-  ask_estimate: 'Would you like to fill out an estimate request?',
-  continue_estimate: 'Would you like to continue filling out your estimate request?',
-  more_questions: (businessName) => `Do you have any more questions about ${businessName}?`,
-  service: (runtime) => `We specialize in ${Object.keys(runtime.core.BUSINESS.services || {}).join(', ')}. What service would you like?`,
-  name: 'What is your full name?',
-  project_location: 'What is the full address for the project?',
-  preferred_date_time: 'What is your preferred estimate date and time?',
-  notes: 'Do you have any additional notes about this project?',
-  contact_consent: (runtime) => runtime.core.contactConsentQuestion,
-  confirm_summary: 'Does all of that sound right?',
-  clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
-});
-
+const ESTIMATE_QUESTION_IDS = new Set(ESTIMATE_ORDER);
 const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it|the form) out again)\b/i;
 const IDENTITY_PATTERN = /\b(?:are you|is this)\s+(?:an?\s+)?(?:ai|bot|robot|human|person|real person)\b/i;
 const FALSE_HUMAN_CLAIM_PATTERN = /\b(?:i am|i'm)\s+(?:a\s+)?(?:person|human|real person)\b/i;
-const SAFE_PREFACE_PATTERN = /^(?:okay|ok|great|sounds good|thank you|thanks|got it|understood|perfect|all right|alright|i'm sorry(?: to hear that)?|sorry to hear that|that makes sense)[.!]?$/i;
-const INCOMPLETE_UTTERANCE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|this|the address|my address|the date|the time|my name)\s*)?(?:(?:would be|is|is at|is on|would be at|would be on)\s*)?$/i;
 const SILENCE_REPEAT_MS = 5000;
 
 function clean(value) {
@@ -65,54 +56,8 @@ function recordAskedQuestion(memory, questionId) {
   if (ESTIMATE_QUESTION_IDS.has(questionId)) memory.estimateStarted = true;
 }
 
-function baseQuestionFor(runtime, questionId) {
-  const value = BASE_QUESTIONS[questionId];
-  if (typeof value === 'function') {
-    if (questionId === 'more_questions') return clean(value(runtime.core.BUSINESS.name));
-    return clean(value(runtime));
-  }
-  return clean(value);
-}
-
 function identityLine(runtime) {
   return `I am an AI receptionist working for ${runtime.core.BUSINESS.name}, managed by our client center.`;
-}
-
-function safeEstimatePreface(spokenReply) {
-  const beforeQuestion = clean(String(spokenReply || '').split('?')[0]);
-  const sentences = beforeQuestion.match(/[^.!]+[.!]?/g) || [];
-  const candidate = clean(sentences[0]);
-  return candidate.length <= 80 && SAFE_PREFACE_PATTERN.test(candidate) ? candidate : '';
-}
-
-function enforceQuestionReply(runtime, spokenReply, questionId) {
-  const baseQuestion = baseQuestionFor(runtime, questionId);
-  if (!baseQuestion || questionId === 'none') return clean(spokenReply);
-  if (questionId === 'clarify') return baseQuestion;
-
-  if (ESTIMATE_QUESTION_IDS.has(questionId)) {
-    const preface = safeEstimatePreface(spokenReply);
-    return clean(preface ? `${preface} ${baseQuestion}` : baseQuestion);
-  }
-
-  const reply = clean(spokenReply);
-  const questionIndex = reply.indexOf('?');
-  const beforeQuestion = clean(questionIndex >= 0 ? reply.slice(0, questionIndex + 1) : reply);
-  const sentences = beforeQuestion.match(/[^.!?]+[.!?]?/g) || [];
-  const nonQuestionAnswer = clean(sentences.filter((sentence) => !sentence.includes('?')).join(' '));
-  return clean(nonQuestionAnswer ? `${nonQuestionAnswer} ${baseQuestion}` : baseQuestion);
-}
-
-function isObviouslyIncompleteTranscript(value) {
-  const text = clean(value);
-  if (!text) return true;
-  const normalized = text
-    .toLowerCase()
-    .replace(/(?:\.\.\.|…)+$/g, '')
-    .replace(/[,.!?;:]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return INCOMPLETE_UTTERANCE_PATTERN.test(normalized);
 }
 
 export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clearAudio, saveLead, endCall, log = console }) {
@@ -160,7 +105,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   function scheduleBaseQuestionRepeat(questionId) {
     clearSilenceTimer();
-    const baseQuestion = baseQuestionFor(runtime, questionId);
+    const baseQuestion = baseQuestionFor(runtime.core, questionId, state.lead);
     if (!baseQuestion || state.stopped || state.closingStarted) return;
     state.silenceTimer = setTimeout(() => {
       state.silenceTimer = null;
@@ -193,9 +138,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   function activatePendingPlayback() {
     if (state.pendingReplyRemembered) return;
-    if (state.pendingQuestionId !== 'none') {
-      recordAskedQuestion(state.memory, state.pendingQuestionId);
-    }
+    if (state.pendingQuestionId !== 'none') recordAskedQuestion(state.memory, state.pendingQuestionId);
     remember('assistant', state.pendingReplyText);
     state.pendingReplyRemembered = true;
     debug('playback.started', {
@@ -285,11 +228,16 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
   }
 
   async function submitLeadSafely() {
-    const validation = runtime.core.validateLead(state.lead);
+    const mappedLead = validationLeadFromModular(state.lead);
+    const validation = runtime.core.validateLead(mappedLead);
     if (!validation.valid) {
       log.warn('[Brain requested invalid lead submission]', validation.errors);
-      debug('lead.validation_failed', { errors: validation.errors, lead: state.lead });
-      return { ok: false, invalid: true };
+      debug('lead.validation_failed', {
+        errors: validation.errors,
+        modularLead: state.lead,
+        mappedLead,
+      });
+      return { ok: false, invalid: true, errors: validation.errors };
     }
 
     try {
@@ -319,12 +267,19 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
     if (state.pendingCallerFragment) {
       const fragment = state.pendingCallerFragment;
+      if (shouldKeepHoldingFragment(fragment, text)) {
+        state.pendingCallerFragment = mergeCallerFragment(fragment, text);
+        debug('caller.partial_held', {
+          transcript: state.pendingCallerFragment,
+          currentQuestionId: state.memory.currentQuestionId,
+        });
+        scheduleBaseQuestionRepeat(state.memory.currentQuestionId);
+        return;
+      }
       state.pendingCallerFragment = '';
-      text = clean(`${fragment.replace(/(?:\.\.\.|…)+$/g, '')} ${text}`);
+      text = mergeCallerFragment(fragment, text);
       debug('caller.partial_merged', { fragment, transcript: text });
-    }
-
-    if (isObviouslyIncompleteTranscript(text)) {
+    } else if (isObviouslyIncompleteTranscript(text)) {
       state.pendingCallerFragment = text;
       debug('caller.partial_held', {
         transcript: text,
@@ -335,11 +290,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     const turnRevision = ++state.turnRevision;
+    const currentQuestionId = state.memory.currentQuestionId;
+    const capturedLead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
     const requestHistory = [...state.history, { role: 'caller', content: text }];
     debug('caller.transcript', {
       transcript: text,
       turnRevision,
-      lead: state.lead,
+      currentQuestionId,
+      lead: capturedLead,
       memory: state.memory,
     });
 
@@ -364,14 +322,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       debug('brain.request', {
         transcript: text,
         turnRevision,
-        lead: state.lead,
+        lead: capturedLead,
         memory: state.memory,
         recentConversation: requestHistory.slice(-12),
       });
       const turn = await decideReceptionistTurn({
         core: runtime.core,
         transcript: text,
-        lead: state.lead,
+        lead: capturedLead,
         history: requestHistory,
         callMemory: state.memory,
       });
@@ -388,46 +346,63 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
       remember('caller', text);
       callerRemembered = true;
-      state.lead = { ...state.lead, ...(turn.updatedLead || {}) };
+      state.lead = mergeLead(capturedLead, turn.updatedLead || {});
       state.memory.completedQuestionIds = mergeUnique(
         state.memory.completedQuestionIds,
         turn.completedQuestionIds || [],
       );
+      state.memory.completedQuestionIds = markDeterministicCompletions(
+        currentQuestionId,
+        state.lead,
+        state.memory.completedQuestionIds,
+      );
 
       let spokenReply = clean(turn.spokenReply);
       let askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
-      if (turn.intent === 'estimate' || ESTIMATE_QUESTION_IDS.has(askedQuestionId)) {
+      let submitRequested = turn.submitLead === true;
+      let shouldEndCall = turn.endCall === true;
+
+      if (turn.intent === 'estimate' || ESTIMATE_QUESTION_IDS.has(askedQuestionId) || submitRequested) {
         state.memory.estimateStarted = true;
       }
 
       if (FALSE_HUMAN_CLAIM_PATTERN.test(spokenReply)) {
         spokenReply = identityLine(runtime);
         askedQuestionId = 'none';
+        submitRequested = false;
+        shouldEndCall = false;
         debug('guard.false_human_claim_blocked', { modelReply: turn.spokenReply, replacement: spokenReply });
       }
 
-      if (state.memory.estimateStarted && !state.memory.completedQuestionIds.includes('service')) {
-        askedQuestionId = 'service';
-        spokenReply = baseQuestionFor(runtime, 'service');
-        debug('guard.service_first', { spokenReply });
-      } else if (state.memory.estimateStarted && askedQuestionId !== 'service' && !state.lead.service) {
-        askedQuestionId = 'service';
-        spokenReply = baseQuestionFor(runtime, 'service');
-        debug('guard.service_missing', { spokenReply });
+      const estimateTurn = turn.intent === 'estimate'
+        || ESTIMATE_QUESTION_IDS.has(askedQuestionId)
+        || submitRequested;
+      const requiredQuestionId = state.memory.estimateStarted
+        ? nextRequiredQuestion(state.memory, state.lead)
+        : 'none';
+
+      if (estimateTurn && requiredQuestionId !== 'none' && askedQuestionId !== requiredQuestionId) {
+        const previousQuestionId = askedQuestionId;
+        askedQuestionId = requiredQuestionId;
+        spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
+        submitRequested = false;
+        shouldEndCall = false;
+        debug(requiredQuestionId === 'service' ? 'guard.service_first' : 'guard.field_order_enforced', {
+          previousQuestionId,
+          requiredQuestionId,
+          spokenReply,
+        });
       }
 
       if (questionIsLocked(state.memory, askedQuestionId)) {
-        log.warn('[Blocked repeated completed question]', {
-          askedQuestionId,
-          askedCount: state.memory.askedCounts[askedQuestionId] || 0,
-        });
         const blockedQuestionId = askedQuestionId;
-        askedQuestionId = state.memory.leadSaved
-          ? 'more_questions'
-          : state.memory.estimateStarted
-            ? 'continue_estimate'
-            : 'ask_estimate';
-        spokenReply = baseQuestionFor(runtime, askedQuestionId);
+        const replacementQuestionId = nextRequiredQuestion(state.memory, state.lead);
+        askedQuestionId = replacementQuestionId !== 'none'
+          ? replacementQuestionId
+          : state.memory.leadSaved ? 'more_questions' : 'continue_estimate';
+        spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
+        submitRequested = false;
+        shouldEndCall = false;
         debug('guard.completed_question_repeat_blocked', {
           blockedQuestionId,
           replacementQuestionId: askedQuestionId,
@@ -435,8 +410,42 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         });
       }
 
+      if (submitRequested && !state.memory.leadSaved) {
+        const stillMissing = nextRequiredQuestion(state.memory, state.lead);
+        if (stillMissing !== 'none') {
+          askedQuestionId = stillMissing;
+          spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
+          shouldEndCall = false;
+          debug('guard.submit_before_complete_blocked', { stillMissing, lead: state.lead });
+        } else {
+          const submission = await submitLeadSafely();
+          shouldEndCall = false;
+          if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
+            debug('guard.stale_turn_discarded', {
+              turnRevision,
+              currentTurnRevision: state.turnRevision,
+              transcript: text,
+              stage: 'after_submission',
+            });
+            return;
+          }
+          if (submission.ok) {
+            askedQuestionId = 'more_questions';
+            spokenReply = `The request has been sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+          } else if (submission.invalid) {
+            askedQuestionId = validationQuestion(submission.errors);
+            removeCompletion(state.memory, askedQuestionId);
+            const preface = validationPreface(runtime.core, askedQuestionId, submission.errors);
+            spokenReply = `${preface} ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+          } else {
+            askedQuestionId = 'more_questions';
+            spokenReply = `I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+          }
+        }
+      }
+
       if (askedQuestionId !== 'none') {
-        const guardedReply = enforceQuestionReply(runtime, spokenReply, askedQuestionId);
+        const guardedReply = enforceQuestionBlock(runtime.core, spokenReply, askedQuestionId, state.lead);
         if (guardedReply !== spokenReply) {
           debug('guard.question_wording_enforced', {
             askedQuestionId,
@@ -447,30 +456,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         spokenReply = guardedReply;
       }
 
-      if (turn.submitLead && !state.memory.leadSaved) {
-        const submission = await submitLeadSafely();
-        if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
-          debug('guard.stale_turn_discarded', {
-            turnRevision,
-            currentTurnRevision: state.turnRevision,
-            transcript: text,
-            stage: 'after_submission',
-          });
-          return;
-        }
-        if (submission.ok) {
-          askedQuestionId = 'more_questions';
-          spokenReply = `The request has been sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime, askedQuestionId)}`;
-        } else if (submission.invalid) {
-          askedQuestionId = 'clarify';
-          spokenReply = baseQuestionFor(runtime, askedQuestionId);
-        } else {
-          askedQuestionId = 'more_questions';
-          spokenReply = `I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. ${baseQuestionFor(runtime, askedQuestionId)}`;
-        }
-      }
-
-      if (turn.endCall) {
+      if (shouldEndCall) {
         debug('turn.final', {
           action: 'closing',
           lead: state.lead,
@@ -499,7 +485,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       if (!callerRemembered) remember('caller', text);
       log.error('[Voice pipeline turn failed]', error);
       debug('turn.error', { error: error?.stack || error?.message || String(error) });
-      await speak(baseQuestionFor(runtime, 'clarify'), { questionId: 'clarify' });
+      await speak(baseQuestionFor(runtime.core, 'clarify', state.lead), { questionId: 'clarify' });
     }
   }
 
