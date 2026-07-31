@@ -150,6 +150,34 @@ test('five-second repeats begin after playback and use only the base question', 
   assert.match(controller, /silence\.base_question_repeat/);
 });
 
+test('caller speech cancels pending TTS and discards stale brain responses', () => {
+  const controller = read('voice-pipeline-controller.js');
+  assert.match(controller, /ttsPending: false/);
+  assert.match(controller, /turnRevision: 0/);
+  assert.match(controller, /state\.turnRevision \+= 1/);
+  assert.match(controller, /state\.speaking \|\| state\.ttsPending \|\| state\.queuedFrames\.length/);
+  assert.match(controller, /turnRevision !== state\.turnRevision/);
+  assert.match(controller, /guard\.stale_turn_discarded/);
+});
+
+test('a question becomes current only when playback starts', () => {
+  const controller = read('voice-pipeline-controller.js');
+  assert.match(controller, /function activatePendingPlayback/);
+  assert.match(controller, /recordAskedQuestion\(state\.memory, state\.pendingQuestionId\)/);
+  assert.match(controller, /playback\.started/);
+  assert.match(controller, /pendingQuestionId: questionId/);
+  assert.match(controller, /speak\(spokenReply, \{ questionId: askedQuestionId \}\)/);
+});
+
+test('unfinished caller phrases are held for continuation instead of sent to the brain', () => {
+  const controller = read('voice-pipeline-controller.js');
+  assert.match(controller, /INCOMPLETE_UTTERANCE_PATTERN/);
+  assert.match(controller, /isObviouslyIncompleteTranscript/);
+  assert.match(controller, /caller\.partial_held/);
+  assert.match(controller, /caller\.partial_merged/);
+  assert.match(controller, /pendingCallerFragment/);
+});
+
 test('the closing hangs up only after its audio playback completes', () => {
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /endAfterPlaybackReason: 'completed'/);
