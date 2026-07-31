@@ -31,6 +31,11 @@ globalThis.fetch = async function arkLinkedFetch(input, init = {}) {
     const nextPayload = {
       ...payload,
       stream_url: linkedStreamUrl(payload.stream_url, callControlId),
+      stream_bidirectional_mode: 'rtp',
+      stream_bidirectional_codec: 'PCMU',
+      stream_bidirectional_sampling_rate: 8000,
+      stream_bidirectional_target_legs: 'self',
+      send_silence_when_idle: true,
     };
     return originalFetch(input, { ...init, body: JSON.stringify(nextPayload) });
   } catch {
@@ -76,5 +81,8 @@ WebSocketServer.prototype.handleUpgrade = function arkLinkedHandleUpgrade(reques
 
 console.log('[Telnyx stream link]', {
   enabled: true,
-  behavior: 'carries the webhook call ID into the media WebSocket',
+  codec: 'PCMU 8 kHz',
+  targetLeg: 'self',
+  sendSilenceWhenIdle: true,
+  behavior: 'carries the webhook call ID into the media WebSocket and locks telephone audio transport',
 });
