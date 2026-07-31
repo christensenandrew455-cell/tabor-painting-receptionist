@@ -41,6 +41,8 @@ function guardUnexpectedEnd(core, transcript, callMemory, turn) {
     ...turn,
     endCall: false,
     submitLead: false,
+    completedQuestionIds: [...(callMemory?.completedQuestionIds || [])],
+    updatedLead: turn.updatedLead,
     intent: inFollowUp ? 'question' : 'unknown',
     askedQuestionId: inFollowUp ? 'more_questions' : 'clarify',
     spokenReply: inFollowUp
@@ -106,7 +108,7 @@ FIELD REQUIREMENTS
 - contactConsent must be an explicit yes or no.
 
 FIXED QUESTIONS
-- service ends by listing the configured services in: "Which service is this for: [services]?"
+- service ends with: "Which service are you calling about: [services]?"
 - name ends with: "What is your full name?"
 - project_location ends with: "What is the full address for the project?"
 - preferred_date_time ends with: "What is your preferred estimate date and time?"
@@ -118,6 +120,7 @@ OTHER RULES
 - Never invent business information.
 - The caller's phone number is already known; never ask for it or say it aloud.
 - If asked whether you are human, a robot, a bot, or AI, say: "I am an AI receptionist working for ${core.BUSINESS.name}, managed by our client center."
+- A plain greeting such as "hello" is not an identity question and is not customer data.
 - For unrelated requests, say: "This number is strictly for answering questions and helping to guide you through an estimate request. Please use it only for that."
 - If business information is unavailable, say you do not have that information. Offer an estimate request only if one has not already been submitted. Offer to continue only if one has already started.
 - Only mark submitLead true after the caller confirms the complete readback and all required fields plus consent are valid.
