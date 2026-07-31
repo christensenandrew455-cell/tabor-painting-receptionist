@@ -69,26 +69,20 @@ test('an exact canonical question is never duplicated', () => {
     enforceQuestionBlock(coreStub, 'What is your full name?', 'name', completeLead),
     'What is your full name?',
   );
-  assert.equal(
-    enforceQuestionBlock(
-      coreStub,
-      'What is the full address for the project?',
-      'project_location',
-      completeLead,
-    ),
-    'What is the full address for the project?',
-  );
 });
 
-test('availability wording is not duplicated', () => {
+test('date and time wording explains schedule and request status', () => {
+  const expected = 'Next, we need a date and time for the estimate. We schedule estimates Monday through Friday from 9:00 AM to 4:00 PM. This date and time is only a request and is not a confirmed appointment. What date and time would you like to request?';
+  assert.equal(baseQuestionFor(coreStub, 'preferred_date_time', completeLead), expected);
+  assert.equal(repeatQuestionFor(coreStub, 'preferred_date_time', completeLead), expected);
   assert.equal(
     enforceQuestionBlock(
       coreStub,
-      'Our estimate availability is Monday through Friday, 9:00 AM through 4:00 PM. What is your preferred estimate date and time?',
+      'Our estimators are available Monday through Friday, 9:00 AM to 4:00 PM. What is your preferred estimate date and time?',
       'preferred_date_time',
       completeLead,
     ),
-    'Estimate appointments are available Monday through Friday from 9:00 AM through 4:00 PM. What is your preferred estimate date and time?',
+    expected,
   );
 });
 
@@ -124,30 +118,20 @@ test('long prefaces are bounded and remain declarative', () => {
 test('natural service descriptions are mapped before the model returns', () => {
   const empty = { ...completeLead, service: null };
   assert.equal(
-    captureDeterministicLead(
-      coreStub,
-      'service',
-      'I need the whole outside of my house repainted.',
-      empty,
-    ).service,
+    captureDeterministicLead(coreStub, 'service', 'I need the whole outside of my house repainted.', empty).service,
     'exterior painting',
   );
   assert.equal(
-    captureDeterministicLead(
-      coreStub,
-      'service',
-      'I need the whole house painted.',
-      empty,
-    ).service,
+    captureDeterministicLead(coreStub, 'service', 'I need the whole house painted.', empty).service,
     'exterior painting',
   );
   assert.equal(
-    captureDeterministicLead(coreStub, 'service', 'The walls inside need paint.', empty).service,
+    captureDeterministicLead(coreStub, 'service', 'I just need a room painted at my house.', empty).service,
     'interior painting',
   );
 });
 
-test('valid name and project address are captured before the model returns', () => {
+test('valid name and complete project address are captured before the model returns', () => {
   const empty = { ...completeLead, name: null, projectLocation: null };
   const named = captureDeterministicLead(coreStub, 'name', 'Andrew Christensen.', empty);
   assert.equal(named.name, 'Andrew Christensen');
@@ -162,6 +146,40 @@ test('valid name and project address are captured before the model returns', () 
   assert.deepEqual(changedLeadFields(named, located), ['projectLocation']);
 });
 
+test('partial street address is retained and only missing city and state are requested', () => {
+  const empty = { ...completeLead, projectLocation: null };
+  const partial = captureDeterministicLead(
+    coreStub,
+    'project_location',
+    'That would be 197 Lancaster Road.',
+    empty,
+  );
+  assert.equal(partial.projectLocation, '197 Lancaster Road');
+  assert.equal(
+    baseQuestionFor(coreStub, 'project_location', partial),
+    'What city and state is that address in?',
+  );
+
+  const completed = captureDeterministicLead(
+    coreStub,
+    'project_location',
+    'Berlin, Massachusetts.',
+    partial,
+  );
+  assert.equal(completed.projectLocation, '197 Lancaster Road, Berlin, Massachusetts');
+});
+
+test('conversational lead-in is removed from a full address', () => {
+  const empty = { ...completeLead, projectLocation: null };
+  const located = captureDeterministicLead(
+    coreStub,
+    'project_location',
+    'I just told you, 197 Lincoln Road, Berlin, Massachusetts.',
+    empty,
+  );
+  assert.equal(located.projectLocation, '197 Lincoln Road, Berlin, Massachusetts');
+});
+
 test('conversation and complaint sentences are not saved as name or address', () => {
   const empty = { ...completeLead, name: null, projectLocation: null };
   const badName = 'Um, well, I called you, so I think you are, you know.';
@@ -170,18 +188,10 @@ test('conversation and complaint sentences are not saved as name or address', ()
   const afterName = captureDeterministicLead(coreStub, 'name', badName, empty);
   assert.equal(afterName.name, null);
 
-  const afterAddress = captureDeterministicLead(
-    coreStub,
-    'project_location',
-    badAddress,
-    afterName,
-  );
+  const afterAddress = captureDeterministicLead(coreStub, 'project_location', badAddress, afterName);
   assert.equal(afterAddress.projectLocation, null);
 
-  assert.deepEqual(
-    mergeLead(empty, { name: badName, projectLocation: badAddress }),
-    empty,
-  );
+  assert.deepEqual(mergeLead(empty, { name: badName, projectLocation: badAddress }), empty);
 });
 
 test('invalid model values cannot advance the state machine', () => {
@@ -196,6 +206,19 @@ test('invalid model values cannot advance the state machine', () => {
   };
 
   assert.equal(nextRequiredQuestion(memory, lead), 'name');
+});
+
+test('partial address does not complete the address field', () => {
+  const memory = createCallMemory();
+  memory.estimateStarted = true;
+  memory.completedQuestionIds = ['service', 'name'];
+  const lead = { ...completeLead, projectLocation: '197 Lancaster Road' };
+  memory.completedQuestionIds = markDeterministicCompletions(
+    'project_location',
+    lead,
+    memory.completedQuestionIds,
+  );
+  assert.equal(nextRequiredQuestion(memory, lead), 'project_location');
 });
 
 test('deterministic completions advance the state machine', () => {
@@ -221,12 +244,10 @@ test('date and time capture remains deterministic', () => {
   assert.equal(captured.preferredTime, '2:00 PM');
 });
 
-test('summary and consent remain server-owned', () => {
+test('summary emphasizes requested date and consent remains server-owned', () => {
   const summary = baseQuestionFor(coreStub, 'confirm_summary', completeLead);
   assert.match(summary, /^Let me read that back\./);
+  assert.match(summary, /date and time requested for Tuesday at 4:00 PM/);
   assert.match(summary, /Does all of that sound right\?$/);
-  assert.equal(
-    baseQuestionFor(coreStub, 'contact_consent', completeLead),
-    coreStub.contactConsentQuestion,
-  );
+  assert.equal(baseQuestionFor(coreStub, 'contact_consent', completeLead), coreStub.contactConsentQuestion);
 });
