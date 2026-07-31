@@ -1,8 +1,8 @@
 const MAX_PREFACE_CHARACTERS = 120;
-const QUESTION_MARK_PATTERN = /\?/;
 const INTERNAL_LANGUAGE_PATTERN = /\b(?:question id|askedQuestionId|field|json|schema|prompt|system message|tool|function)\b/i;
 const COLLECTION_EXPLANATION_PATTERN = /\b(?:we collect|collect this|need this information|information so)\b/i;
 const INSTRUCTION_PATTERN = /\b(?:please provide|you must|you need to|make sure|be sure to|required field)\b/i;
+const AVAILABILITY_PREFACE_PATTERN = /\b(?:estimate availability|estimate appointments? are available|available monday|monday through friday)\b/i;
 
 function clean(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -15,6 +15,29 @@ function serviceNames(core) {
 function mentionsConfiguredService(core, value) {
   const text = clean(value).toLowerCase();
   return serviceNames(core).some((service) => text.includes(service.toLowerCase()));
+}
+
+function stripCanonicalQuestion(core, value, questionId, lead = {}) {
+  let text = clean(value);
+  if (!text) return '';
+
+  const canonicalQuestions = [
+    baseQuestionFor(core, questionId, lead),
+    repeatQuestionFor(core, questionId),
+  ]
+    .map((question) => clean(question))
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+
+  for (const question of canonicalQuestions) {
+    if (text.toLowerCase() === question.toLowerCase()) return '';
+    if (text.toLowerCase().endsWith(question.toLowerCase())) {
+      text = clean(text.slice(0, text.length - question.length));
+      break;
+    }
+  }
+
+  return text;
 }
 
 export function availabilityStatement(core) {
@@ -64,19 +87,20 @@ export function repeatQuestionFor(core, questionId) {
 }
 
 export function sanitizeIntakePreface(core, value, questionId) {
-  if (questionId === 'clarify' || questionId === 'confirm_summary') return '';
+  if (questionId === 'service' || questionId === 'clarify' || questionId === 'confirm_summary') return '';
 
-  let preface = clean(value);
+  const sentences = clean(value).match(/[^.!?]+[.!?]?/g) || [];
+  let preface = clean(sentences
+    .map((sentence) => clean(sentence))
+    .filter((sentence) => sentence && !sentence.endsWith('?'))
+    .join(' '));
+
   if (!preface) return '';
-
-  const questionIndex = preface.indexOf('?');
-  if (questionIndex >= 0) preface = clean(preface.slice(0, questionIndex));
-
-  if (!preface || QUESTION_MARK_PATTERN.test(preface)) return '';
   if (INTERNAL_LANGUAGE_PATTERN.test(preface)) return '';
   if (COLLECTION_EXPLANATION_PATTERN.test(preface)) return '';
   if (INSTRUCTION_PATTERN.test(preface)) return '';
   if (mentionsConfiguredService(core, preface)) return '';
+  if (questionId === 'preferred_date_time' && AVAILABILITY_PREFACE_PATTERN.test(preface)) return '';
 
   if (preface.length > MAX_PREFACE_CHARACTERS) {
     preface = clean(preface.slice(0, MAX_PREFACE_CHARACTERS).replace(/\s+\S*$/, ''));
@@ -87,10 +111,11 @@ export function sanitizeIntakePreface(core, value, questionId) {
   return preface;
 }
 
-export function assembleIntakeReply(core, preface, questionId, lead = {}) {
+export function assembleIntakeReply(core, modelReply, questionId, lead = {}) {
   const question = baseQuestionFor(core, questionId, lead);
-  if (!question || questionId === 'none') return clean(preface);
+  if (!question || questionId === 'none') return clean(modelReply);
 
+  const preface = stripCanonicalQuestion(core, modelReply, questionId, lead);
   const safePreface = sanitizeIntakePreface(core, preface, questionId);
   return clean(safePreface ? `${safePreface} ${question}` : question);
 }
