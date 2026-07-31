@@ -4,6 +4,9 @@ const ORDINAL_DAY_PATTERN = /\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i;
 const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
 const CONTINUATION_FILLER_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like|right|yeah|yep|okay|ok)[.!?…\s]*$/i;
 const INCOMPLETE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|this|the address|my address|the date|the time|my name|can i do)\s*)?(?:(?:would be|is|is at|is on|would be at|would be on)\s*)?$/i;
+const CONTROL_SPEECH_PATTERN = /^(?:hello|hello there|hi|hey|are you there|you there|can you hear me|do you hear me|are you listening|still there|i'm here|im here)[?!.\s]*$/i;
+const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|there (?:was|were|are|is) no additional notes?|nothing else|none|nope|that's all|that is all)\b/i;
+const AFFIRMATIVE_PATTERN = /\b(?:yes|yeah|yep|sure|correct|right|okay|ok|sounds good|that's right|that is right|other than that|otherwise)\b/i;
 
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
@@ -96,9 +99,19 @@ function rawDateFromTranscript(transcript = '') {
   return '';
 }
 
+export function isControlSpeech(value) {
+  return CONTROL_SPEECH_PATTERN.test(clean(value));
+}
+
+export function controlSpeechReply(core, questionId, lead = {}) {
+  const question = repeatQuestionFor(core, questionId) || baseQuestionFor(core, questionId, lead);
+  return clean(`I'm here. ${question}`);
+}
+
 export function captureDeterministicLead(core, currentQuestionId, transcript, lead = {}) {
   const captured = { ...lead };
   const text = clean(transcript);
+  if (!text || isControlSpeech(text)) return captured;
 
   if (currentQuestionId === 'service') {
     const service = serviceNames(core)
@@ -115,7 +128,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   }
 
   if (currentQuestionId === 'notes') {
-    if (/^(?:no|none|nothing|nope|that's all|that is all)[.!\s]*$/i.test(text)) captured.notes = 'none';
+    if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
     else if (text) captured.notes = text;
   }
 
@@ -124,7 +137,20 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     if (/\b(?:no|nope|do not|don't)\b/i.test(text)) captured.contactConsent = false;
   }
 
+  if (currentQuestionId === 'confirm_summary') {
+    if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
+  }
+
   return captured;
+}
+
+export function changedLeadFields(before = {}, after = {}) {
+  return ['name', 'service', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent']
+    .filter((key) => before[key] !== after[key]);
+}
+
+export function callerAffirmsSummary(transcript = '') {
+  return AFFIRMATIVE_PATTERN.test(clean(transcript));
 }
 
 export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
@@ -171,7 +197,7 @@ export function baseQuestionFor(core, questionId, lead = {}) {
     ask_estimate: 'Would you like to fill out an estimate request?',
     continue_estimate: 'Would you like to continue filling out your estimate request?',
     more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Next, we need to collect the service you need. Which service is this for: ${listServices(core)}?`,
+    service: `Which service are you calling about: ${listServices(core)}?`,
     name: 'What is your full name?',
     project_location: 'What is the full address for the project?',
     preferred_date_time: `${availabilityStatement(core)} What is your preferred estimate date and time?`,
@@ -188,7 +214,7 @@ export function repeatQuestionFor(core, questionId) {
     ask_estimate: 'Would you like to fill out an estimate request?',
     continue_estimate: 'Would you like to continue filling out your estimate request?',
     more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Which service is this for: ${listServices(core)}?`,
+    service: `Which service are you calling about: ${listServices(core)}?`,
     name: 'What is your full name?',
     project_location: 'What is the full address for the project?',
     preferred_date_time: 'What is your preferred estimate date and time?',
@@ -201,7 +227,7 @@ export function repeatQuestionFor(core, questionId) {
 }
 
 function declarativePreface(spokenReply, questionId) {
-  if (questionId === 'confirm_summary') return '';
+  if (questionId === 'confirm_summary' || questionId === 'service') return '';
   const sentences = clean(spokenReply).match(/[^.!?]+[.!?]?/g) || [];
   const kept = sentences
     .map((sentence) => clean(sentence))
@@ -218,7 +244,7 @@ function declarativePreface(spokenReply, questionId) {
 export function enforceQuestionBlock(core, spokenReply, questionId, lead = {}) {
   const base = baseQuestionFor(core, questionId, lead);
   if (!base || questionId === 'none') return clean(spokenReply);
-  if (questionId === 'clarify' || questionId === 'confirm_summary') return base;
+  if (questionId === 'clarify' || questionId === 'confirm_summary' || questionId === 'service') return base;
   const preface = declarativePreface(spokenReply, questionId);
   return clean(preface ? `${preface} ${base}` : base);
 }
@@ -245,6 +271,11 @@ export function validationPreface(core, questionId, errors = []) {
 export function removeCompletion(memory, questionId) {
   memory.completedQuestionIds = (memory.completedQuestionIds || [])
     .filter((id) => id !== questionId && id !== 'confirm_summary');
+}
+
+export function reopenConfirmation(memory) {
+  memory.completedQuestionIds = (memory.completedQuestionIds || [])
+    .filter((id) => id !== 'confirm_summary');
 }
 
 export function isObviouslyIncompleteTranscript(value) {
