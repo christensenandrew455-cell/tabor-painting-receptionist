@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { businessInfoFromAppProfile, runtimeEnvironmentFromApp } from '../app-info-config.js';
+import { pcm24kToPcmu8k, splitPcmuFrames } from '../audio-codec.js';
 import { MODELS } from '../modular-models.js';
 import { QUESTION_IDS, createCallMemory } from '../receptionist-brain.js';
 
@@ -47,12 +48,39 @@ test('production starts the modular server with the Telnyx stream linker and kee
   assert.match(packageJson.scripts['start:legacy'], /server\.js$/);
 });
 
-test('the Telnyx stream linker carries the webhook call ID into the media socket', () => {
+test('the Telnyx stream linker carries the call ID and locks clean PCMU transport', () => {
   const linker = read('stream-call-link.js');
   assert.match(linker, /searchParams\.set\('callControlId', callControlId\)/);
   assert.match(linker, /searchParams\.get\('callControlId'\)/);
   assert.match(linker, /message\.call_control_id = message\.call_control_id \|\| linkedCallControlId/);
   assert.match(linker, /message\.start[\s\S]*call_control_id/);
+  assert.match(linker, /stream_bidirectional_codec: 'PCMU'/);
+  assert.match(linker, /stream_bidirectional_sampling_rate: 8000/);
+  assert.match(linker, /stream_bidirectional_target_legs: 'self'/);
+  assert.match(linker, /send_silence_when_idle: true/);
+});
+
+test('the transcriber uses the GA Realtime API and waits for session readiness', () => {
+  const voice = read('openai-voice.js');
+  assert.doesNotMatch(voice, /OpenAI-Beta/);
+  assert.match(voice, /wss:\/\/api\.openai\.com\/v1\/realtime/);
+  assert.match(voice, /type: 'session\.update'/);
+  assert.match(voice, /type: 'transcription'/);
+  assert.match(voice, /format: \{ type: 'audio\/pcmu' \}/);
+  assert.match(voice, /noise_reduction: \{ type: 'near_field' \}/);
+  assert.match(voice, /event\.type === 'session\.updated'/);
+  assert.match(voice, /create_response: false/);
+  assert.match(voice, /interrupt_response: false/);
+});
+
+test('24 kHz PCM silence becomes one clean 20 ms PCMU telephone frame', () => {
+  const twentyMillisecondsOfPcm24k = Buffer.alloc(480 * 2);
+  const pcmu = pcm24kToPcmu8k(twentyMillisecondsOfPcm24k);
+  assert.equal(pcmu.length, 160);
+  assert.ok(pcmu.every((value) => value === 0xff));
+  const frames = splitPcmuFrames(pcmu);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].length, 160);
 });
 
 test('each OpenAI model has exactly one fixed job', () => {
