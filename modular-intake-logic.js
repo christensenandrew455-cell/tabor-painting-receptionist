@@ -1,7 +1,8 @@
 const WEEKDAY_PATTERN = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const MONTH_DAY_PATTERN = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i;
 const ORDINAL_DAY_PATTERN = /\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i;
-const SHORT_FILLER_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|right|yeah|yep|okay|ok|like)[.!?…\s]*$/i;
+const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
+const CONTINUATION_FILLER_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like|right|yeah|yep|okay|ok)[.!?…\s]*$/i;
 const INCOMPLETE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|this|the address|my address|the date|the time|my name|can i do)\s*)?(?:(?:would be|is|is at|is on|would be at|would be on)\s*)?$/i;
 
 export const ESTIMATE_ORDER = Object.freeze([
@@ -84,7 +85,7 @@ function rawDateFromTranscript(transcript = '') {
 }
 
 export function captureDeterministicLead(core, currentQuestionId, transcript, lead = {}) {
-  let captured = { ...lead };
+  const captured = { ...lead };
   const text = clean(transcript);
 
   if (currentQuestionId === 'service') {
@@ -209,7 +210,7 @@ export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'project_location') return 'I still need the street number, street name, city or town, and state.';
   if (questionId === 'preferred_date_time') return `I still need an upcoming estimate date and a time within our availability. ${availabilityStatement(core)}`;
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
-  return errors.length ? `I still need some information before I can submit the request.` : '';
+  return errors.length ? 'I still need some information before I can submit the request.' : '';
 }
 
 export function removeCompletion(memory, questionId) {
@@ -220,7 +221,7 @@ export function removeCompletion(memory, questionId) {
 export function isObviouslyIncompleteTranscript(value) {
   const text = clean(value);
   if (!text) return true;
-  if (SHORT_FILLER_PATTERN.test(text)) return true;
+  if (HESITATION_PATTERN.test(text)) return true;
   const words = text.split(/\s+/).filter(Boolean);
   if (/(?:\.\.\.|…)\s*$/.test(text) && words.length <= 10) return true;
   const normalized = text
@@ -238,6 +239,6 @@ export function mergeCallerFragment(fragment, transcript) {
 
 export function shouldKeepHoldingFragment(fragment, transcript) {
   const next = clean(transcript);
-  if (fragment && SHORT_FILLER_PATTERN.test(next)) return true;
+  if (fragment && CONTINUATION_FILLER_PATTERN.test(next)) return true;
   return isObviouslyIncompleteTranscript(mergeCallerFragment(fragment, next));
 }
