@@ -16,6 +16,7 @@ import {
   mergeLead,
   nextRequiredQuestion,
   removeCompletion,
+  repeatQuestionFor,
   shouldKeepHoldingFragment,
   validationLeadFromModular,
   validationPreface,
@@ -105,8 +106,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   function scheduleBaseQuestionRepeat(questionId) {
     clearSilenceTimer();
-    const baseQuestion = baseQuestionFor(runtime.core, questionId, state.lead);
-    if (!baseQuestion || state.stopped || state.closingStarted) return;
+    const repeatQuestion = repeatQuestionFor(runtime.core, questionId);
+    if (!repeatQuestion || state.stopped || state.closingStarted) return;
     state.silenceTimer = setTimeout(() => {
       state.silenceTimer = null;
       state.pendingCallerFragment = '';
@@ -114,9 +115,9 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       debug('silence.base_question_repeat', {
         questionId,
         askedCount: Number(state.memory.askedCounts[questionId] || 0) + 1,
-        baseQuestion,
+        baseQuestion: repeatQuestion,
       });
-      speak(baseQuestion, { scheduleRepeat: true, questionId })
+      speak(repeatQuestion, { scheduleRepeat: true, questionId })
         .catch((error) => log.error('[Question repeat failed]', error));
     }, SILENCE_REPEAT_MS);
   }
@@ -431,7 +432,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
           }
           if (submission.ok) {
             askedQuestionId = 'more_questions';
-            spokenReply = `The request has been sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+            spokenReply = `Okay, your estimate request has been submitted and sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
           } else if (submission.invalid) {
             askedQuestionId = validationQuestion(submission.errors);
             removeCompletion(state.memory, askedQuestionId);
