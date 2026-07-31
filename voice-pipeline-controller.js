@@ -14,6 +14,7 @@ import {
   controlSpeechReply,
   enforceQuestionBlock,
   isControlSpeech,
+  isLikelyTranscriptionArtifact,
   isObviouslyIncompleteTranscript,
   markDeterministicCompletions,
   mergeCallerFragment,
@@ -73,6 +74,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     history: [],
     speaking: false,
     ttsPending: false,
+    submitting: false,
     stopped: false,
     generation: 0,
     turnRevision: 0,
@@ -111,12 +113,12 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   function scheduleBaseQuestionRepeat(questionId) {
     clearSilenceTimer();
-    const repeatQuestion = repeatQuestionFor(runtime.core, questionId);
-    if (!repeatQuestion || state.stopped || state.closingStarted) return;
+    const repeatQuestion = repeatQuestionFor(runtime.core, questionId, state.lead);
+    if (!repeatQuestion || state.stopped || state.closingStarted || state.submitting) return;
     state.silenceTimer = setTimeout(() => {
       state.silenceTimer = null;
       state.pendingCallerFragment = '';
-      if (state.stopped || state.closingStarted || state.memory.currentQuestionId !== questionId) return;
+      if (state.stopped || state.closingStarted || state.submitting || state.memory.currentQuestionId !== questionId) return;
       debug('silence.base_question_repeat', {
         questionId,
         askedCount: Number(state.memory.askedCounts[questionId] || 0) + 1,
@@ -228,6 +230,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     pumpFrames(generation);
   }
 
+  async function waitForPlaybackToFinish(timeoutMs = 8000) {
+    const startedAt = Date.now();
+    while (!state.stopped && (state.ttsPending || state.speaking || state.queuedFrames.length)) {
+      if (Date.now() - startedAt >= timeoutMs) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
   async function speakClosingAndEnd() {
     if (state.closingStarted || state.stopped) return;
     state.closingStarted = true;
@@ -273,6 +283,17 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
   async function processTranscript(transcript) {
     let text = clean(transcript);
     if (!text || state.stopped || state.closingStarted) return;
+
+    if (state.submitting) {
+      debug('caller.ignored_during_submission', { transcript: text });
+      return;
+    }
+
+    if (isLikelyTranscriptionArtifact(text)) {
+      debug('caller.transcription_artifact_ignored', { transcript: text });
+      return;
+    }
+
     clearSilenceTimer();
 
     if (state.pendingCallerFragment) {
@@ -329,7 +350,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       });
     }
 
-    const requestHistory = [...state.history, { role: 'caller', content: text }];
+    remember('caller', text);
+    const requestHistory = [...state.history];
     debug('caller.transcript', {
       transcript: text,
       turnRevision,
@@ -339,7 +361,6 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     });
 
     if (IDENTITY_PATTERN.test(text)) {
-      remember('caller', text);
       const reply = identityLine(runtime);
       debug('guard.identity', { transcript: text, reply });
       await speak(reply);
@@ -347,14 +368,12 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     if (state.memory.estimateStarted && !state.memory.leadSaved && RESTART_PATTERN.test(text)) {
-      remember('caller', text);
       const reply = 'You can update the estimate request information when I summarize it at the end.';
       debug('guard.restart', { transcript: text, reply });
       await speak(reply);
       return;
     }
 
-    let callerRemembered = false;
     try {
       debug('brain.request', {
         transcript: text,
@@ -382,8 +401,6 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         return;
       }
 
-      remember('caller', text);
-      callerRemembered = true;
       const beforeBrainMerge = { ...state.lead };
       state.lead = mergeLead(state.lead, turn.updatedLead || {});
       const modelChanges = changedLeadFields(beforeBrainMerge, state.lead);
@@ -432,7 +449,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       const requiredQuestionId = state.memory.estimateStarted
         ? nextRequiredQuestion(state.memory, state.lead)
         : 'none';
-      const estimateTurn = turn.intent === 'estimate'
+      const estimateTurn = (state.memory.estimateStarted && !state.memory.leadSaved)
+        || turn.intent === 'estimate'
         || ESTIMATE_QUESTION_IDS.has(askedQuestionId)
         || submitRequested;
 
@@ -479,7 +497,12 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
           shouldEndCall = false;
           debug('guard.submit_before_confirmation_blocked', { lead: state.lead });
         } else {
+          state.submitting = true;
+          clearSilenceTimer();
+          await speak('Okay, great. Sending it in now.', { scheduleRepeat: false });
+          await waitForPlaybackToFinish();
           const submission = await submitLeadSafely();
+          state.submitting = false;
           shouldEndCall = false;
           if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
             debug('guard.stale_turn_discarded', {
@@ -492,7 +515,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
           }
           if (submission.ok) {
             askedQuestionId = 'more_questions';
-            spokenReply = `Okay, your estimate request has been submitted and sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+            spokenReply = `Your estimate request has been sent successfully. ${runtime.core.BUSINESS.name} will follow up with you shortly. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
           } else if (submission.invalid) {
             askedQuestionId = validationQuestion(submission.errors);
             removeCompletion(state.memory, askedQuestionId);
@@ -500,7 +523,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
             spokenReply = `${preface} ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
           } else {
             askedQuestionId = 'more_questions';
-            spokenReply = `I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
+            spokenReply = `I'm sorry. I couldn't send your estimate request because something went wrong. Please try calling again within the next 24 hours. ${baseQuestionFor(runtime.core, askedQuestionId, state.lead)}`;
           }
         }
       }
@@ -535,6 +558,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       });
       await speak(spokenReply, { questionId: askedQuestionId });
     } catch (error) {
+      state.submitting = false;
       if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
         debug('guard.stale_turn_error_ignored', {
           turnRevision,
@@ -543,7 +567,6 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         });
         return;
       }
-      if (!callerRemembered) remember('caller', text);
       log.error('[Voice pipeline turn failed]', error);
       debug('turn.error', { error: error?.stack || error?.message || String(error) });
       await speak(baseQuestionFor(runtime.core, 'clarify', state.lead), { questionId: 'clarify' });
@@ -561,14 +584,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       });
     },
     onSpeechStarted: () => {
-      state.turnRevision += 1;
       clearSilenceTimer();
       debug('caller.speech_started', {
         speaking: state.speaking,
         ttsPending: state.ttsPending,
+        submitting: state.submitting,
         turnRevision: state.turnRevision,
       });
-      if (state.speaking || state.ttsPending || state.queuedFrames.length) stopSpeaking();
+      if (!state.submitting && (state.speaking || state.ttsPending || state.queuedFrames.length)) stopSpeaking();
     },
     onTranscript: (transcript) => {
       processTranscript(transcript).catch((error) => log.error('[Transcript processing failed]', error));
@@ -600,6 +623,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       state.stopped = true;
       state.turnRevision += 1;
       state.pendingCallerFragment = '';
+      state.submitting = false;
       clearSilenceTimer();
       stopSpeaking();
       realtimeVoice.close();
@@ -616,6 +640,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         history: [...state.history],
         speaking: state.speaking,
         ttsPending: state.ttsPending,
+        submitting: state.submitting,
         turnRevision: state.turnRevision,
         pendingCallerFragment: state.pendingCallerFragment,
         greetingSent: state.greetingSent,
