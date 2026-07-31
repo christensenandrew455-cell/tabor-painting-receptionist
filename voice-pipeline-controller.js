@@ -8,14 +8,19 @@ import { createTranscriber, synthesizePcmu } from './openai-voice.js';
 import {
   ESTIMATE_ORDER,
   baseQuestionFor,
+  callerAffirmsSummary,
   captureDeterministicLead,
+  changedLeadFields,
+  controlSpeechReply,
   enforceQuestionBlock,
+  isControlSpeech,
   isObviouslyIncompleteTranscript,
   markDeterministicCompletions,
   mergeCallerFragment,
   mergeLead,
   nextRequiredQuestion,
   removeCompletion,
+  reopenConfirmation,
   repeatQuestionFor,
   shouldKeepHoldingFragment,
   validationLeadFromModular,
@@ -292,13 +297,40 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
     const turnRevision = ++state.turnRevision;
     const currentQuestionId = state.memory.currentQuestionId;
+
+    if (isControlSpeech(text)) {
+      remember('caller', text);
+      const reply = controlSpeechReply(runtime.core, currentQuestionId, state.lead);
+      debug('guard.control_speech', { transcript: text, currentQuestionId, reply });
+      await speak(reply, { questionId: currentQuestionId });
+      return;
+    }
+
+    const beforeCapture = { ...state.lead };
     const capturedLead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
+    const deterministicChanges = changedLeadFields(beforeCapture, capturedLead);
+    if (deterministicChanges.length) {
+      state.lead = capturedLead;
+      state.memory.completedQuestionIds = markDeterministicCompletions(
+        currentQuestionId,
+        state.lead,
+        state.memory.completedQuestionIds,
+      );
+      if (currentQuestionId === 'confirm_summary') reopenConfirmation(state.memory);
+      debug('lead.deterministic_committed', {
+        transcript: text,
+        currentQuestionId,
+        changedFields: deterministicChanges,
+        lead: state.lead,
+      });
+    }
+
     const requestHistory = [...state.history, { role: 'caller', content: text }];
     debug('caller.transcript', {
       transcript: text,
       turnRevision,
       currentQuestionId,
-      lead: capturedLead,
+      lead: state.lead,
       memory: state.memory,
     });
 
@@ -323,14 +355,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       debug('brain.request', {
         transcript: text,
         turnRevision,
-        lead: capturedLead,
+        lead: state.lead,
         memory: state.memory,
         recentConversation: requestHistory.slice(-12),
       });
       const turn = await decideReceptionistTurn({
         core: runtime.core,
         transcript: text,
-        lead: capturedLead,
+        lead: state.lead,
         history: requestHistory,
         callMemory: state.memory,
       });
@@ -341,16 +373,26 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
           turnRevision,
           currentTurnRevision: state.turnRevision,
           transcript: text,
+          durableLead: state.lead,
         });
         return;
       }
 
       remember('caller', text);
       callerRemembered = true;
-      state.lead = mergeLead(capturedLead, turn.updatedLead || {});
+      const beforeBrainMerge = { ...state.lead };
+      state.lead = mergeLead(state.lead, turn.updatedLead || {});
+      const modelChanges = changedLeadFields(beforeBrainMerge, state.lead);
+      if (modelChanges.length && state.memory.completedQuestionIds.includes('confirm_summary')) {
+        reopenConfirmation(state.memory);
+        debug('guard.summary_reopened_after_change', { changedFields: modelChanges, lead: state.lead });
+      }
+
+      const safeModelCompletions = (turn.completedQuestionIds || [])
+        .filter((id) => id !== 'confirm_summary' || currentQuestionId === 'confirm_summary');
       state.memory.completedQuestionIds = mergeUnique(
         state.memory.completedQuestionIds,
-        turn.completedQuestionIds || [],
+        safeModelCompletions,
       );
       state.memory.completedQuestionIds = markDeterministicCompletions(
         currentQuestionId,
@@ -362,6 +404,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       let askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
       let submitRequested = turn.submitLead === true;
       let shouldEndCall = turn.endCall === true;
+
+      if (currentQuestionId === 'confirm_summary' && callerAffirmsSummary(text)) {
+        state.memory.completedQuestionIds = mergeUnique(state.memory.completedQuestionIds, ['confirm_summary']);
+        submitRequested = true;
+        shouldEndCall = false;
+        askedQuestionId = 'none';
+        debug('guard.summary_affirmation_committed', { transcript: text, lead: state.lead });
+      }
 
       if (turn.intent === 'estimate' || ESTIMATE_QUESTION_IDS.has(askedQuestionId) || submitRequested) {
         state.memory.estimateStarted = true;
@@ -375,18 +425,17 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         debug('guard.false_human_claim_blocked', { modelReply: turn.spokenReply, replacement: spokenReply });
       }
 
-      const estimateTurn = turn.intent === 'estimate'
-        || ESTIMATE_QUESTION_IDS.has(askedQuestionId)
-        || submitRequested;
       const requiredQuestionId = state.memory.estimateStarted
         ? nextRequiredQuestion(state.memory, state.lead)
         : 'none';
+      const estimateTurn = turn.intent === 'estimate'
+        || ESTIMATE_QUESTION_IDS.has(askedQuestionId)
+        || submitRequested;
 
-      if (estimateTurn && requiredQuestionId !== 'none' && askedQuestionId !== requiredQuestionId) {
+      if (estimateTurn && requiredQuestionId !== 'none' && askedQuestionId !== requiredQuestionId && !submitRequested) {
         const previousQuestionId = askedQuestionId;
         askedQuestionId = requiredQuestionId;
         spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
-        submitRequested = false;
         shouldEndCall = false;
         debug(requiredQuestionId === 'service' ? 'guard.service_first' : 'guard.field_order_enforced', {
           previousQuestionId,
@@ -400,7 +449,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         const replacementQuestionId = nextRequiredQuestion(state.memory, state.lead);
         askedQuestionId = replacementQuestionId !== 'none'
           ? replacementQuestionId
-          : state.memory.leadSaved ? 'more_questions' : 'continue_estimate';
+          : state.memory.leadSaved ? 'more_questions' : 'confirm_summary';
+        if (askedQuestionId === 'confirm_summary') reopenConfirmation(state.memory);
         spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
         submitRequested = false;
         shouldEndCall = false;
@@ -413,11 +463,17 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
       if (submitRequested && !state.memory.leadSaved) {
         const stillMissing = nextRequiredQuestion(state.memory, state.lead);
-        if (stillMissing !== 'none') {
+        if (stillMissing !== 'none' && stillMissing !== 'confirm_summary') {
           askedQuestionId = stillMissing;
           spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
           shouldEndCall = false;
           debug('guard.submit_before_complete_blocked', { stillMissing, lead: state.lead });
+        } else if (!state.memory.completedQuestionIds.includes('confirm_summary')) {
+          askedQuestionId = 'confirm_summary';
+          spokenReply = baseQuestionFor(runtime.core, askedQuestionId, state.lead);
+          submitRequested = false;
+          shouldEndCall = false;
+          debug('guard.submit_before_confirmation_blocked', { lead: state.lead });
         } else {
           const submission = await submitLeadSafely();
           shouldEndCall = false;
