@@ -22,17 +22,24 @@ export function createTranscriber({
   const pendingAudio = [];
   let closed = false;
   let ready = false;
+  let terminalErrorReported = false;
 
-  // The GA Realtime endpoint authenticates with the bearer token only. Legacy
-  // preview headers cause the server to close before caller audio is accepted.
+  // A Realtime model owns the WebSocket session. The dedicated transcription
+  // model is configured separately under audio.input.transcription.model.
   const ws = new WebSocket(
-    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.transcription)}`,
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.transcriptionSession)}`,
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
     },
   );
+
+  function reportError(error, { terminal = false } = {}) {
+    if (terminal && terminalErrorReported) return;
+    if (terminal) terminalErrorReported = true;
+    onError?.(error);
+  }
 
   ws.on('open', () => {
     if (closed) return;
@@ -54,8 +61,6 @@ export function createTranscriber({
               threshold: 0.65,
               prefix_padding_ms: Number(prefixPaddingMs) || TURN.prefixPaddingMs,
               silence_duration_ms: Number(silenceMs) || TURN.silenceMs,
-              create_response: false,
-              interrupt_response: false,
             },
           },
         },
@@ -68,12 +73,18 @@ export function createTranscriber({
     try { event = JSON.parse(raw.toString()); } catch { return; }
 
     if (event.type === 'error') {
-      return onError?.(new Error(event.error?.message || 'Transcription error'));
+      const error = new Error(event.error?.message || 'Transcription error');
+      error.code = event.error?.code || event.error?.type || '';
+      return reportError(error, { terminal: true });
     }
 
     if (event.type === 'session.updated' || event.type === 'transcription_session.updated') {
       ready = true;
-      onReady?.(event.session || {});
+      onReady?.({
+        ...event.session,
+        realtimeSessionModel: MODELS.transcriptionSession,
+        transcriptionModel: MODELS.transcription,
+      });
       pendingAudio.splice(0).forEach((audio) => {
         sendJson(ws, { type: 'input_audio_buffer.append', audio });
       });
@@ -88,11 +99,15 @@ export function createTranscriber({
     }
   });
 
-  ws.on('error', (error) => onError?.(error));
+  ws.on('error', (error) => reportError(error, { terminal: true }));
   ws.on('close', (code, reasonBuffer) => {
-    if (closed) return;
+    ready = false;
+    if (closed || terminalErrorReported) return;
     const reason = String(reasonBuffer || '').trim();
-    onError?.(new Error(`Transcription socket closed (${code})${reason ? `: ${reason}` : ''}`));
+    reportError(
+      new Error(`Transcription socket closed (${code})${reason ? `: ${reason}` : ''}`),
+      { terminal: true },
+    );
   });
 
   return {
