@@ -1,6 +1,5 @@
-// Single source of truth for information supplied by ARK Websites OCM.
-// Script wording belongs in receptionist-script.js.
-// Workflow rules and memory behavior belong in script-commands.js.
+// Single source of truth for business information supplied by ARK Websites OCM.
+// Model selection, script wording, workflow rules, and memory behavior stay inside this receptionist repository.
 
 import { RECEPTIONIST_SCRIPT_SECTIONS } from './receptionist-script.js';
 
@@ -20,10 +19,7 @@ export const APP_INFO_FIELDS = Object.freeze({
   serviceAreas: 'serviceAreas',
   services: 'services',
   about: 'about',
-  openingLine: 'openingLine',
-  closingLine: 'closingLine',
   extraInformation: 'extraInformation',
-  aiModel: 'aiModel',
   aiVoice: 'aiVoice',
   aiSpeechSpeed: 'aiSpeechSpeed',
   aiSilenceMs: 'aiSilenceMs',
@@ -37,7 +33,6 @@ export const APP_INFO_DEFAULTS = Object.freeze({
   earliestEstimateStart: '9:00 AM',
   latestEstimateStart: '4:30 PM',
   businessBase: 'the local service area',
-  aiModel: 'gpt-realtime-2.1-mini',
   aiVoice: 'alloy',
   aiSpeechSpeed: 0.94,
   aiSilenceMs: 1050,
@@ -104,17 +99,15 @@ export function describeAppInfo(profile = {}) {
     serviceAreas: configuredAreas.length ? configuredAreas : [base],
     services: servicesOrEmpty(profile[APP_INFO_FIELDS.services]),
     about: listOrDefault(profile[APP_INFO_FIELDS.about]),
-    openingLine: textOrDefault(profile[APP_INFO_FIELDS.openingLine]),
-    closingLine: textOrDefault(profile[APP_INFO_FIELDS.closingLine]),
     extraInformation: textOrDefault(profile[APP_INFO_FIELDS.extraInformation]),
-    aiModel: textOrDefault(profile[APP_INFO_FIELDS.aiModel], APP_INFO_DEFAULTS.aiModel),
     aiVoice: textOrDefault(profile[APP_INFO_FIELDS.aiVoice], APP_INFO_DEFAULTS.aiVoice),
     aiSpeechSpeed: finiteNumber(profile[APP_INFO_FIELDS.aiSpeechSpeed], APP_INFO_DEFAULTS.aiSpeechSpeed),
     aiSilenceMs: Math.round(finiteNumber(profile[APP_INFO_FIELDS.aiSilenceMs], APP_INFO_DEFAULTS.aiSilenceMs)),
   });
 }
 
-// Maps ARK OCM profile names to the stable names consumed by receptionist-core.js.
+// Maps OCM business facts to the stable names consumed by receptionist-core.js.
+// Opening and closing wording always come from the Tabor receptionist script below.
 export function businessInfoFromAppProfile(profile = {}) {
   const info = describeAppInfo(profile);
   const replacements = {
@@ -144,11 +137,11 @@ export function businessInfoFromAppProfile(profile = {}) {
   });
 }
 
-// Creates the temporary runtime values used when loading one business receptionist.
+// Creates temporary runtime values for business-specific information only.
+// The reasoning, transcription, and speech models are fixed in modular-models.js.
 export function runtimeEnvironmentFromApp({ profile = {}, clientId = '' } = {}) {
   const info = describeAppInfo(profile);
   return Object.freeze({
-    AI_MODEL: info.aiModel,
     AI_VOICE: info.aiVoice,
     AI_SPEECH_SPEED: info.aiSpeechSpeed,
     AI_SILENCE_MS: info.aiSilenceMs,
