@@ -11,12 +11,14 @@ import {
   controlSpeechReply,
   enforceQuestionBlock,
   isControlSpeech,
+  isLikelyTranscriptionArtifact,
   isObviouslyIncompleteTranscript,
   mergeCallerFragment,
   nextRequiredQuestion,
   reopenConfirmation,
   repeatQuestionFor,
   shouldKeepHoldingFragment,
+  spokenPreferredDate,
   validationLeadFromModular,
 } from '../modular-intake-logic.js';
 import { MODELS } from '../modular-models.js';
@@ -74,13 +76,19 @@ const coreStub = Object.freeze({
     if (/^9(?::00)?(?:\s*am)?$/.test(normalized)) return '9:00 AM';
     return '';
   },
+  resolvePreferredDate(value) {
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === 'monday') return '2026-08-03';
+    if (normalized === 'tuesday') return '2026-08-04';
+    return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : '';
+  },
 });
 
 const completeLead = Object.freeze({
   name: 'Andrew Christensen',
   service: 'interior painting',
   projectLocation: '197 Lancaster Road, Berlin, Massachusetts',
-  preferredDate: 'Tuesday',
+  preferredDate: '2026-08-04',
   preferredTime: '4:00 PM',
   notes: 'none',
   contactConsent: true,
@@ -165,17 +173,16 @@ test('structured memory starts with every question counter', () => {
 });
 
 test('field blocks remain deterministic and natural', () => {
-  assert.equal(
-    baseQuestionFor(coreStub, 'service', completeLead),
-    'Which service are you calling about: wood staining, exterior painting, interior painting, or small paint repair?',
-  );
+  assert.equal(baseQuestionFor(coreStub, 'service', completeLead), 'What service do you need?');
   assert.match(baseQuestionFor(coreStub, 'preferred_date_time', completeLead), /Monday through Friday from 9:00 AM through 4:00 PM/);
-  assert.equal(
+  assert.match(
     baseQuestionFor(coreStub, 'notes', completeLead),
-    "Before I send the request, is there anything else you'd like the estimator to know about the project?",
+    /Tuesday, August 4th at 4:00 PM is your requested estimate time/,
   );
+  assert.match(baseQuestionFor(coreStub, 'notes', completeLead), /Do you have any additional notes about this project\?$/);
   const summary = baseQuestionFor(coreStub, 'confirm_summary', completeLead);
-  assert.match(summary, /^Let me read that back\./);
+  assert.match(summary, /^Before I send this in/);
+  assert.match(summary, /You consented to being contacted by Tabor Painting\./);
   assert.match(summary, /Does all of that sound right\?$/);
 
   const corrected = enforceQuestionBlock(
@@ -206,33 +213,35 @@ test('modular lead maps into validator schema', () => {
     streetName: 'Lancaster Road',
     cityOrTown: 'Berlin',
     state: 'Massachusetts',
-    preferredDateOrDay: 'Tuesday',
+    preferredDateOrDay: '2026-08-04',
     preferredTime: '4:00 PM',
     additionalNotes: 'none',
     contactConsent: true,
   });
 });
 
-test('requested weekday is the final relevant weekday', () => {
+test('requested weekday is resolved to the final exact date', () => {
   const captured = captureDeterministicLead(
     coreStub,
     'preferred_date_time',
     'Today is Friday, so probably Monday at 2.',
     { ...completeLead, preferredDate: null, preferredTime: null },
   );
-  assert.equal(captured.preferredDate, 'Monday');
+  assert.equal(captured.preferredDate, '2026-08-03');
   assert.equal(captured.preferredTime, '2:00 PM');
+  assert.equal(spokenPreferredDate(captured.preferredDate), 'Monday, August 3rd');
 });
 
-test('control speech is never captured as a field answer', () => {
+test('control speech and transcription artifacts are never captured as field answers', () => {
   assert.equal(isControlSpeech('Hello?'), true);
   assert.equal(isControlSpeech('Can you hear me?'), true);
   assert.equal(isControlSpeech('small paint repair'), false);
+  assert.equal(isLikelyTranscriptionArtifact('A caller speaking with a residential painting company receptionist.'), true);
   const notes = captureDeterministicLead(coreStub, 'notes', 'Hello.', { ...completeLead, notes: null });
   assert.equal(notes.notes, null);
   assert.equal(
     controlSpeechReply(coreStub, 'notes', completeLead),
-    "I'm here. Is there anything else you'd like the estimator to know about the project?",
+    "I'm here. Do you have any additional notes about this project?",
   );
 });
 
@@ -240,11 +249,20 @@ test('deterministic facts survive a cancelled brain reply', () => {
   const before = { ...completeLead, preferredDate: null, preferredTime: null };
   const captured = captureDeterministicLead(coreStub, 'preferred_date_time', 'Probably Monday at 9.', before);
   assert.deepEqual(changedLeadFields(before, captured), ['preferredDate', 'preferredTime']);
-  assert.equal(captured.preferredDate, 'Monday');
+  assert.equal(captured.preferredDate, '2026-08-03');
   assert.equal(captured.preferredTime, '9:00 AM');
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /lead\.deterministic_committed/);
   assert.match(controller, /durableLead: state\.lead/);
+});
+
+test('name and split address are committed deterministically', () => {
+  let lead = captureDeterministicLead(coreStub, 'name', 'Andrew Christensen.', { ...completeLead, name: null, projectLocation: null });
+  assert.equal(lead.name, 'Andrew Christensen');
+  lead = captureDeterministicLead(coreStub, 'project_location', '197 Lancaster Road.', lead);
+  assert.equal(baseQuestionFor(coreStub, 'project_location', lead), 'What city or town is the project in?');
+  lead = captureDeterministicLead(coreStub, 'project_location', 'Berlin, Massachusetts.', lead);
+  assert.equal(lead.projectLocation, '197 Lancaster Road, Berlin, Massachusetts');
 });
 
 test('notes correction reopens summary and can affirm remaining details', () => {
@@ -269,18 +287,21 @@ test('unfinished phrases are held until continuation arrives', () => {
   assert.equal(mergeCallerFragment('Um Can I do Right.', 'Tuesday at 4?'), 'Um Can I do Right. Tuesday at 4?');
 });
 
-test('state-machine guards prevent the dead continue loop', () => {
+test('state-machine guards prevent dead loops and completed-answer regressions', () => {
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /state\.memory\.leadSaved \? 'more_questions' : 'confirm_summary'/);
   assert.doesNotMatch(controller, /state\.memory\.leadSaved \? 'more_questions' : 'continue_estimate'/);
   assert.match(controller, /guard\.summary_reopened_after_change/);
   assert.match(controller, /guard\.summary_affirmation_committed/);
   assert.match(controller, /guard\.submit_before_confirmation_blocked/);
+  assert.match(controller, /state\.memory\.estimateStarted && !state\.memory\.leadSaved/);
+  assert.match(controller, /caller\.transcription_artifact_ignored/);
+  assert.doesNotMatch(controller, /onSpeechStarted:\s*\(\) => \{\s*state\.turnRevision \+= 1/);
 });
 
-test('silence repeats use only the short question', () => {
-  assert.equal(repeatQuestionFor(coreStub, 'confirm_summary'), 'Does all of that sound right?');
-  assert.equal(repeatQuestionFor(coreStub, 'preferred_date_time'), 'What is your preferred estimate date and time?');
+test('silence repeats use only the short, context-aware question', () => {
+  assert.equal(repeatQuestionFor(coreStub, 'confirm_summary', completeLead), 'Does all of that sound right?');
+  assert.equal(repeatQuestionFor(coreStub, 'preferred_date_time', completeLead), 'What is your preferred estimate date and time?');
   assert.match(read('voice-pipeline-controller.js'), /SILENCE_REPEAT_MS = 5000/);
 });
 
@@ -291,8 +312,10 @@ test('generic hello cannot end a call or poison completion memory', () => {
   assert.match(brain, /Never end the call because the caller says "hello/);
 });
 
-test('closing hangs up only after audio playback completes', () => {
+test('submission speech and closing finish cleanly', () => {
   const controller = read('voice-pipeline-controller.js');
+  assert.match(controller, /Okay, great\. Sending it in now\./);
+  assert.match(controller, /caller\.ignored_during_submission/);
   assert.match(controller, /endAfterPlaybackReason: 'completed'/);
   assert.match(controller, /playback\.completed_hangup/);
 });
