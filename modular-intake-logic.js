@@ -5,8 +5,22 @@ const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
 const CONTINUATION_FILLER_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like|right|yeah|yep|okay|ok)[.!?…\s]*$/i;
 const INCOMPLETE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|this|the address|my address|the date|the time|my name|can i do)\s*)?(?:(?:would be|is|is at|is on|would be at|would be on)\s*)?$/i;
 const CONTROL_SPEECH_PATTERN = /^(?:hello|hello there|hi|hey|are you there|you there|can you hear me|do you hear me|are you listening|still there|i'm here|im here)[?!.\s]*$/i;
-const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|there (?:was|were|are|is) no additional notes?|nothing else|none|nope|that's all|that is all)\b/i;
+const TRANSCRIPTION_ARTIFACT_PATTERN = /^(?:a|the) (?:caller|person|man|woman) (?:is )?(?:speaking|talking)(?: with| to).*?(?:receptionist|company|business|phone call)[.!\s]*$/i;
+const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|there (?:was|were|are|is) no additional notes?|nothing else|none|nope|nah|n[aã]o|that's all|that is all)\b/i;
 const AFFIRMATIVE_PATTERN = /\b(?:yes|yeah|yep|sure|correct|right|okay|ok|sounds good|that's right|that is right|other than that|otherwise)\b/i;
+const SIMPLE_NEGATIVE_PATTERN = /^(?:no|nope|nah|n[aã]o)[.!\s]*$/i;
+const ADDRESS_TRAILING_FILLER_PATTERN = /(?:[,;]\s*|\s+)(?:i told you|like i said|as i said|that's the address|that is the address|that's it|that is it)[.!\s]*$/i;
+const FULL_NAME_PATTERN = /^[\p{L}][\p{L}'’-]*(?:\s+[\p{L}][\p{L}'’-]*){1,4}[.!\s]*$/u;
+const US_STATES = new Set([
+  'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware',
+  'florida', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky',
+  'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri',
+  'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico', 'new york',
+  'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island',
+  'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia',
+  'washington', 'west virginia', 'wisconsin', 'wyoming', 'district of columbia',
+  'ma', 'il', 'ct', 'ri', 'nh', 'me', 'vt', 'ny', 'nj', 'pa',
+]);
 
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
@@ -26,18 +40,6 @@ function serviceNames(core) {
   return Object.keys(core.BUSINESS.services || {});
 }
 
-function naturalList(values = []) {
-  const items = values.map((value) => clean(value)).filter(Boolean);
-  if (!items.length) return '';
-  if (items.length === 1) return items[0];
-  if (items.length === 2) return `${items[0]} or ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')}, or ${items.at(-1)}`;
-}
-
-function listServices(core) {
-  return naturalList(serviceNames(core));
-}
-
 export function mergeLead(current = {}, updates = {}) {
   const merged = { ...current };
   for (const [key, value] of Object.entries(updates || {})) {
@@ -47,11 +49,29 @@ export function mergeLead(current = {}, updates = {}) {
   return merged;
 }
 
+function cleanAddressText(value = '') {
+  return clean(value)
+    .replace(ADDRESS_TRAILING_FILLER_PATTERN, '')
+    .replace(/[.!?]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function looksLikeStreet(value = '') {
+  return /^\d+[A-Za-z-]*\s+\S.+/.test(clean(value));
+}
+
+function looksLikeState(value = '') {
+  return US_STATES.has(clean(value).toLowerCase().replace(/\./g, ''));
+}
+
 function addressParts(projectLocation = '') {
-  const segments = clean(projectLocation).split(',').map((part) => clean(part)).filter(Boolean);
-  const street = segments.shift() || '';
-  const cityOrTown = segments.shift() || '';
-  const state = segments.join(', ');
+  const raw = clean(projectLocation);
+  if (!raw) return { streetNumber: '', streetName: '', cityOrTown: '', state: '' };
+  const segments = raw.split(',').map((part) => clean(part));
+  const street = segments[0] || '';
+  const cityOrTown = segments[1] || '';
+  const state = segments.slice(2).join(', ').trim();
   const streetMatch = street.match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
   return {
     streetNumber: streetMatch?.[1] || '',
@@ -59,6 +79,60 @@ function addressParts(projectLocation = '') {
     cityOrTown,
     state,
   };
+}
+
+function serializeAddress(parts = {}) {
+  const street = clean(`${clean(parts.streetNumber)} ${clean(parts.streetName)}`);
+  return `${street}, ${clean(parts.cityOrTown)}, ${clean(parts.state)}`;
+}
+
+function incomingAddressParts(transcript = '') {
+  const text = cleanAddressText(transcript);
+  if (!text || SIMPLE_NEGATIVE_PATTERN.test(text) || isLikelyTranscriptionArtifact(text)) return {};
+  const segments = text.split(',').map((part) => clean(part)).filter(Boolean);
+  if (!segments.length) return {};
+
+  if (segments.length >= 3 && looksLikeStreet(segments[0])) {
+    const streetMatch = segments[0].match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
+    return {
+      streetNumber: streetMatch?.[1] || '',
+      streetName: streetMatch?.[2] || '',
+      cityOrTown: segments[1],
+      state: segments.slice(2).join(', '),
+    };
+  }
+
+  if (segments.length === 2) {
+    if (looksLikeStreet(segments[0])) {
+      const streetMatch = segments[0].match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
+      return {
+        streetNumber: streetMatch?.[1] || '',
+        streetName: streetMatch?.[2] || '',
+        ...(looksLikeState(segments[1]) ? { state: segments[1] } : { cityOrTown: segments[1] }),
+      };
+    }
+    return { cityOrTown: segments[0], state: segments[1] };
+  }
+
+  if (looksLikeStreet(segments[0])) {
+    const streetMatch = segments[0].match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
+    return { streetNumber: streetMatch?.[1] || '', streetName: streetMatch?.[2] || '' };
+  }
+  if (looksLikeState(segments[0])) return { state: segments[0] };
+  if (/^[\p{L} .'-]{2,}$/u.test(segments[0])) return { cityOrTown: segments[0] };
+  return {};
+}
+
+function mergeAddressFragment(existing = '', transcript = '') {
+  const current = addressParts(existing);
+  const incoming = incomingAddressParts(transcript);
+  if (!Object.keys(incoming).length) return existing;
+  return serializeAddress({ ...current, ...incoming });
+}
+
+function completeAddress(projectLocation = '') {
+  const parts = addressParts(projectLocation);
+  return Boolean(parts.streetNumber && parts.streetName && parts.cityOrTown && parts.state);
 }
 
 export function validationLeadFromModular(lead = {}) {
@@ -99,28 +173,72 @@ function rawDateFromTranscript(transcript = '') {
   return '';
 }
 
+function normalizeRequestedDate(core, value = '') {
+  const raw = clean(value);
+  if (!raw) return '';
+  if (typeof core.resolvePreferredDate !== 'function') return raw;
+  return clean(core.resolvePreferredDate(raw));
+}
+
+function inferService(core, transcript = '') {
+  const text = clean(transcript).toLowerCase();
+  const direct = serviceNames(core).find((candidate) => text.includes(candidate.toLowerCase()));
+  if (direct) return direct;
+
+  const candidates = serviceNames(core);
+  const find = (pattern, preferredName) => pattern.test(text)
+    ? candidates.find((candidate) => candidate.toLowerCase() === preferredName)
+    : '';
+  return find(/\b(?:stain|staining)\b/, 'wood staining')
+    || find(/\b(?:outside|exterior|siding|shed|garage exterior|paint the house outside)\b/, 'exterior painting')
+    || find(/\b(?:inside|interior|room|rooms|walls?|ceilings?)\b/, 'interior painting')
+    || find(/\b(?:touch[- ]?up|small repair|paint repair|chip|chips|patch)\b/, 'small paint repair')
+    || '';
+}
+
+function deterministicFullName(transcript = '') {
+  const text = clean(transcript);
+  if (!FULL_NAME_PATTERN.test(text)) return '';
+  if (/\b(?:yes|yeah|no|address|road|street|avenue|painting|staining)\b/i.test(text)) return '';
+  return text.replace(/[.!]+$/g, '').trim();
+}
+
 export function isControlSpeech(value) {
   return CONTROL_SPEECH_PATTERN.test(clean(value));
 }
 
+export function isLikelyTranscriptionArtifact(value) {
+  return TRANSCRIPTION_ARTIFACT_PATTERN.test(clean(value));
+}
+
 export function controlSpeechReply(core, questionId, lead = {}) {
-  const question = repeatQuestionFor(core, questionId) || baseQuestionFor(core, questionId, lead);
+  const question = repeatQuestionFor(core, questionId, lead) || baseQuestionFor(core, questionId, lead);
   return clean(`I'm here. ${question}`);
 }
 
 export function captureDeterministicLead(core, currentQuestionId, transcript, lead = {}) {
   const captured = { ...lead };
   const text = clean(transcript);
-  if (!text || isControlSpeech(text)) return captured;
+  if (!text || isControlSpeech(text) || isLikelyTranscriptionArtifact(text)) return captured;
 
   if (currentQuestionId === 'service') {
-    const service = serviceNames(core)
-      .find((candidate) => text.toLowerCase().includes(candidate.toLowerCase()));
+    const service = inferService(core, text);
     if (service) captured.service = service;
   }
 
+  if (currentQuestionId === 'name') {
+    const name = deterministicFullName(text);
+    if (name) captured.name = name;
+  }
+
+  if (currentQuestionId === 'project_location') {
+    const mergedAddress = mergeAddressFragment(captured.projectLocation, text);
+    if (mergedAddress && mergedAddress !== captured.projectLocation) captured.projectLocation = mergedAddress;
+  }
+
   if (currentQuestionId === 'preferred_date_time') {
-    const preferredDate = rawDateFromTranscript(text);
+    const rawDate = rawDateFromTranscript(text);
+    const preferredDate = normalizeRequestedDate(core, rawDate);
     const rawTime = rawTimeFromTranscript(text);
     const preferredTime = rawTime ? clean(core.normalizePreferredTime(rawTime)) : '';
     if (preferredDate) captured.preferredDate = preferredDate;
@@ -134,7 +252,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
 
   if (currentQuestionId === 'contact_consent') {
     if (/\b(?:yes|yeah|yep|sure|i do|that's fine|that is fine)\b/i.test(text)) captured.contactConsent = true;
-    if (/\b(?:no|nope|do not|don't)\b/i.test(text)) captured.contactConsent = false;
+    if (/\b(?:no|nope|nah|n[aã]o|do not|don't)\b/i.test(text)) captured.contactConsent = false;
   }
 
   if (currentQuestionId === 'confirm_summary') {
@@ -156,6 +274,8 @@ export function callerAffirmsSummary(transcript = '') {
 export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
+  if (currentQuestionId === 'name' && deterministicFullName(lead.name)) completed.add('name');
+  if (currentQuestionId === 'project_location' && completeAddress(lead.projectLocation)) completed.add('project_location');
   if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) {
     completed.add('preferred_date_time');
   }
@@ -170,7 +290,7 @@ export function nextRequiredQuestion(memory, lead = {}) {
   const completed = new Set(memory.completedQuestionIds || []);
   if (!completed.has('service') || !clean(lead.service)) return 'service';
   if (!completed.has('name') || !clean(lead.name)) return 'name';
-  if (!completed.has('project_location') || !clean(lead.projectLocation)) return 'project_location';
+  if (!completed.has('project_location') || !completeAddress(lead.projectLocation)) return 'project_location';
   if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) {
     return 'preferred_date_time';
   }
@@ -184,41 +304,77 @@ export function availabilityStatement(core) {
   return `Estimate appointments are available ${core.BUSINESS.estimateDays} from ${core.BUSINESS.earliestEstimateStart} through ${core.BUSINESS.latestEstimateStart}.`;
 }
 
-export function summaryStatement(lead = {}) {
+function ordinal(number) {
+  const value = Number(number);
+  const mod100 = value % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
+  if (value % 10 === 1) return `${value}st`;
+  if (value % 10 === 2) return `${value}nd`;
+  if (value % 10 === 3) return `${value}rd`;
+  return `${value}th`;
+}
+
+export function spokenPreferredDate(value = '') {
+  const text = clean(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(`${text}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) return text;
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(date);
+  const month = new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(date);
+  return `${weekday}, ${month} ${ordinal(date.getUTCDate())}`;
+}
+
+function requestedTimeNotice(core, lead = {}) {
+  if (!clean(lead.preferredDate) || !clean(lead.preferredTime)) return '';
+  return `Just so you know, ${spokenPreferredDate(lead.preferredDate)} at ${clean(lead.preferredTime)} is your requested estimate time. ${core.BUSINESS.name} may need to adjust it depending on availability, but they will contact you before making any changes.`;
+}
+
+export function summaryStatement(core, lead = {}) {
   const notes = clean(lead.notes);
   const notesClause = notes && notes.toLowerCase() !== 'none'
-    ? ` The additional notes are: ${notes}.`
-    : ' There are no additional notes.';
-  return `Let me read that back. I have ${clean(lead.name)} requesting ${clean(lead.service)} at ${clean(lead.projectLocation)}, with an estimate preferred for ${clean(lead.preferredDate)} at ${clean(lead.preferredTime)}.${notesClause}`;
+    ? ` Your additional notes are: ${notes}.`
+    : ' You did not have any additional notes.';
+  const consentClause = lead.contactConsent === true
+    ? ` You consented to being contacted by ${core.BUSINESS.name}.`
+    : ` You did not consent to being contacted by ${core.BUSINESS.name}.`;
+  return `Before I send this in, I'm going to read everything back to make sure I didn't miss anything. You requested ${clean(lead.service)}. Your name is ${clean(lead.name)}. The project address is ${clean(lead.projectLocation)}. Your requested estimate time is ${spokenPreferredDate(lead.preferredDate)} at ${clean(lead.preferredTime)}.${notesClause}${consentClause}`;
+}
+
+function projectLocationQuestion(lead = {}) {
+  const parts = addressParts(lead.projectLocation);
+  if (!parts.streetNumber || !parts.streetName) return 'What is the street address for the project?';
+  if (!parts.cityOrTown) return 'What city or town is the project in?';
+  if (!parts.state) return 'What state is the project in?';
+  return 'What is the full address for the project?';
 }
 
 export function baseQuestionFor(core, questionId, lead = {}) {
   const questions = {
-    ask_estimate: 'Would you like to fill out an estimate request?',
+    ask_estimate: 'Would you like to submit an estimate request?',
     continue_estimate: 'Would you like to continue filling out your estimate request?',
     more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Which service are you calling about: ${listServices(core)}?`,
+    service: 'What service do you need?',
     name: 'What is your full name?',
-    project_location: 'What is the full address for the project?',
+    project_location: projectLocationQuestion(lead),
     preferred_date_time: `${availabilityStatement(core)} What is your preferred estimate date and time?`,
-    notes: "Before I send the request, is there anything else you'd like the estimator to know about the project?",
+    notes: `${requestedTimeNotice(core, lead)} Do you have any additional notes about this project?`,
     contact_consent: core.contactConsentQuestion,
-    confirm_summary: `${summaryStatement(lead)} Does all of that sound right?`,
+    confirm_summary: `${summaryStatement(core, lead)} Does all of that sound right?`,
     clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
   };
   return clean(questions[questionId]);
 }
 
-export function repeatQuestionFor(core, questionId) {
+export function repeatQuestionFor(core, questionId, lead = {}) {
   const questions = {
-    ask_estimate: 'Would you like to fill out an estimate request?',
+    ask_estimate: 'Would you like to submit an estimate request?',
     continue_estimate: 'Would you like to continue filling out your estimate request?',
     more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Which service are you calling about: ${listServices(core)}?`,
+    service: 'What service do you need?',
     name: 'What is your full name?',
-    project_location: 'What is the full address for the project?',
+    project_location: projectLocationQuestion(lead),
     preferred_date_time: 'What is your preferred estimate date and time?',
-    notes: "Is there anything else you'd like the estimator to know about the project?",
+    notes: 'Do you have any additional notes about this project?',
     contact_consent: core.contactConsentQuestion,
     confirm_summary: 'Does all of that sound right?',
     clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
@@ -227,7 +383,7 @@ export function repeatQuestionFor(core, questionId) {
 }
 
 function declarativePreface(spokenReply, questionId) {
-  if (questionId === 'confirm_summary' || questionId === 'service') return '';
+  if (questionId === 'confirm_summary' || questionId === 'service' || questionId === 'notes') return '';
   const sentences = clean(spokenReply).match(/[^.!?]+[.!?]?/g) || [];
   const kept = sentences
     .map((sentence) => clean(sentence))
@@ -244,7 +400,7 @@ function declarativePreface(spokenReply, questionId) {
 export function enforceQuestionBlock(core, spokenReply, questionId, lead = {}) {
   const base = baseQuestionFor(core, questionId, lead);
   if (!base || questionId === 'none') return clean(spokenReply);
-  if (questionId === 'clarify' || questionId === 'confirm_summary' || questionId === 'service') return base;
+  if (questionId === 'clarify' || questionId === 'confirm_summary' || questionId === 'service' || questionId === 'notes') return base;
   const preface = declarativePreface(spokenReply, questionId);
   return clean(preface ? `${preface} ${base}` : base);
 }
@@ -261,8 +417,8 @@ export function validationQuestion(errors = []) {
 
 export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'name') return 'I still need both your first and last name.';
-  if (questionId === 'service') return `I still need one of the services we offer: ${listServices(core)}.`;
-  if (questionId === 'project_location') return 'I still need the street number, street name, city or town, and state.';
+  if (questionId === 'service') return 'I still need to know what kind of work you need.';
+  if (questionId === 'project_location') return 'I still need the remaining part of the project address.';
   if (questionId === 'preferred_date_time') return `I still need an upcoming estimate date and a time within our availability. ${availabilityStatement(core)}`;
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
   return errors.length ? 'I still need some information before I can submit the request.' : '';
