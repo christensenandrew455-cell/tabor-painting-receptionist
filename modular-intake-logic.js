@@ -17,6 +17,8 @@ const INCOMPLETE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|
 const CONTROL_SPEECH_PATTERN = /^(?:hello|hello there|hi|hey|are you there|you there|can you hear me|do you hear me|are you listening|still there|i'm here|im here)[?!.\s]*$/i;
 const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|there (?:was|were|are|is) no additional notes?|nothing else|none|nope|that's all|that is all)\b/i;
 const AFFIRMATIVE_PATTERN = /\b(?:yes|yeah|yep|sure|correct|right|okay|ok|sounds good|that's right|that is right|other than that|otherwise)\b/i;
+const NON_NAME_SENTENCE_PATTERN = /\b(?:i|you|we|they|called|calling|think|know|what|why|because|estimate|request|talking|paint|address|phone|number)\b/i;
+const NAME_TOKEN_PATTERN = /^[A-Za-z][A-Za-z'’-]*$/;
 
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
@@ -36,17 +38,16 @@ function serviceNames(core) {
   return Object.keys(core.BUSINESS.services || {});
 }
 
-export function mergeLead(current = {}, updates = {}) {
-  const merged = { ...current };
-  for (const [key, value] of Object.entries(updates || {})) {
-    if (value !== null && value !== undefined && value !== '') merged[key] = value;
-    if (key === 'contactConsent' && typeof value === 'boolean') merged[key] = value;
-  }
-  return merged;
+function normalizedName(value) {
+  return clean(value).replace(/[.!?,;:]+$/g, '').replace(/\s+/g, ' ');
+}
+
+function normalizedAddress(value) {
+  return clean(value).replace(/[.!?]+$/g, '').replace(/\s+/g, ' ');
 }
 
 function addressParts(projectLocation = '') {
-  const segments = clean(projectLocation).split(',').map((part) => clean(part)).filter(Boolean);
+  const segments = normalizedAddress(projectLocation).split(',').map((part) => clean(part)).filter(Boolean);
   const street = segments.shift() || '';
   const cityOrTown = segments.shift() || '';
   const state = segments.join(', ');
@@ -59,10 +60,92 @@ function addressParts(projectLocation = '') {
   };
 }
 
+function isPlausibleFullName(value) {
+  const name = normalizedName(value);
+  if (!name || name.length > 80 || /[?]/.test(name) || NON_NAME_SENTENCE_PATTERN.test(name)) return false;
+  const tokens = name.split(/\s+/).filter(Boolean);
+  return tokens.length >= 2
+    && tokens.length <= 5
+    && tokens.every((token) => NAME_TOKEN_PATTERN.test(token));
+}
+
+function isPlausibleProjectAddress(value) {
+  const address = normalizedAddress(value);
+  if (!address || address.length > 180 || /[?]/.test(address)) return false;
+  const parts = addressParts(address);
+  return Boolean(
+    parts.streetNumber
+    && parts.streetName.length >= 2
+    && parts.cityOrTown.length >= 2
+    && parts.state.length >= 2
+  );
+}
+
+function configuredServiceMatching(core, servicePattern) {
+  return serviceNames(core).find((service) => servicePattern.test(service));
+}
+
+function inferService(core, transcript = '') {
+  const text = clean(transcript).toLowerCase();
+  if (!text) return '';
+
+  const exact = serviceNames(core)
+    .find((candidate) => text.includes(candidate.toLowerCase()));
+  if (exact) return exact;
+
+  const rules = [
+    {
+      servicePattern: /\b(?:wood\s+stain|staining)\b/i,
+      callerPattern: /\b(?:stain|staining|re-?stain|deck staining|fence staining|wood staining)\b/i,
+    },
+    {
+      servicePattern: /\b(?:small\s+paint\s+repair|paint\s+repair|touch[- ]?up)\b/i,
+      callerPattern: /\b(?:touch[- ]?up|small paint repair|paint repair|small patch|paint chip repair)\b/i,
+    },
+    {
+      servicePattern: /\binterior\b/i,
+      callerPattern: /\b(?:inside|interior|rooms?|bedrooms?|living room|kitchen|walls?|ceilings?)\b/i,
+    },
+    {
+      servicePattern: /\bexterior\b/i,
+      callerPattern: /\b(?:outside|exterior|siding|facade|outside of (?:my|the) house|whole house(?: painted| repainted)?)\b/i,
+    },
+  ];
+
+  for (const rule of rules) {
+    if (!rule.callerPattern.test(text)) continue;
+    const service = configuredServiceMatching(core, rule.servicePattern);
+    if (service) return service;
+  }
+
+  return '';
+}
+
+export function mergeLead(current = {}, updates = {}) {
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(updates || {})) {
+    if (key === 'contactConsent' && typeof value === 'boolean') {
+      merged[key] = value;
+      continue;
+    }
+    if (value === null || value === undefined || value === '') continue;
+    if (key === 'name') {
+      if (isPlausibleFullName(value)) merged.name = normalizedName(value);
+      continue;
+    }
+    if (key === 'projectLocation') {
+      if (isPlausibleProjectAddress(value)) merged.projectLocation = normalizedAddress(value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
 export function validationLeadFromModular(lead = {}) {
   const address = addressParts(lead.projectLocation);
   return {
-    fullName: clean(lead.name),
+    fullName: normalizedName(lead.name),
     serviceType: clean(lead.service).toLowerCase(),
     ...address,
     preferredDateOrDay: clean(lead.preferredDate),
@@ -112,13 +195,17 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   if (!text || isControlSpeech(text)) return captured;
 
   if (currentQuestionId === 'service') {
-    const service = serviceNames(core)
-      .find((candidate) => text.toLowerCase().includes(candidate.toLowerCase()));
+    const service = inferService(core, text);
     if (service) captured.service = service;
   }
 
-  if (currentQuestionId === 'name') captured.name = text;
-  if (currentQuestionId === 'project_location') captured.projectLocation = text;
+  if (currentQuestionId === 'name' && isPlausibleFullName(text)) {
+    captured.name = normalizedName(text);
+  }
+
+  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(text)) {
+    captured.projectLocation = normalizedAddress(text);
+  }
 
   if (currentQuestionId === 'preferred_date_time') {
     const preferredDate = rawDateFromTranscript(text);
@@ -154,8 +241,8 @@ export function callerAffirmsSummary(transcript = '') {
 export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
-  if (currentQuestionId === 'name' && clean(lead.name).split(/\s+/).length >= 2) completed.add('name');
-  if (currentQuestionId === 'project_location' && clean(lead.projectLocation)) completed.add('project_location');
+  if (currentQuestionId === 'name' && isPlausibleFullName(lead.name)) completed.add('name');
+  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(lead.projectLocation)) completed.add('project_location');
   if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
   if (currentQuestionId === 'contact_consent' && typeof lead.contactConsent === 'boolean') completed.add('contact_consent');
@@ -165,8 +252,8 @@ export function markDeterministicCompletions(currentQuestionId, lead, completedI
 export function nextRequiredQuestion(memory, lead = {}) {
   const completed = new Set(memory.completedQuestionIds || []);
   if (!completed.has('service') || !clean(lead.service)) return 'service';
-  if (!completed.has('name') || !clean(lead.name)) return 'name';
-  if (!completed.has('project_location') || !clean(lead.projectLocation)) return 'project_location';
+  if (!completed.has('name') || !isPlausibleFullName(lead.name)) return 'name';
+  if (!completed.has('project_location') || !isPlausibleProjectAddress(lead.projectLocation)) return 'project_location';
   if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
   if (!completed.has('notes')) return 'notes';
   if (!completed.has('contact_consent') || typeof lead.contactConsent !== 'boolean') return 'contact_consent';
