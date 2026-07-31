@@ -11,6 +11,7 @@ import {
   isObviouslyIncompleteTranscript,
   mergeCallerFragment,
   nextRequiredQuestion,
+  repeatQuestionFor,
   shouldKeepHoldingFragment,
   validationLeadFromModular,
 } from '../modular-intake-logic.js';
@@ -64,6 +65,7 @@ const coreStub = Object.freeze({
   contactConsentQuestion: 'Do you consent to being contacted by Tabor Painting?',
   normalizePreferredTime(value) {
     const normalized = String(value).replace(/\./g, '').trim().toLowerCase();
+    if (/^2(?::00)?(?:\s*pm)?$/.test(normalized)) return '2:00 PM';
     if (/^4(?::00)?(?:\s*pm)?$/.test(normalized)) return '4:00 PM';
     if (/^9(?::00)?(?:\s*am)?$/.test(normalized)) return '9:00 AM';
     return '';
@@ -146,13 +148,23 @@ test('the structured memory box starts with a counter for every question', () =>
   assert.equal(memory.leadSaved, false);
 });
 
-test('field blocks include required context before the fixed question and nothing after it', () => {
+test('field blocks sound natural, include required context, and end at the question mark', () => {
+  const serviceBlock = baseQuestionFor(coreStub, 'service', completeLead);
+  assert.equal(
+    serviceBlock,
+    'Next, we need to collect the service you need. Which service is this for: wood staining, exterior painting, interior painting, or small paint repair?',
+  );
+
   const dateBlock = baseQuestionFor(coreStub, 'preferred_date_time', completeLead);
   assert.match(dateBlock, /^Estimate appointments are available Monday through Friday from 9:00 AM through 4:00 PM\./);
   assert.match(dateBlock, /What is your preferred estimate date and time\?$/);
 
+  const notesBlock = baseQuestionFor(coreStub, 'notes', completeLead);
+  assert.equal(notesBlock, "Before I send the request, is there anything else you'd like the estimator to know about the project?");
+
   const summaryBlock = baseQuestionFor(coreStub, 'confirm_summary', completeLead);
-  assert.match(summaryBlock, /Andrew Christensen is requesting interior painting/);
+  assert.match(summaryBlock, /^Let me read that back\./);
+  assert.match(summaryBlock, /Andrew Christensen requesting interior painting/);
   assert.match(summaryBlock, /197 Lancaster Road, Berlin, Massachusetts/);
   assert.match(summaryBlock, /Tuesday at 4:00 PM/);
   assert.match(summaryBlock, /There are no additional notes\./);
@@ -197,15 +209,15 @@ test('modular lead fields map into the validator and OCM schema', () => {
   });
 });
 
-test('Tuesday at four is captured even when the brain misses the date or time', () => {
+test('the requested weekday is the final relevant weekday mentioned by the caller', () => {
   const captured = captureDeterministicLead(
     coreStub,
     'preferred_date_time',
-    'Tuesday at 4?',
+    'Today is Friday, so probably Monday at 2.',
     { ...completeLead, preferredDate: null, preferredTime: null },
   );
-  assert.equal(captured.preferredDate, 'Tuesday');
-  assert.equal(captured.preferredTime, '4:00 PM');
+  assert.equal(captured.preferredDate, 'Monday');
+  assert.equal(captured.preferredTime, '2:00 PM');
 
   const outsideHours = captureDeterministicLead(
     coreStub,
@@ -236,12 +248,27 @@ test('identity, stale-turn cancellation, field order, and failed-save guards are
   assert.match(controller, /lead\.validation_failed/);
 });
 
-test('five-second repeats begin after playback and use the deterministic field block', () => {
+test('five-second silence repeats use only the short question', () => {
+  assert.equal(repeatQuestionFor(coreStub, 'confirm_summary'), 'Does all of that sound right?');
+  assert.equal(repeatQuestionFor(coreStub, 'preferred_date_time'), 'What is your preferred estimate date and time?');
   const controller = read('voice-pipeline-controller.js');
   assert.match(controller, /SILENCE_REPEAT_MS = 5000/);
-  assert.match(controller, /repeatAfterPlaybackQuestionId/);
-  assert.match(controller, /baseQuestionFor\(runtime\.core, questionId, state\.lead\)/);
+  assert.match(controller, /repeatQuestionFor\(runtime\.core, questionId\)/);
   assert.match(controller, /silence\.base_question_repeat/);
+});
+
+test('a generic hello can never close a follow-up-question call', () => {
+  const brain = read('receptionist-brain.js');
+  assert.match(brain, /EXPLICIT_GOODBYE_PATTERN/);
+  assert.match(brain, /NO_MORE_QUESTIONS_PATTERN/);
+  assert.match(brain, /guardUnexpectedEnd/);
+  assert.match(brain, /I'm still here\. Do you have any more questions about/);
+  assert.match(brain, /Never end the call because the caller says \\"hello/);
+});
+
+test('successful save wording explicitly says submitted and sent', () => {
+  const controller = read('voice-pipeline-controller.js');
+  assert.match(controller, /your estimate request has been submitted and sent/);
 });
 
 test('the closing hangs up only after its audio playback completes', () => {
