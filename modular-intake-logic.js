@@ -60,6 +60,63 @@ function addressParts(projectLocation = '') {
   };
 }
 
+function streetAddressCandidate(value) {
+  const text = normalizedAddress(value);
+  const streetStart = text.search(/\b\d+[A-Za-z-]*\s+[A-Za-z0-9]/);
+  if (streetStart < 0) return '';
+  return text
+    .slice(streetStart)
+    .split(',')
+    .map((part) => clean(part))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(', ');
+}
+
+function addressAnswerWithoutLeadIn(value) {
+  return normalizedAddress(value)
+    .replace(/^(?:that would be|it would be|it is|it's|the city is|city is|the state is|state is)\s+/i, '')
+    .trim();
+}
+
+function isPlausibleStreetAddress(value) {
+  const address = normalizedAddress(value);
+  if (!address || address.length > 180 || /[?]/.test(address)) return false;
+  const parts = addressParts(address);
+  return Boolean(parts.streetNumber && parts.streetName.length >= 2);
+}
+
+function isPlausibleProjectAddress(value) {
+  if (!isPlausibleStreetAddress(value)) return false;
+  const parts = addressParts(value);
+  return Boolean(parts.cityOrTown.length >= 2 && parts.state.length >= 2);
+}
+
+function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
+  const fullOrPartialStreet = streetAddressCandidate(transcript);
+  if (isPlausibleStreetAddress(fullOrPartialStreet)) return fullOrPartialStreet;
+
+  const current = addressParts(currentLocation);
+  if (!current.streetNumber || !current.streetName) return '';
+
+  const answer = addressAnswerWithoutLeadIn(transcript);
+  if (!answer || /[?]/.test(answer) || /\d/.test(answer)) return '';
+  const segments = answer.split(',').map((part) => clean(part)).filter(Boolean);
+  const street = `${current.streetNumber} ${current.streetName}`;
+
+  if (!current.cityOrTown && !current.state && segments.length >= 2) {
+    return `${street}, ${segments[0]}, ${segments.slice(1).join(', ')}`;
+  }
+  if (!current.cityOrTown && current.state && segments.length >= 1) {
+    return `${street}, ${segments[0]}, ${current.state}`;
+  }
+  if (current.cityOrTown && !current.state && segments.length >= 1) {
+    return `${street}, ${current.cityOrTown}, ${segments.join(', ')}`;
+  }
+
+  return '';
+}
+
 function isPlausibleFullName(value) {
   const name = normalizedName(value);
   if (!name || name.length > 80 || /[?]/.test(name) || NON_NAME_SENTENCE_PATTERN.test(name)) return false;
@@ -67,18 +124,6 @@ function isPlausibleFullName(value) {
   return tokens.length >= 2
     && tokens.length <= 5
     && tokens.every((token) => NAME_TOKEN_PATTERN.test(token));
-}
-
-function isPlausibleProjectAddress(value) {
-  const address = normalizedAddress(value);
-  if (!address || address.length > 180 || /[?]/.test(address)) return false;
-  const parts = addressParts(address);
-  return Boolean(
-    parts.streetNumber
-    && parts.streetName.length >= 2
-    && parts.cityOrTown.length >= 2
-    && parts.state.length >= 2
-  );
 }
 
 function configuredServiceMatching(core, servicePattern) {
@@ -134,7 +179,8 @@ export function mergeLead(current = {}, updates = {}) {
       continue;
     }
     if (key === 'projectLocation') {
-      if (isPlausibleProjectAddress(value)) merged.projectLocation = normalizedAddress(value);
+      const projectLocation = mergeProjectLocationAnswer(merged.projectLocation, value);
+      if (isPlausibleStreetAddress(projectLocation)) merged.projectLocation = projectLocation;
       continue;
     }
     merged[key] = value;
@@ -185,7 +231,7 @@ export function isControlSpeech(value) {
 }
 
 export function controlSpeechReply(core, questionId, lead = {}) {
-  const question = repeatQuestionFor(core, questionId) || baseQuestionFor(core, questionId, lead);
+  const question = repeatQuestionFor(core, questionId, lead) || baseQuestionFor(core, questionId, lead);
   return clean(`I'm here. ${question}`);
 }
 
@@ -203,8 +249,9 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     captured.name = normalizedName(text);
   }
 
-  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(text)) {
-    captured.projectLocation = normalizedAddress(text);
+  if (currentQuestionId === 'project_location') {
+    const projectLocation = mergeProjectLocationAnswer(captured.projectLocation, text);
+    if (isPlausibleStreetAddress(projectLocation)) captured.projectLocation = projectLocation;
   }
 
   if (currentQuestionId === 'preferred_date_time') {
@@ -278,8 +325,8 @@ export function validationQuestion(errors = []) {
 export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'name') return 'I still need both your first and last name.';
   if (questionId === 'service') return 'I still need the service you want.';
-  if (questionId === 'project_location') return 'I still need the street number, street name, city or town, and state.';
-  if (questionId === 'preferred_date_time') return `I still need an upcoming estimate date and a time within our availability. ${availabilityStatement(core)}`;
+  if (questionId === 'project_location') return 'I still need the street address, city or town, and state.';
+  if (questionId === 'preferred_date_time') return 'I still need an upcoming date and a time within the estimate schedule.';
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
   return errors.length ? 'I still need some information before I can submit the request.' : '';
 }
