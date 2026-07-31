@@ -218,8 +218,8 @@ export async function decideReceptionistTurn({ core, transcript, lead, history, 
     },
     body: JSON.stringify({
       model: MODELS.brain,
-      temperature: 0,
-      max_tokens: 420,
+      reasoning_effort: 'minimal',
+      max_completion_tokens: 800,
       response_format: { type: 'json_schema', json_schema: schema },
       messages: [
         { role: 'system', content: systemPrompt(core) },
