@@ -1,4 +1,5 @@
 export const MODELS = Object.freeze({
+  transcriptionSession: process.env.TRANSCRIPTION_SESSION_MODEL || 'gpt-realtime-mini',
   transcription: process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
   brain: process.env.BRAIN_MODEL || 'gpt-4.1-mini',
   speech: process.env.TTS_MODEL || 'gpt-4o-mini-tts',
