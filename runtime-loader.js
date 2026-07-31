@@ -6,8 +6,38 @@ const runtimeCache = new Map();
 let importQueue = Promise.resolve();
 let importSequence = 0;
 
+const ALLOWED_PROFILE_FIELDS = Object.freeze([
+  'businessName',
+  'receptionistName',
+  'ownerName',
+  'businessPhone',
+  'businessEmail',
+  'businessHours',
+  'timeZone',
+  'estimateDays',
+  'estimateWeekdays',
+  'earliestEstimateStart',
+  'latestEstimateStart',
+  'businessBase',
+  'serviceAreas',
+  'services',
+  'about',
+  'extraInformation',
+  'aiVoice',
+  'aiSpeechSpeed',
+  'aiSilenceMs',
+]);
+
 function clean(value) {
   return String(value || '').trim();
+}
+
+function sanitizeProfile(profile = {}) {
+  const sanitized = {};
+  for (const field of ALLOWED_PROFILE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(profile, field)) sanitized[field] = profile[field];
+  }
+  return sanitized;
 }
 
 function cacheKey(runtimeData) {
@@ -80,18 +110,30 @@ export async function loadRuntimeFromSignedTelnyxEvent({ rawBody, signature, tim
     throw new Error('ARK OCM returned incomplete receptionist settings.');
   }
 
+  const ignoredFields = Object.keys(data.profile).filter((field) => !ALLOWED_PROFILE_FIELDS.includes(field));
+  if (ignoredFields.length) {
+    console.log('[OCM runtime fields ignored]', {
+      clientId: clean(data.clientId),
+      fields: ignoredFields,
+    });
+  }
+
   return {
     clientId: clean(data.clientId),
     calledPhone: clean(data.calledPhone),
-    profile: data.profile,
+    profile: sanitizeProfile(data.profile),
     intakeUrl: clean(data.intakeUrl),
     usageUrl: clean(data.usageUrl),
   };
 }
 
 export async function prepareCallRuntime(runtimeData) {
-  const core = await importCore(runtimeData);
-  return { ...runtimeData, core };
+  const safeRuntimeData = {
+    ...runtimeData,
+    profile: sanitizeProfile(runtimeData.profile || {}),
+  };
+  const core = await importCore(safeRuntimeData);
+  return { ...safeRuntimeData, core };
 }
 
 export function runtimeEndpoint() {
