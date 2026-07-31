@@ -46,7 +46,8 @@ export function createTranscriber({
     sendJson(ws, {
       type: 'session.update',
       session: {
-        type: 'transcription',
+        type: 'realtime',
+        output_modalities: ['text'],
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
@@ -61,6 +62,8 @@ export function createTranscriber({
               threshold: 0.65,
               prefix_padding_ms: Number(prefixPaddingMs) || TURN.prefixPaddingMs,
               silence_duration_ms: Number(silenceMs) || TURN.silenceMs,
+              create_response: false,
+              interrupt_response: false,
             },
           },
         },
@@ -78,7 +81,7 @@ export function createTranscriber({
       return reportError(error, { terminal: true });
     }
 
-    if (event.type === 'session.updated' || event.type === 'transcription_session.updated') {
+    if (event.type === 'session.updated') {
       ready = true;
       onReady?.({
         ...event.session,
