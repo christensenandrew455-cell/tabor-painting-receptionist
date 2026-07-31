@@ -60,16 +60,20 @@ test('the Telnyx stream linker carries the call ID and locks clean PCMU transpor
   assert.match(linker, /send_silence_when_idle: true/);
 });
 
-test('the transcriber separates the Realtime session model from the transcription model', () => {
+test('the transcriber uses a realtime session with input transcription enabled', () => {
   const voice = read('openai-voice.js');
   assert.doesNotMatch(voice, /OpenAI-Beta/);
   assert.match(voice, /wss:\/\/api\.openai\.com\/v1\/realtime\?model=\$\{encodeURIComponent\(MODELS\.transcriptionSession\)\}/);
   assert.doesNotMatch(voice, /realtime\?model=\$\{encodeURIComponent\(MODELS\.transcription\)\}/);
   assert.match(voice, /type: 'session\.update'/);
-  assert.match(voice, /type: 'transcription'/);
+  assert.match(voice, /session:[\s\S]*type: 'realtime'/);
+  assert.doesNotMatch(voice, /session:[\s\S]*type: 'transcription'/);
+  assert.match(voice, /output_modalities: \['text'\]/);
   assert.match(voice, /format: \{ type: 'audio\/pcmu' \}/);
   assert.match(voice, /noise_reduction: \{ type: 'near_field' \}/);
   assert.match(voice, /transcription:[\s\S]*model: MODELS\.transcription/);
+  assert.match(voice, /create_response: false/);
+  assert.match(voice, /interrupt_response: false/);
   assert.match(voice, /event\.type === 'session\.updated'/);
   assert.match(voice, /terminalErrorReported/);
 });
