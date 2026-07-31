@@ -2,13 +2,24 @@ import { WebSocket } from 'ws';
 import { MODELS, TURN } from './modular-models.js';
 import { pcm24kToPcmu8k, splitPcmuFrames } from './audio-codec.js';
 
+const MAX_PENDING_AUDIO_CHUNKS = 250;
+
 function sendJson(ws, payload) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
   ws.send(JSON.stringify(payload));
   return true;
 }
 
-export function createTranscriber({ onTranscript, onSpeechStarted, onSpeechStopped, onError }) {
+export function createTranscriber({
+  onTranscript,
+  onSpeechStarted,
+  onSpeechStopped,
+  onError,
+  silenceMs = TURN.silenceMs,
+  prefixPaddingMs = TURN.prefixPaddingMs,
+} = {}) {
+  const pendingAudio = [];
+  let closed = false;
   const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.transcription)}`, {
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -17,6 +28,7 @@ export function createTranscriber({ onTranscript, onSpeechStarted, onSpeechStopp
   });
 
   ws.on('open', () => {
+    if (closed) return;
     sendJson(ws, {
       type: 'session.update',
       session: {
@@ -28,12 +40,15 @@ export function createTranscriber({ onTranscript, onSpeechStarted, onSpeechStopp
             turn_detection: {
               type: 'server_vad',
               threshold: 0.65,
-              prefix_padding_ms: TURN.prefixPaddingMs,
-              silence_duration_ms: TURN.silenceMs,
+              prefix_padding_ms: Number(prefixPaddingMs) || TURN.prefixPaddingMs,
+              silence_duration_ms: Number(silenceMs) || TURN.silenceMs,
             },
           },
         },
       },
+    });
+    pendingAudio.splice(0).forEach((audio) => {
+      sendJson(ws, { type: 'input_audio_buffer.append', audio });
     });
   });
 
@@ -52,9 +67,14 @@ export function createTranscriber({ onTranscript, onSpeechStarted, onSpeechStopp
 
   return {
     append(base64Pcmu) {
-      return sendJson(ws, { type: 'input_audio_buffer.append', audio: base64Pcmu });
+      if (closed || !base64Pcmu) return false;
+      if (sendJson(ws, { type: 'input_audio_buffer.append', audio: base64Pcmu })) return true;
+      if (pendingAudio.length < MAX_PENDING_AUDIO_CHUNKS) pendingAudio.push(base64Pcmu);
+      return false;
     },
     close() {
+      closed = true;
+      pendingAudio.length = 0;
       try { ws.close(); } catch {}
     },
     get ready() {
@@ -63,7 +83,7 @@ export function createTranscriber({ onTranscript, onSpeechStarted, onSpeechStopp
   };
 }
 
-export async function synthesizePcmu(text) {
+export async function synthesizePcmu(text, { voice = MODELS.voice } = {}) {
   const response = await fetch('https://api.openai.com/v1/audio/speech', {
     method: 'POST',
     headers: {
@@ -72,7 +92,7 @@ export async function synthesizePcmu(text) {
     },
     body: JSON.stringify({
       model: MODELS.speech,
-      voice: MODELS.voice,
+      voice: String(voice || MODELS.voice).trim() || MODELS.voice,
       input: String(text || '').trim(),
       response_format: 'pcm',
     }),
