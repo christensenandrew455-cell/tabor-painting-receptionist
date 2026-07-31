@@ -1,3 +1,13 @@
+import {
+  assembleIntakeReply,
+  availabilityStatement,
+  baseQuestionFor,
+  repeatQuestionFor,
+  summaryStatement,
+} from './intake-response-policy.js';
+
+export { availabilityStatement, baseQuestionFor, repeatQuestionFor, summaryStatement };
+
 const WEEKDAY_PATTERN = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 const MONTH_DAY_PATTERN = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i;
 const ORDINAL_DAY_PATTERN = /\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i;
@@ -24,18 +34,6 @@ function clean(value) {
 
 function serviceNames(core) {
   return Object.keys(core.BUSINESS.services || {});
-}
-
-function naturalList(values = []) {
-  const items = values.map((value) => clean(value)).filter(Boolean);
-  if (!items.length) return '';
-  if (items.length === 1) return items[0];
-  if (items.length === 2) return `${items[0]} or ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')}, or ${items.at(-1)}`;
-}
-
-function listServices(core) {
-  return naturalList(serviceNames(core));
 }
 
 export function mergeLead(current = {}, updates = {}) {
@@ -119,6 +117,9 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     if (service) captured.service = service;
   }
 
+  if (currentQuestionId === 'name') captured.name = text;
+  if (currentQuestionId === 'project_location') captured.projectLocation = text;
+
   if (currentQuestionId === 'preferred_date_time') {
     const preferredDate = rawDateFromTranscript(text);
     const rawTime = rawTimeFromTranscript(text);
@@ -137,10 +138,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     if (/\b(?:no|nope|do not|don't)\b/i.test(text)) captured.contactConsent = false;
   }
 
-  if (currentQuestionId === 'confirm_summary') {
-    if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
-  }
-
+  if (currentQuestionId === 'confirm_summary' && NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
   return captured;
 }
 
@@ -156,13 +154,11 @@ export function callerAffirmsSummary(transcript = '') {
 export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
-  if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) {
-    completed.add('preferred_date_time');
-  }
+  if (currentQuestionId === 'name' && clean(lead.name).split(/\s+/).length >= 2) completed.add('name');
+  if (currentQuestionId === 'project_location' && clean(lead.projectLocation)) completed.add('project_location');
+  if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
-  if (currentQuestionId === 'contact_consent' && typeof lead.contactConsent === 'boolean') {
-    completed.add('contact_consent');
-  }
+  if (currentQuestionId === 'contact_consent' && typeof lead.contactConsent === 'boolean') completed.add('contact_consent');
   return [...completed];
 }
 
@@ -171,82 +167,15 @@ export function nextRequiredQuestion(memory, lead = {}) {
   if (!completed.has('service') || !clean(lead.service)) return 'service';
   if (!completed.has('name') || !clean(lead.name)) return 'name';
   if (!completed.has('project_location') || !clean(lead.projectLocation)) return 'project_location';
-  if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) {
-    return 'preferred_date_time';
-  }
+  if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
   if (!completed.has('notes')) return 'notes';
   if (!completed.has('contact_consent') || typeof lead.contactConsent !== 'boolean') return 'contact_consent';
   if (!completed.has('confirm_summary')) return 'confirm_summary';
   return 'none';
 }
 
-export function availabilityStatement(core) {
-  return `Estimate appointments are available ${core.BUSINESS.estimateDays} from ${core.BUSINESS.earliestEstimateStart} through ${core.BUSINESS.latestEstimateStart}.`;
-}
-
-export function summaryStatement(lead = {}) {
-  const notes = clean(lead.notes);
-  const notesClause = notes && notes.toLowerCase() !== 'none'
-    ? ` The additional notes are: ${notes}.`
-    : ' There are no additional notes.';
-  return `Let me read that back. I have ${clean(lead.name)} requesting ${clean(lead.service)} at ${clean(lead.projectLocation)}, with an estimate preferred for ${clean(lead.preferredDate)} at ${clean(lead.preferredTime)}.${notesClause}`;
-}
-
-export function baseQuestionFor(core, questionId, lead = {}) {
-  const questions = {
-    ask_estimate: 'Would you like to fill out an estimate request?',
-    continue_estimate: 'Would you like to continue filling out your estimate request?',
-    more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Which service are you calling about: ${listServices(core)}?`,
-    name: 'What is your full name?',
-    project_location: 'What is the full address for the project?',
-    preferred_date_time: `${availabilityStatement(core)} What is your preferred estimate date and time?`,
-    notes: "Before I send the request, is there anything else you'd like the estimator to know about the project?",
-    contact_consent: core.contactConsentQuestion,
-    confirm_summary: `${summaryStatement(lead)} Does all of that sound right?`,
-    clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
-  };
-  return clean(questions[questionId]);
-}
-
-export function repeatQuestionFor(core, questionId) {
-  const questions = {
-    ask_estimate: 'Would you like to fill out an estimate request?',
-    continue_estimate: 'Would you like to continue filling out your estimate request?',
-    more_questions: `Do you have any more questions about ${core.BUSINESS.name}?`,
-    service: `Which service are you calling about: ${listServices(core)}?`,
-    name: 'What is your full name?',
-    project_location: 'What is the full address for the project?',
-    preferred_date_time: 'What is your preferred estimate date and time?',
-    notes: "Is there anything else you'd like the estimator to know about the project?",
-    contact_consent: core.contactConsentQuestion,
-    confirm_summary: 'Does all of that sound right?',
-    clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
-  };
-  return clean(questions[questionId]);
-}
-
-function declarativePreface(spokenReply, questionId) {
-  if (questionId === 'confirm_summary' || questionId === 'service') return '';
-  const sentences = clean(spokenReply).match(/[^.!?]+[.!?]?/g) || [];
-  const kept = sentences
-    .map((sentence) => clean(sentence))
-    .filter((sentence) => sentence && !sentence.includes('?'))
-    .filter((sentence) => {
-      if (questionId !== 'preferred_date_time') return true;
-      return !/estimate availability|estimate appointments are available|monday through friday|from .* through/i.test(sentence);
-    });
-  let result = clean(kept.join(' '));
-  if (result.length > 180) result = clean(result.slice(0, 180).replace(/\s+\S*$/, ''));
-  return result;
-}
-
 export function enforceQuestionBlock(core, spokenReply, questionId, lead = {}) {
-  const base = baseQuestionFor(core, questionId, lead);
-  if (!base || questionId === 'none') return clean(spokenReply);
-  if (questionId === 'clarify' || questionId === 'confirm_summary' || questionId === 'service') return base;
-  const preface = declarativePreface(spokenReply, questionId);
-  return clean(preface ? `${preface} ${base}` : base);
+  return assembleIntakeReply(core, spokenReply, questionId, lead);
 }
 
 export function validationQuestion(errors = []) {
@@ -261,7 +190,7 @@ export function validationQuestion(errors = []) {
 
 export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'name') return 'I still need both your first and last name.';
-  if (questionId === 'service') return `I still need one of the services we offer: ${listServices(core)}.`;
+  if (questionId === 'service') return 'I still need the service you want.';
   if (questionId === 'project_location') return 'I still need the street number, street name, city or town, and state.';
   if (questionId === 'preferred_date_time') return `I still need an upcoming estimate date and a time within our availability. ${availabilityStatement(core)}`;
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
@@ -269,13 +198,11 @@ export function validationPreface(core, questionId, errors = []) {
 }
 
 export function removeCompletion(memory, questionId) {
-  memory.completedQuestionIds = (memory.completedQuestionIds || [])
-    .filter((id) => id !== questionId && id !== 'confirm_summary');
+  memory.completedQuestionIds = (memory.completedQuestionIds || []).filter((id) => id !== questionId && id !== 'confirm_summary');
 }
 
 export function reopenConfirmation(memory) {
-  memory.completedQuestionIds = (memory.completedQuestionIds || [])
-    .filter((id) => id !== 'confirm_summary');
+  memory.completedQuestionIds = (memory.completedQuestionIds || []).filter((id) => id !== 'confirm_summary');
 }
 
 export function isObviouslyIncompleteTranscript(value) {
@@ -284,12 +211,7 @@ export function isObviouslyIncompleteTranscript(value) {
   if (HESITATION_PATTERN.test(text)) return true;
   const words = text.split(/\s+/).filter(Boolean);
   if (/(?:\.\.\.|…)\s*$/.test(text) && words.length <= 10) return true;
-  const normalized = text
-    .toLowerCase()
-    .replace(/(?:\.\.\.|…)+$/g, '')
-    .replace(/[,.!?;:]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const normalized = text.toLowerCase().replace(/(?:\.\.\.|…)+$/g, '').replace(/[,.!?;:]+$/g, '').replace(/\s+/g, ' ').trim();
   return INCOMPLETE_PATTERN.test(normalized);
 }
 
