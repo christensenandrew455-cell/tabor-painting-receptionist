@@ -263,7 +263,7 @@ test('a generic hello can never close a follow-up-question call', () => {
   assert.match(brain, /NO_MORE_QUESTIONS_PATTERN/);
   assert.match(brain, /guardUnexpectedEnd/);
   assert.match(brain, /I'm still here\. Do you have any more questions about/);
-  assert.match(brain, /Never end the call because the caller says \\"hello/);
+  assert.match(brain, /Never end the call because the caller says "hello/);
 });
 
 test('successful save wording explicitly says submitted and sent', () => {
