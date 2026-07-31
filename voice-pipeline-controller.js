@@ -13,7 +13,22 @@ const REPEATABLE_QUESTION_IDS = new Set([
   'clarify',
 ]);
 
+const BASE_QUESTIONS = Object.freeze({
+  ask_estimate: 'Would you like to fill out an estimate request?',
+  continue_estimate: 'Would you like to continue filling out your estimate request?',
+  more_questions: (businessName) => `Do you have any more questions about ${businessName}?`,
+  service: (runtime) => `What service would you like? We specialize in ${Object.keys(runtime.core.BUSINESS.services || {}).join(', ')}.`,
+  name: 'What is your full name?',
+  project_location: 'What is the full address for the project?',
+  preferred_date_time: 'What is your preferred estimate date and time?',
+  notes: 'Do you have any additional notes about this project?',
+  contact_consent: (runtime) => runtime.core.contactConsentQuestion,
+  confirm_summary: 'Does all of that sound right?',
+  clarify: "I'm sorry, I didn't catch that. Could you repeat that?",
+});
+
 const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it|the form) out again)\b/i;
+const SILENCE_REPEAT_MS = 5000;
 
 function clean(value) {
   return String(value ?? '').trim();
@@ -38,6 +53,12 @@ function recordAskedQuestion(memory, questionId) {
   }
 }
 
+function baseQuestionFor(runtime, questionId) {
+  const value = BASE_QUESTIONS[questionId];
+  if (typeof value === 'function') return clean(value(runtime));
+  return clean(value);
+}
+
 export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clearAudio, saveLead, endCall, log = console }) {
   const state = {
     lead: emptyLead(),
@@ -48,6 +69,9 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     generation: 0,
     audioTimer: null,
     queuedFrames: [],
+    silenceTimer: null,
+    greetingSent: false,
+    closingStarted: false,
   };
 
   function remember(role, text) {
@@ -55,6 +79,22 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     if (!content) return;
     state.history.push({ role, content });
     if (state.history.length > 24) state.history.splice(0, state.history.length - 24);
+  }
+
+  function clearSilenceTimer() {
+    if (state.silenceTimer) clearTimeout(state.silenceTimer);
+    state.silenceTimer = null;
+  }
+
+  function scheduleBaseQuestionRepeat(questionId) {
+    clearSilenceTimer();
+    const baseQuestion = baseQuestionFor(runtime, questionId);
+    if (!baseQuestion || state.stopped || state.closingStarted) return;
+    state.silenceTimer = setTimeout(() => {
+      state.silenceTimer = null;
+      if (state.stopped || state.closingStarted || state.memory.currentQuestionId !== questionId) return;
+      speak(baseQuestion, { scheduleRepeat: false }).catch((error) => log.error('[Question repeat failed]', error));
+    }, SILENCE_REPEAT_MS);
   }
 
   function stopSpeaking() {
@@ -78,7 +118,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.audioTimer = setTimeout(() => pumpFrames(generation), 20);
   }
 
-  async function speak(text) {
+  async function speak(text, { scheduleRepeat = true } = {}) {
     const reply = clean(text);
     if (!reply || state.stopped) return;
     stopSpeaking();
@@ -89,6 +129,17 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.queuedFrames = frames;
     state.speaking = true;
     pumpFrames(generation);
+    if (scheduleRepeat) scheduleBaseQuestionRepeat(state.memory.currentQuestionId);
+  }
+
+  async function speakClosingAndEnd() {
+    if (state.closingStarted || state.stopped) return;
+    state.closingStarted = true;
+    clearSilenceTimer();
+    const closing = clean(runtime.core.closingLine);
+    await speak(closing, { scheduleRepeat: false });
+    const delay = Math.max(600, closing.length * 55);
+    setTimeout(() => endCall?.('completed'), delay);
   }
 
   async function submitLeadSafely() {
@@ -117,7 +168,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   async function processTranscript(transcript) {
     const text = clean(transcript);
-    if (!text || state.stopped) return;
+    if (!text || state.stopped || state.closingStarted) return;
+    clearSilenceTimer();
     remember('caller', text);
 
     if (state.memory.estimateStarted && !state.memory.leadSaved && RESTART_PATTERN.test(text)) {
@@ -141,54 +193,64 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       );
 
       let spokenReply = clean(turn.spokenReply);
-      const askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
+      let askedQuestionId = QUESTION_IDS.includes(turn.askedQuestionId) ? turn.askedQuestionId : 'none';
+
+      if (state.memory.estimateStarted && !state.memory.completedQuestionIds.includes('service')) {
+        askedQuestionId = 'service';
+        spokenReply = baseQuestionFor(runtime, 'service');
+      } else if (state.memory.estimateStarted && askedQuestionId !== 'service' && !state.lead.service) {
+        askedQuestionId = 'service';
+        spokenReply = baseQuestionFor(runtime, 'service');
+      }
 
       if (questionIsLocked(state.memory, askedQuestionId)) {
         log.warn('[Blocked repeated completed question]', {
           askedQuestionId,
           askedCount: state.memory.askedCounts[askedQuestionId] || 0,
         });
-        spokenReply = state.memory.leadSaved
-          ? `Do you have any more questions about ${runtime.core.BUSINESS.name}?`
+        askedQuestionId = state.memory.leadSaved
+          ? 'more_questions'
           : state.memory.estimateStarted
-            ? 'Would you like to continue filling out your estimate request?'
-            : 'Would you like to fill out an estimate request?';
-        recordAskedQuestion(
-          state.memory,
-          state.memory.leadSaved ? 'more_questions' : state.memory.estimateStarted ? 'continue_estimate' : 'ask_estimate',
-        );
-      } else {
-        recordAskedQuestion(state.memory, askedQuestionId);
+            ? 'continue_estimate'
+            : 'ask_estimate';
+        spokenReply = baseQuestionFor(runtime, askedQuestionId);
       }
+
+      recordAskedQuestion(state.memory, askedQuestionId);
 
       if (turn.submitLead && !state.memory.leadSaved) {
         const submission = await submitLeadSafely();
         if (submission.ok) {
           spokenReply = `The request has been sent. ${runtime.core.BUSINESS.name} will follow up with you shortly. Do you have any questions about ${runtime.core.BUSINESS.name}?`;
-          recordAskedQuestion(state.memory, 'more_questions');
+          askedQuestionId = 'more_questions';
+          recordAskedQuestion(state.memory, askedQuestionId);
         } else if (submission.invalid) {
-          spokenReply = "I'm sorry, I didn't catch that. Could you repeat that?";
-          recordAskedQuestion(state.memory, 'clarify');
+          spokenReply = baseQuestionFor(runtime, 'clarify');
+          askedQuestionId = 'clarify';
+          recordAskedQuestion(state.memory, askedQuestionId);
         } else {
           spokenReply = `I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. Do you have any questions about ${runtime.core.BUSINESS.name}?`;
-          recordAskedQuestion(state.memory, 'more_questions');
+          askedQuestionId = 'more_questions';
+          recordAskedQuestion(state.memory, askedQuestionId);
         }
       }
 
-      await speak(spokenReply);
       if (turn.endCall) {
-        const delay = Math.max(600, spokenReply.length * 55);
-        setTimeout(() => endCall?.('completed'), delay);
+        await speakClosingAndEnd();
+        return;
       }
+
+      await speak(spokenReply);
     } catch (error) {
       log.error('[Voice pipeline turn failed]', error);
-      await speak("I'm sorry, I didn't catch that. Could you repeat that?");
       recordAskedQuestion(state.memory, 'clarify');
+      await speak(baseQuestionFor(runtime, 'clarify'));
     }
   }
 
   const transcriber = createTranscriber({
     onSpeechStarted: () => {
+      clearSilenceTimer();
       if (state.speaking) stopSpeaking();
     },
     onTranscript: (transcript) => {
@@ -199,14 +261,17 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
   return {
     async start() {
-      await speak(runtime.core.openingLine);
+      if (state.greetingSent || state.stopped) return;
+      state.greetingSent = true;
       recordAskedQuestion(state.memory, 'ask_estimate');
+      await speak(runtime.core.openingLine);
     },
     appendCallerAudio(base64Pcmu) {
-      if (!state.stopped) transcriber.append(base64Pcmu);
+      if (!state.stopped && !state.closingStarted) transcriber.append(base64Pcmu);
     },
     stop(reason = 'stopped') {
       state.stopped = true;
+      clearSilenceTimer();
       stopSpeaking();
       transcriber.close();
       log.log('[Voice pipeline stopped]', reason);
@@ -221,6 +286,8 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         },
         history: [...state.history],
         speaking: state.speaking,
+        greetingSent: state.greetingSent,
+        closingStarted: state.closingStarted,
       };
     },
   };
