@@ -310,7 +310,7 @@ app.get('/', (_req, res) => {
   res.json({
     ok: true,
     provider: 'Telnyx',
-    architecture: 'transcribe -> brain -> tts',
+    architecture: 'realtime voice -> GPT-5 Mini brain -> deterministic controller -> realtime voice',
     models: MODELS,
     codec: 'PCMU 8 kHz',
     voiceWebhook: `${PUBLIC_URL}/voice-api-webhook`,
@@ -322,10 +322,10 @@ app.get('/', (_req, res) => {
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    architecture: 'modular',
+    architecture: 'realtime-voice-with-text-brain',
+    realtimeVoiceModel: MODELS.realtimeVoice,
     transcriptionModel: MODELS.transcription,
     brainModel: MODELS.brain,
-    speechModel: MODELS.speech,
     codec: 'PCMU',
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
@@ -476,9 +476,9 @@ wss.on('connection', (telnyx) => {
         callId: ctx.callControlId || ctx.id,
         clientId: ctx.runtimeData.clientId,
         business: ctx.runtime.core.BUSINESS.name,
+        realtimeVoiceModel: MODELS.realtimeVoice,
         transcriptionModel: MODELS.transcription,
         brainModel: MODELS.brain,
-        speechModel: MODELS.speech,
         voice: ctx.runtime.core.REALTIME_VOICE || MODELS.voice,
       });
 
@@ -519,32 +519,31 @@ wss.on('connection', (telnyx) => {
       return;
     }
 
-    if (event === 'stop' || event === 'streaming.stopped') {
+    if (event === 'stop' || event === 'disconnected' || event === 'streaming.stopped') {
+      ctx.endReason = ctx.endReason || 'remote-hangup';
       try { telnyx.close(); } catch {}
     }
   });
 
-  const cleanup = () => {
+  telnyx.on('close', () => {
     if (ctx.cleanedUp) return;
     ctx.cleanedUp = true;
-    ctx.endReason = ctx.endReason || 'remote-hangup';
+    ctx.pipeline?.stop?.(ctx.endReason || 'remote-hangup');
     clearCallTimers(ctx);
-    ctx.pipeline?.stop?.(ctx.endReason);
-    reportCallUsage(ctx).catch(() => null);
-    if (ctx.callControlId) activeCallsByControlId.delete(ctx.callControlId);
     activeCalls.delete(ctx.id);
+    if (ctx.callControlId) activeCallsByControlId.delete(ctx.callControlId);
     debug('telnyx.closed', {
       callId: ctx.callControlId || ctx.id,
-      clientId: ctx.runtimeData?.clientId || '',
-      endReason: ctx.endReason,
+      clientId: ctx.runtimeData?.clientId,
+      endReason: ctx.endReason || 'remote-hangup',
       leadSaved: ctx.leadSaved,
     });
-  };
+    reportCallUsage(ctx).catch(() => null);
+  });
 
-  telnyx.on('close', cleanup);
   telnyx.on('error', (error) => {
-    console.error('[Telnyx websocket]', error.message);
-    cleanup();
+    ctx.endReason = ctx.endReason || 'media-error';
+    console.error('[Telnyx media socket]', error.message);
   });
 });
 
@@ -553,5 +552,5 @@ server.listen(PORT, () => {
   console.log(`Voice webhook: ${PUBLIC_URL}/voice-api-webhook`);
   console.log(`Media stream: ${STREAM_URL}`);
   console.log(`ARK OCM runtime lookup: ${runtimeEndpoint()}`);
-  console.log(`Models: ${MODELS.transcription} -> ${MODELS.brain} -> ${MODELS.speech}`);
+  console.log(`Models: ${MODELS.realtimeVoice} -> ${MODELS.brain} -> ${MODELS.realtimeVoice}`);
 });
