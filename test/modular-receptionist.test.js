@@ -7,6 +7,7 @@ import {
   changedLeadFields,
   enforceQuestionBlock,
   markDeterministicCompletions,
+  mergeLead,
   nextRequiredQuestion,
   repeatQuestionFor,
 } from '../modular-intake-logic.js';
@@ -63,6 +64,34 @@ test('safe natural preface is attached before the exact question', () => {
   );
 });
 
+test('an exact canonical question is never duplicated', () => {
+  assert.equal(
+    enforceQuestionBlock(coreStub, 'What is your full name?', 'name', completeLead),
+    'What is your full name?',
+  );
+  assert.equal(
+    enforceQuestionBlock(
+      coreStub,
+      'What is the full address for the project?',
+      'project_location',
+      completeLead,
+    ),
+    'What is the full address for the project?',
+  );
+});
+
+test('availability wording is not duplicated', () => {
+  assert.equal(
+    enforceQuestionBlock(
+      coreStub,
+      'Our estimate availability is Monday through Friday, 9:00 AM through 4:00 PM. What is your preferred estimate date and time?',
+      'preferred_date_time',
+      completeLead,
+    ),
+    'Estimate appointments are available Monday through Friday from 9:00 AM through 4:00 PM. What is your preferred estimate date and time?',
+  );
+});
+
 test('model questions are removed and cannot replace the canonical question', () => {
   assert.equal(
     enforceQuestionBlock(
@@ -92,10 +121,36 @@ test('long prefaces are bounded and remain declarative', () => {
   assert.doesNotMatch(safe, /\?/);
 });
 
-test('name and project address are captured before the model returns', () => {
+test('natural service descriptions are mapped before the model returns', () => {
+  const empty = { ...completeLead, service: null };
+  assert.equal(
+    captureDeterministicLead(
+      coreStub,
+      'service',
+      'I need the whole outside of my house repainted.',
+      empty,
+    ).service,
+    'exterior painting',
+  );
+  assert.equal(
+    captureDeterministicLead(
+      coreStub,
+      'service',
+      'I need the whole house painted.',
+      empty,
+    ).service,
+    'exterior painting',
+  );
+  assert.equal(
+    captureDeterministicLead(coreStub, 'service', 'The walls inside need paint.', empty).service,
+    'interior painting',
+  );
+});
+
+test('valid name and project address are captured before the model returns', () => {
   const empty = { ...completeLead, name: null, projectLocation: null };
   const named = captureDeterministicLead(coreStub, 'name', 'Andrew Christensen.', empty);
-  assert.equal(named.name, 'Andrew Christensen.');
+  assert.equal(named.name, 'Andrew Christensen');
 
   const located = captureDeterministicLead(
     coreStub,
@@ -103,8 +158,44 @@ test('name and project address are captured before the model returns', () => {
     '197 Lancaster Road, Berlin, Massachusetts.',
     named,
   );
-  assert.equal(located.projectLocation, '197 Lancaster Road, Berlin, Massachusetts.');
+  assert.equal(located.projectLocation, '197 Lancaster Road, Berlin, Massachusetts');
   assert.deepEqual(changedLeadFields(named, located), ['projectLocation']);
+});
+
+test('conversation and complaint sentences are not saved as name or address', () => {
+  const empty = { ...completeLead, name: null, projectLocation: null };
+  const badName = 'Um, well, I called you, so I think you are, you know.';
+  const badAddress = 'I was in the middle of filling out an estimate request.';
+
+  const afterName = captureDeterministicLead(coreStub, 'name', badName, empty);
+  assert.equal(afterName.name, null);
+
+  const afterAddress = captureDeterministicLead(
+    coreStub,
+    'project_location',
+    badAddress,
+    afterName,
+  );
+  assert.equal(afterAddress.projectLocation, null);
+
+  assert.deepEqual(
+    mergeLead(empty, { name: badName, projectLocation: badAddress }),
+    empty,
+  );
+});
+
+test('invalid model values cannot advance the state machine', () => {
+  const memory = createCallMemory();
+  memory.estimateStarted = true;
+  memory.completedQuestionIds = ['service', 'name', 'project_location'];
+
+  const lead = {
+    ...completeLead,
+    name: 'I think you know',
+    projectLocation: 'What are you talking about?',
+  };
+
+  assert.equal(nextRequiredQuestion(memory, lead), 'name');
 });
 
 test('deterministic completions advance the state machine', () => {
