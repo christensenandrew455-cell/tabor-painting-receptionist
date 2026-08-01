@@ -29,14 +29,19 @@ const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it
 const IDENTITY_PATTERN = /\b(?:are you|is this)\s+(?:an?\s+)?(?:ai|bot|robot|human|person|real person)\b/i;
 const WHY_PATTERN = /\b(?:why|what do you need that for|why do you need|what is that for)\b/i;
 const OFF_TOPIC_PATTERN = /\b(?:pizza|taxi|uber|weather|sports|politics|medical|lawyer|police|fire department)\b/i;
-const SIMPLE_YES = /^(?:yes|yeah|yep|sure|okay|ok|correct|right|sounds good|that's right|that is right)[.!?\s]*$/i;
-const SIMPLE_NO = /^(?:no|nope|nah|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$/i;
+const SIMPLE_YES = /^(?:yes|yeah|yep|ya|yah|sure|okay|ok|correct|right|sounds good|that's right|that is right)[.!?\s]*$/i;
+const SIMPLE_NO = /^(?:no|nope|nah|ne|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$/i;
 const SUMMARY_CORRECTION_PATTERN = /\b(?:but|except|actually|correction|wrong|not correct|isn't right|is not right|change|update)\b/i;
-const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|nothing else|none|nope|didn't give you any additional notes|did not give you any additional notes)\b/i;
+const NO_NOTES_PATTERN = /^(?:no|nope|nah|ne)[.!?\s]*$|\b(?:no additional notes?|no notes?|do not have any notes?|don't have any notes?|nothing else|none|didn't give you any additional notes|did not give you any additional notes)\b/i;
 const QUESTION_LIKE_PATTERN = /\?\s*$|^(?:what|why|how|when|where|who|now|hello|huh|sorry)\b/i;
+const NEGATIVE_SERVICE_DETAIL_PATTERN = /\b(?:peeling|looks bad|really bad|rough|damaged|rotting|chipping|cracking|faded)\b/i;
 
 function clean(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function isSpeechCancellation(error) {
+  return /speech cancel(?:led|ed)|realtime speech cancelled/i.test(error?.message || String(error));
 }
 
 function emptyLead() {
@@ -77,7 +82,7 @@ function validationPhraseKey(questionId) {
   return {
     name: PHRASE_KEYS.VALIDATION_NAME,
     service: PHRASE_KEYS.VALIDATION_SERVICE,
-    project_location: PHRASE_KEYS.VALIDATION_PROJECT_ADDRESS,
+    project_location: PHRASE_KEYS.PROJECT_ADDRESS_FULL,
     preferred_date_time: PHRASE_KEYS.VALIDATION_ESTIMATE_DATE_TIME,
     contact_consent: PHRASE_KEYS.VALIDATION_CONTACT_CONSENT,
   }[questionId] || null;
@@ -105,6 +110,17 @@ function isExplicitConsentAnswer(text) {
 
 function isUnqualifiedSummaryYes(text) {
   return SIMPLE_YES.test(text) && !SUMMARY_CORRECTION_PATTERN.test(text);
+}
+
+function acknowledgementFor(previousQuestionId, transcript, lead, core) {
+  if (previousQuestionId === 'service') {
+    return receptionistPhrase(core, NEGATIVE_SERVICE_DETAIL_PATTERN.test(transcript) ? PHRASE_KEYS.ACK_SORRY : PHRASE_KEYS.ACK_GOOD, lead);
+  }
+  if (previousQuestionId === 'name') return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS_NAME, lead);
+  if (previousQuestionId === 'project_location') return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS, lead);
+  if (previousQuestionId === 'preferred_date_time') return receptionistPhrase(core, PHRASE_KEYS.ACK_GOOD, lead);
+  if (previousQuestionId === 'notes' || previousQuestionId === 'contact_consent') return receptionistPhrase(core, PHRASE_KEYS.ACK_GOT_IT, lead);
+  return '';
 }
 
 function applySummaryCorrections(text, lead) {
@@ -179,8 +195,9 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       state.pendingCallerFragment = '';
       if (state.stopped || state.closingStarted || state.memory.currentQuestionId !== questionId) return;
       debug('silence.base_question_repeat', { questionId, baseQuestion: repeatQuestion });
-      speak(repeatQuestion, { scheduleRepeat: true, questionId })
-        .catch((error) => log.error('[Question repeat failed]', error));
+      speak(repeatQuestion, { scheduleRepeat: true, questionId }).catch((error) => {
+        if (!isSpeechCancellation(error)) log.error('[Question repeat failed]', error);
+      });
     }, SILENCE_REPEAT_MS);
   }
 
@@ -243,7 +260,13 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     state.ttsPending = true;
     state.pendingReplyText = reply;
     state.pendingQuestionId = questionId;
-    const frames = await realtimeVoice.synthesize(reply);
+    let frames;
+    try {
+      frames = await realtimeVoice.synthesize(reply);
+    } catch (error) {
+      if (isSpeechCancellation(error) || state.stopped || generation !== state.generation) return;
+      throw error;
+    }
     if (state.stopped || generation !== state.generation) return;
     state.ttsPending = false;
     state.queuedFrames = frames;
@@ -312,9 +335,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     remember('caller', text);
     debug('caller.transcript', { transcript: text, currentQuestionId, lead: state.lead, memory: state.memory });
 
-    if (isControlSpeech(text)) {
-      return speak(controlSpeechReply(runtime.core, currentQuestionId, state.lead), { questionId: currentQuestionId });
-    }
+    if (isControlSpeech(text)) return speak(controlSpeechReply(runtime.core, currentQuestionId, state.lead), { questionId: currentQuestionId });
     if (IDENTITY_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.AI_IDENTITY, state.lead));
     if (RESTART_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.RESTART_BLOCKED, state.lead));
     if (OFF_TOPIC_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.OFF_TOPIC, state.lead));
@@ -336,7 +357,6 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
     if (currentQuestionId === 'more_questions') {
       if (SIMPLE_NO.test(text)) return speakClosingAndEnd();
-      if (SIMPLE_YES.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead), { questionId: 'more_questions' });
       return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead), { questionId: 'more_questions' });
     }
 
@@ -363,11 +383,30 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       return askQuestion('confirm_summary', receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead));
     }
 
-    let mayCapture = true;
-    if (currentQuestionId === 'notes' && !isSafeNotesAnswer(text)) mayCapture = false;
-    if (currentQuestionId === 'contact_consent' && !isExplicitConsentAnswer(text)) mayCapture = false;
-
     const before = { ...state.lead };
+    let mayCapture = true;
+
+    if (currentQuestionId === 'notes') {
+      if (NO_NOTES_PATTERN.test(text)) {
+        state.lead.notes = 'none';
+        mayCapture = false;
+      } else if (!isSafeNotesAnswer(text)) {
+        mayCapture = false;
+      }
+    }
+
+    if (currentQuestionId === 'contact_consent') {
+      if (SIMPLE_YES.test(text)) {
+        state.lead.contactConsent = true;
+        mayCapture = false;
+      } else if (SIMPLE_NO.test(text)) {
+        state.lead.contactConsent = false;
+        mayCapture = false;
+      } else {
+        mayCapture = false;
+      }
+    }
+
     if (mayCapture) state.lead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
     const changes = changedLeadFields(before, state.lead);
     if (changes.length) {
@@ -376,13 +415,15 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     const nextQuestion = nextRequiredQuestion(state.memory, state.lead);
-    if (nextQuestion !== currentQuestionId) return askQuestion(nextQuestion);
+    if (nextQuestion !== currentQuestionId) {
+      const acknowledgement = acknowledgementFor(currentQuestionId, text, state.lead, runtime.core);
+      return askQuestion(nextQuestion, acknowledgement);
+    }
 
     const validationKey = validationPhraseKey(currentQuestionId);
-    let prefix = validationKey ? receptionistPhrase(runtime.core, validationKey, state.lead) : receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead);
-    if (currentQuestionId === 'project_location') {
-      prefix = clean(`${receptionistPhrase(runtime.core, PHRASE_KEYS.PROJECT_ADDRESS_FULL, state.lead)} ${prefix}`);
-    }
+    const prefix = validationKey
+      ? receptionistPhrase(runtime.core, validationKey, state.lead)
+      : receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead);
     return askQuestion(currentQuestionId, prefix);
   }
 
@@ -396,7 +437,9 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       clearSilenceTimer();
       if (state.speaking || state.ttsPending || state.queuedFrames.length) stopSpeaking();
     },
-    onTranscript: (value) => processTranscript(value).catch((error) => log.error('[Transcript processing failed]', error)),
+    onTranscript: (value) => processTranscript(value).catch((error) => {
+      if (!isSpeechCancellation(error)) log.error('[Transcript processing failed]', error);
+    }),
     onError: (error) => debug('realtime_voice.error', { error: error?.stack || error?.message || String(error) }),
   });
 
