@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const voice = readFileSync(new URL('../openai-voice.js', import.meta.url), 'utf8');
-const brain = readFileSync(new URL('../receptionist-brain.js', import.meta.url), 'utf8');
+const interpreter = readFileSync(new URL('../realtime-turn-interpreter.js', import.meta.url), 'utf8');
+const controller = readFileSync(new URL('../voice-pipeline-controller.js', import.meta.url), 'utf8');
 
 function responseCreateBlock(source) {
   const start = source.indexOf("type: 'response.create'");
@@ -13,37 +14,39 @@ function responseCreateBlock(source) {
   return source.slice(start, end);
 }
 
-function brainRequestBlock(source) {
-  const start = source.indexOf("fetch('https://api.openai.com/v1/chat/completions'");
-  assert.notEqual(start, -1, 'brain Chat Completions request must exist');
-  return source.slice(start);
-}
-
-test('Realtime response.create inherits session audio settings without unsupported speed override', () => {
+test('Realtime response.create is text-only interpretation with no automatic voice response', () => {
   const block = responseCreateBlock(voice);
-  assert.match(block, /output_modalities: \['audio'\]/);
+  assert.match(block, /output_modalities: \['text'\]/);
   assert.match(block, /conversation: 'none'/);
-  assert.doesNotMatch(block, /\bspeed\s*:/);
-  assert.doesNotMatch(block, /\baudio\s*:/);
-
-  assert.match(voice, /session:[\s\S]*audio:[\s\S]*output:[\s\S]*speed:/);
-  assert.match(voice, /format: \{ type: 'audio\/pcmu' \}/);
+  assert.match(block, /interpretation_request_id/);
+  assert.doesNotMatch(block, /output_modalities: \['audio'\]/);
+  assert.match(voice, /create_response: false/);
+  assert.match(voice, /interrupt_response: false/);
 });
 
-test('Realtime error events reject pending speech instead of leaving TTS hung', () => {
-  assert.match(
-    voice,
-    /if \(event\.type === 'error'\) \{[\s\S]*rejectSpeechRequests\(error\);[\s\S]*reportError\(error\);/,
-  );
-  assert.match(voice, /error\.param = event\.error\?\.param \|\| ''/);
+test('caller-facing speech uses the exact text-to-speech endpoint', () => {
+  assert.match(voice, /https:\/\/api\.openai\.com\/v1\/audio\/speech/);
+  assert.match(voice, /model: MODELS\.speech/);
+  assert.match(voice, /input: String\(text\)/);
+  assert.match(voice, /response_format: 'pcm'/);
+  assert.match(voice, /pcm24kToPcmu8k/);
+  assert.doesNotMatch(voice, /response\.output_audio\.delta/);
+  assert.doesNotMatch(voice, /REALTIME_SPEECH_MISMATCH/);
 });
 
-test('GPT-5 Mini brain uses supported low-latency Chat Completions parameters', () => {
-  const block = brainRequestBlock(brain);
-  assert.match(block, /model: MODELS\.brain/);
-  assert.match(block, /reasoning_effort: 'minimal'/);
-  assert.match(block, /max_completion_tokens: 800/);
-  assert.match(block, /response_format: \{ type: 'json_schema'/);
-  assert.doesNotMatch(block, /\bmax_tokens\s*:/);
-  assert.doesNotMatch(block, /\btemperature\s*:/);
+test('Realtime interpreter returns bounded JSON instead of caller-facing prose', () => {
+  assert.match(interpreter, /return exactly one compact JSON object/i);
+  assert.match(interpreter, /Do not write a caller-facing response/i);
+  assert.match(interpreter, /Never suggest hiring or contacting a painter/i);
+  assert.match(interpreter, /INTERPRETER_ACTIONS/);
+  assert.match(interpreter, /INTERPRETER_ACKS/);
+});
+
+test('controller consumes realtime interpretation but owns question order', () => {
+  assert.match(controller, /realtimeVoice\.interpret/);
+  assert.match(controller, /parseRealtimeTurnInterpretation/);
+  assert.match(controller, /applyRealtimeInterpretation/);
+  assert.match(controller, /nextRequiredQuestion/);
+  assert.match(controller, /baseQuestionFor/);
+  assert.doesNotMatch(controller, /decideReceptionistTurn/);
 });
