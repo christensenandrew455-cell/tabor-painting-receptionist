@@ -3,11 +3,25 @@ import { MODELS, TURN } from './modular-models.js';
 import { splitPcmuFrames } from './audio-codec.js';
 
 const MAX_PENDING_AUDIO_CHUNKS = 250;
+const MAX_EXACT_SPEECH_ATTEMPTS = 2;
 
 function sendJson(ws, payload) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
   ws.send(JSON.stringify(payload));
   return true;
+}
+
+function normalizedSpeechText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/[^a-z0-9'\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function exactSpeechMatches(expected, actual) {
+  return normalizedSpeechText(expected) === normalizedSpeechText(actual);
 }
 
 export function createRealtimeVoice({
@@ -46,7 +60,12 @@ export function createRealtimeVoice({
   }
 
   function startSpeechRequest(request) {
+    request.audio = [];
+    request.spokenTranscript = '';
+    request.responseId = '';
+    request.attempt = Number(request.attempt || 0) + 1;
     speechRequests.set(request.id, request);
+
     const sent = sendJson(ws, {
       type: 'response.create',
       response: {
@@ -54,10 +73,12 @@ export function createRealtimeVoice({
         output_modalities: ['audio'],
         metadata: { speech_request_id: request.id },
         instructions: [
-          'Speak only the exact text below.',
-          'Do not add, remove, paraphrase, answer, or comment on it.',
-          'Speak clearly, warmly, and naturally for a telephone call.',
-          `TEXT: ${request.text}`,
+          'Read the quoted text verbatim.',
+          'Your entire spoken response must contain exactly the quoted text and nothing else.',
+          'Do not answer it. Do not paraphrase it. Do not add introductions, advice, explanations, or conclusions.',
+          'Preserve every word and the original order.',
+          `QUOTE START: ${request.text}`,
+          'QUOTE END',
         ].join('\n'),
         max_output_tokens: 512,
       },
@@ -66,6 +87,18 @@ export function createRealtimeVoice({
       speechRequests.delete(request.id);
       request.reject(new Error('Realtime voice socket is not open.'));
     }
+  }
+
+  function retryOrRejectMismatch(request) {
+    if (request.attempt < MAX_EXACT_SPEECH_ATTEMPTS && ready && !closed) {
+      startSpeechRequest(request);
+      return;
+    }
+    const error = new Error('Realtime voice did not speak the exact requested phrase.');
+    error.code = 'REALTIME_SPEECH_MISMATCH';
+    error.expectedText = request.text;
+    error.actualText = request.spokenTranscript;
+    request.reject(error);
   }
 
   function flushPending() {
@@ -132,6 +165,18 @@ export function createRealtimeVoice({
       if (transcript) onTranscript?.(transcript);
       return;
     }
+    if (event.type === 'response.output_audio_transcript.delta') {
+      const request = [...speechRequests.values()].find((item) => item.responseId === event.response_id)
+        || [...speechRequests.values()].find((item) => !item.responseId);
+      if (request && event.delta) request.spokenTranscript += String(event.delta);
+      return;
+    }
+    if (event.type === 'response.output_audio_transcript.done') {
+      const request = [...speechRequests.values()].find((item) => item.responseId === event.response_id)
+        || [...speechRequests.values()].find((item) => !item.responseId);
+      if (request && event.transcript) request.spokenTranscript = String(event.transcript).trim();
+      return;
+    }
     if (event.type === 'response.output_audio.delta') {
       const request = [...speechRequests.values()].find((item) => item.responseId === event.response_id)
         || [...speechRequests.values()].find((item) => !item.responseId);
@@ -152,6 +197,12 @@ export function createRealtimeVoice({
       const [requestId, request] = entry;
       speechRequests.delete(requestId);
       if (event.response?.status !== 'completed') return request.reject(new Error(`Realtime speech response ${event.response?.status || 'failed'}.`));
+
+      if (request.spokenTranscript && !exactSpeechMatches(request.text, request.spokenTranscript)) {
+        retryOrRejectMismatch(request);
+        return;
+      }
+
       const pcmu = Buffer.concat(request.audio);
       if (!pcmu.length) return request.reject(new Error('Realtime speech returned no audio.'));
       request.resolve(splitPcmuFrames(pcmu));
@@ -181,7 +232,16 @@ export function createRealtimeVoice({
       const value = String(text || '').trim();
       if (!value) return Promise.resolve([]);
       return new Promise((resolve, reject) => {
-        const request = { id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`, text: value, audio: [], responseId: '', resolve, reject };
+        const request = {
+          id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          text: value,
+          audio: [],
+          spokenTranscript: '',
+          responseId: '',
+          attempt: 0,
+          resolve,
+          reject,
+        };
         if (ready) startSpeechRequest(request);
         else pendingSpeech.push(request);
       });
