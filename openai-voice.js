@@ -29,12 +29,8 @@ export function createRealtimeVoice({
   let terminalErrorReported = false;
 
   const ws = new WebSocket(
-    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.realtimeVoice)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-    },
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.realtime)}`,
+    { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } },
   );
 
   function reportError(error, { terminal = false } = {}) {
@@ -50,14 +46,13 @@ export function createRealtimeVoice({
   }
 
   function startSpeechRequest(request) {
-    const metadata = { speech_request_id: request.id };
     speechRequests.set(request.id, request);
     const sent = sendJson(ws, {
       type: 'response.create',
       response: {
         conversation: 'none',
         output_modalities: ['audio'],
-        metadata,
+        metadata: { speech_request_id: request.id },
         instructions: [
           'Speak only the exact text below.',
           'Do not add, remove, paraphrase, answer, or comment on it.',
@@ -74,9 +69,7 @@ export function createRealtimeVoice({
   }
 
   function flushPending() {
-    pendingAudio.splice(0).forEach((audio) => {
-      sendJson(ws, { type: 'input_audio_buffer.append', audio });
-    });
+    pendingAudio.splice(0).forEach((audio) => sendJson(ws, { type: 'input_audio_buffer.append', audio }));
     pendingSpeech.splice(0).forEach(startSpeechRequest);
   }
 
@@ -86,9 +79,9 @@ export function createRealtimeVoice({
       type: 'session.update',
       session: {
         type: 'realtime',
-        model: MODELS.realtimeVoice,
+        model: MODELS.realtime,
         output_modalities: ['audio'],
-        instructions: 'Act only as a low-latency telephone voice transport. Never answer caller questions unless explicit response instructions are supplied by the application.',
+        instructions: 'Act only as an exact telephone voice transport. Never invent caller speech and never answer unless the application supplies exact response text.',
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
@@ -96,7 +89,6 @@ export function createRealtimeVoice({
             transcription: {
               model: MODELS.transcription,
               language: 'en',
-              prompt: 'A caller speaking with a residential painting company receptionist.',
             },
             turn_detection: {
               type: 'semantic_vad',
@@ -123,24 +115,16 @@ export function createRealtimeVoice({
     if (event.type === 'error') {
       const error = new Error(event.error?.message || 'Realtime voice error');
       error.code = event.error?.code || event.error?.type || '';
-      error.param = event.error?.param || '';
-      error.eventId = event.event_id || '';
       rejectSpeechRequests(error);
       reportError(error);
       return;
     }
-
     if (event.type === 'session.updated') {
       ready = true;
-      onReady?.({
-        ...event.session,
-        realtimeVoiceModel: MODELS.realtimeVoice,
-        transcriptionModel: MODELS.transcription,
-      });
+      onReady?.({ ...event.session, realtimeVoiceModel: MODELS.realtime, transcriptionModel: MODELS.transcription });
       flushPending();
       return;
     }
-
     if (event.type === 'input_audio_buffer.speech_started') return onSpeechStarted?.();
     if (event.type === 'input_audio_buffer.speech_stopped') return onSpeechStopped?.();
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
@@ -148,39 +132,28 @@ export function createRealtimeVoice({
       if (transcript) onTranscript?.(transcript);
       return;
     }
-
     if (event.type === 'response.output_audio.delta') {
-      const requestId = event.response_id
-        ? [...speechRequests.keys()].find((id) => speechRequests.get(id)?.responseId === event.response_id)
-        : null;
-      const request = requestId ? speechRequests.get(requestId) : [...speechRequests.values()].find((item) => !item.responseId);
+      const request = [...speechRequests.values()].find((item) => item.responseId === event.response_id)
+        || [...speechRequests.values()].find((item) => !item.responseId);
       if (!request || !event.delta) return;
       if (event.response_id && !request.responseId) request.responseId = event.response_id;
       request.audio.push(Buffer.from(event.delta, 'base64'));
       return;
     }
-
     if (event.type === 'response.created') {
       const request = [...speechRequests.values()].find((item) => !item.responseId);
       if (request) request.responseId = event.response?.id || '';
       return;
     }
-
     if (event.type === 'response.done') {
       const responseId = event.response?.id || '';
       const entry = [...speechRequests.entries()].find(([, request]) => request.responseId === responseId);
       if (!entry) return;
       const [requestId, request] = entry;
       speechRequests.delete(requestId);
-      if (event.response?.status !== 'completed') {
-        request.reject(new Error(`Realtime speech response ${event.response?.status || 'failed'}.`));
-        return;
-      }
+      if (event.response?.status !== 'completed') return request.reject(new Error(`Realtime speech response ${event.response?.status || 'failed'}.`));
       const pcmu = Buffer.concat(request.audio);
-      if (!pcmu.length) {
-        request.reject(new Error('Realtime speech returned no audio.'));
-        return;
-      }
+      if (!pcmu.length) return request.reject(new Error('Realtime speech returned no audio.'));
       request.resolve(splitPcmuFrames(pcmu));
     }
   });
@@ -194,8 +167,7 @@ export function createRealtimeVoice({
     const reason = String(reasonBuffer || '').trim();
     const error = new Error(`Realtime voice socket closed (${code})${reason ? `: ${reason}` : ''}`);
     rejectSpeechRequests(error);
-    if (closed || terminalErrorReported) return;
-    reportError(error, { terminal: true });
+    if (!closed && !terminalErrorReported) reportError(error, { terminal: true });
   });
 
   return {
@@ -209,14 +181,7 @@ export function createRealtimeVoice({
       const value = String(text || '').trim();
       if (!value) return Promise.resolve([]);
       return new Promise((resolve, reject) => {
-        const request = {
-          id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          text: value,
-          audio: [],
-          responseId: '',
-          resolve,
-          reject,
-        };
+        const request = { id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`, text: value, audio: [], responseId: '', resolve, reject };
         if (ready) startSpeechRequest(request);
         else pendingSpeech.push(request);
       });
