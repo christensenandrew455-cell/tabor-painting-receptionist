@@ -7,6 +7,7 @@ import {
   markDeterministicCompletions,
   nextRequiredQuestion,
 } from '../modular-intake-logic.js';
+import { resolveEstimateDate } from '../estimate-date.js';
 import { MODELS } from '../modular-models.js';
 import {
   applyRealtimeInterpretation,
@@ -36,6 +37,7 @@ const coreStub = Object.freeze({
   contactConsentQuestion: 'Do you consent to being contacted by Tabor Painting?',
   normalizePreferredTime(value) {
     const normalized = String(value).replace(/\./g, '').trim().toLowerCase();
+    if (/^12(?::00)?(?:\s*pm)?$/.test(normalized)) return '12:00 PM';
     if (/^1(?::00)?(?:\s*pm)?$/.test(normalized)) return '1:00 PM';
     if (/^2(?::00)?(?:\s*pm)?$/.test(normalized)) return '2:00 PM';
     if (/^3(?::00)?(?:\s*pm)?$/.test(normalized)) return '3:00 PM';
@@ -49,11 +51,13 @@ const completeLead = Object.freeze({
   name: 'Andrew Christensen',
   service: 'interior painting',
   projectLocation: '197 Lancaster Road, Berlin, MA',
-  preferredDate: 'Monday',
+  preferredDate: '8/3/26',
   preferredTime: '2:00 PM',
   notes: 'none',
   contactConsent: true,
 });
+
+const AUGUST_FIRST_2026 = new Date('2026-08-01T16:00:00.000Z');
 
 test('Realtime Mini is the active interpretation brain', () => {
   assert.equal(MODELS.brain, MODELS.realtime);
@@ -141,6 +145,33 @@ test('Realtime interpretation removes leading fillers from names', () => {
   assert.equal(result.lead.name, 'Andrew Christensen');
 });
 
+test('weekday phrases resolve to the next actual calendar date', () => {
+  assert.equal(resolveEstimateDate('Monday', { now: AUGUST_FIRST_2026 }), '8/3/26');
+  assert.equal(resolveEstimateDate('next Monday', { now: AUGUST_FIRST_2026 }), '8/3/26');
+});
+
+test('explicit dates are preserved and past dates are rejected', () => {
+  assert.equal(resolveEstimateDate('8/17/26', { now: AUGUST_FIRST_2026 }), '8/17/26');
+  assert.equal(resolveEstimateDate('6/17/26', { now: AUGUST_FIRST_2026 }), '');
+});
+
+test('Monday at twelve becomes an actual date and normalized time', () => {
+  const result = applyRealtimeInterpretation(coreStub, {
+    ...completeLead,
+    preferredDate: null,
+    preferredTime: null,
+  }, {
+    action: 'answer',
+    ack: 'sounds_good',
+    updates: {
+      preferredDate: 'Monday',
+      preferredTime: 'twelve',
+    },
+  }, { now: AUGUST_FIRST_2026 });
+  assert.equal(result.lead.preferredDate, '8/3/26');
+  assert.equal(result.lead.preferredTime, '12:00 PM');
+});
+
 test('Realtime interpretation normalizes spoken-number estimate times', () => {
   const result = applyRealtimeInterpretation(coreStub, {
     ...completeLead,
@@ -153,8 +184,8 @@ test('Realtime interpretation normalizes spoken-number estimate times', () => {
       preferredDate: 'Monday',
       preferredTime: 'two',
     },
-  });
-  assert.equal(result.lead.preferredDate, 'Monday');
+  }, { now: AUGUST_FIRST_2026 });
+  assert.equal(result.lead.preferredDate, '8/3/26');
   assert.equal(result.lead.preferredTime, '2:00 PM');
 });
 
@@ -170,8 +201,8 @@ test('out-of-schedule interpreted times are rejected by business validation', ()
       preferredDate: 'Friday',
       preferredTime: '6:00 PM',
     },
-  });
-  assert.equal(result.lead.preferredDate, 'Friday');
+  }, { now: AUGUST_FIRST_2026 });
+  assert.equal(result.lead.preferredDate, '8/7/26');
   assert.equal(result.lead.preferredTime, null);
 });
 
