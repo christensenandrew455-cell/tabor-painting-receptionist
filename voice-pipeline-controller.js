@@ -16,6 +16,11 @@ import {
   validationLeadFromModular,
   validationQuestion,
 } from './modular-intake-logic.js';
+import {
+  applyRealtimeInterpretation,
+  buildRealtimeTurnPrompt,
+  parseRealtimeTurnInterpretation,
+} from './realtime-turn-interpreter.js';
 import { PHRASE_KEYS, receptionistPhrase } from './receptionist-phrases.js';
 
 const QUESTION_IDS = Object.freeze([
@@ -25,23 +30,25 @@ const QUESTION_IDS = Object.freeze([
 ]);
 const ESTIMATE_QUESTION_IDS = new Set(ESTIMATE_ORDER);
 const SILENCE_REPEAT_MS = 5000;
-const RESTART_PATTERN = /\b(?:restart|start over|resubmit|do it again|fill (?:it|the form) out again)\b/i;
-const IDENTITY_PATTERN = /\b(?:are you|is this)\s+(?:an?\s+)?(?:ai|bot|robot|human|person|real person)\b/i;
-const WHY_PATTERN = /\b(?:why|what do you need that for|why do you need|what is that for)\b/i;
-const OFF_TOPIC_PATTERN = /\b(?:pizza|taxi|uber|weather|sports|politics|medical|lawyer|police|fire department)\b/i;
 const SIMPLE_YES = /^(?:yes|yeah|yep|ya|yah|sure|okay|ok|correct|right|sounds good|that's right|that is right)[.!?\s]*$/i;
 const SIMPLE_NO = /^(?:no|nope|nah|ne|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$/i;
 const SUMMARY_CORRECTION_PATTERN = /\b(?:but|except|actually|correction|wrong|not correct|isn't right|is not right|change|update)\b/i;
 const NO_NOTES_PATTERN = /^(?:no|nope|nah|ne)[.!?\s]*$|\b(?:no additional notes?|no notes?|do not have any notes?|don't have any notes?|nothing else|none|didn't give you any additional notes|did not give you any additional notes)\b/i;
-const QUESTION_LIKE_PATTERN = /\?\s*$|^(?:what|why|how|when|where|who|now|hello|huh|sorry)\b/i;
-const NEGATIVE_SERVICE_DETAIL_PATTERN = /\b(?:peeling|looks bad|really bad|rough|damaged|rotting|chipping|cracking|faded)\b/i;
+
+const ACK_PHRASE_KEYS = Object.freeze({
+  sorry: PHRASE_KEYS.ACK_SORRY,
+  sounds_good: PHRASE_KEYS.ACK_GOOD,
+  thanks: PHRASE_KEYS.ACK_THANKS,
+  thanks_name: PHRASE_KEYS.ACK_THANKS_NAME,
+  got_it: PHRASE_KEYS.ACK_GOT_IT,
+});
 
 function clean(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
 function isSpeechCancellation(error) {
-  return /speech cancel(?:led|ed)|realtime speech cancelled/i.test(error?.message || String(error));
+  return /speech (?:synthesis )?cancel(?:led|ed)|realtime speech cancelled/i.test(error?.message || String(error));
 }
 
 function emptyLead() {
@@ -98,29 +105,53 @@ function whyPhraseKey(questionId) {
   }[questionId] || null;
 }
 
-function isSafeNotesAnswer(text) {
-  if (NO_NOTES_PATTERN.test(text)) return true;
-  if (QUESTION_LIKE_PATTERN.test(text)) return false;
-  return text.split(/\s+/).filter(Boolean).length >= 2;
+function acknowledgementFor(core, ack, lead) {
+  const key = ACK_PHRASE_KEYS[ack];
+  if (!key) return '';
+  if (ack === 'thanks_name' && !clean(lead.name)) return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS, lead);
+  return receptionistPhrase(core, key, lead);
 }
 
-function isExplicitConsentAnswer(text) {
-  return SIMPLE_YES.test(text) || SIMPLE_NO.test(text);
-}
-
-function isUnqualifiedSummaryYes(text) {
-  return SIMPLE_YES.test(text) && !SUMMARY_CORRECTION_PATTERN.test(text);
-}
-
-function acknowledgementFor(previousQuestionId, transcript, lead, core) {
-  if (previousQuestionId === 'service') {
-    return receptionistPhrase(core, NEGATIVE_SERVICE_DETAIL_PATTERN.test(transcript) ? PHRASE_KEYS.ACK_SORRY : PHRASE_KEYS.ACK_GOOD, lead);
+function markAllCompletions(memory, lead) {
+  let completed = memory.completedQuestionIds;
+  for (const questionId of ESTIMATE_ORDER) {
+    if (questionId === 'confirm_summary') continue;
+    completed = markDeterministicCompletions(questionId, lead, completed);
   }
-  if (previousQuestionId === 'name') return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS_NAME, lead);
-  if (previousQuestionId === 'project_location') return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS, lead);
-  if (previousQuestionId === 'preferred_date_time') return receptionistPhrase(core, PHRASE_KEYS.ACK_GOOD, lead);
-  if (previousQuestionId === 'notes' || previousQuestionId === 'contact_consent') return receptionistPhrase(core, PHRASE_KEYS.ACK_GOT_IT, lead);
-  return '';
+  memory.completedQuestionIds = completed;
+}
+
+function fallbackInterpretation(currentQuestionId, text) {
+  let action = 'answer';
+  if (SIMPLE_YES.test(text)) action = currentQuestionId === 'confirm_summary' ? 'summary_confirm' : 'yes';
+  else if (SIMPLE_NO.test(text)) action = currentQuestionId === 'more_questions' ? 'more_questions_no' : 'no';
+  return {
+    action,
+    ack: 'none',
+    updates: {
+      name: null,
+      service: null,
+      projectLocation: null,
+      preferredDate: null,
+      preferredTime: null,
+      notes: currentQuestionId === 'notes' && SIMPLE_NO.test(text) ? 'none' : null,
+      contactConsent: currentQuestionId === 'contact_consent'
+        ? SIMPLE_YES.test(text) ? true : SIMPLE_NO.test(text) ? false : null
+        : null,
+    },
+  };
+}
+
+function currentFieldChanged(questionId, changedFields) {
+  const fields = {
+    service: ['service'],
+    name: ['name'],
+    project_location: ['projectLocation'],
+    preferred_date_time: ['preferredDate', 'preferredTime'],
+    notes: ['notes'],
+    contact_consent: ['contactConsent'],
+  }[questionId] || [];
+  return fields.some((field) => changedFields.includes(field));
 }
 
 function applySummaryCorrections(text, lead) {
@@ -255,7 +286,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     const reply = clean(text);
     if (!reply || state.stopped) return;
     stopSpeaking();
-    debug('tts.requested', { engine: 'realtime', reply, currentQuestionId: state.memory.currentQuestionId, pendingQuestionId: questionId, scheduleRepeat, endAfterPlaybackReason });
+    debug('tts.requested', {
+      engine: 'speech-api',
+      reply,
+      currentQuestionId: state.memory.currentQuestionId,
+      pendingQuestionId: questionId,
+      scheduleRepeat,
+      endAfterPlaybackReason,
+    });
     const generation = state.generation;
     state.ttsPending = true;
     state.pendingReplyText = reply;
@@ -330,93 +368,143 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       return;
     }
 
-    state.turnRevision += 1;
+    const turnRevision = ++state.turnRevision;
     const currentQuestionId = state.memory.currentQuestionId;
     remember('caller', text);
     debug('caller.transcript', { transcript: text, currentQuestionId, lead: state.lead, memory: state.memory });
 
-    if (isControlSpeech(text)) return speak(controlSpeechReply(runtime.core, currentQuestionId, state.lead), { questionId: currentQuestionId });
-    if (IDENTITY_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.AI_IDENTITY, state.lead));
-    if (RESTART_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.RESTART_BLOCKED, state.lead));
-    if (OFF_TOPIC_PATTERN.test(text)) return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.OFF_TOPIC, state.lead));
+    if (isControlSpeech(text)) {
+      return speak(controlSpeechReply(runtime.core, currentQuestionId, state.lead), { questionId: currentQuestionId });
+    }
 
-    if (WHY_PATTERN.test(text)) {
+    let interpretation;
+    try {
+      const prompt = buildRealtimeTurnPrompt({
+        core: runtime.core,
+        transcript: text,
+        currentQuestionId,
+        lead: state.lead,
+        history: state.history,
+      });
+      debug('realtime_interpreter.request', { turnRevision, currentQuestionId, transcript: text });
+      const rawInterpretation = await realtimeVoice.interpret(prompt);
+      if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
+        debug('realtime_interpreter.stale_discarded', { turnRevision, currentTurnRevision: state.turnRevision });
+        return;
+      }
+      interpretation = parseRealtimeTurnInterpretation(rawInterpretation);
+      debug('realtime_interpreter.response', { turnRevision, interpretation });
+    } catch (error) {
+      if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) return;
+      log.warn('[Realtime interpretation failed; using deterministic fallback]', error?.message || String(error));
+      interpretation = fallbackInterpretation(currentQuestionId, text);
+      debug('realtime_interpreter.fallback', { turnRevision, interpretation });
+    }
+
+    if (interpretation.action === 'identity') {
+      return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.AI_IDENTITY, state.lead));
+    }
+    if (interpretation.action === 'restart') {
+      return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.RESTART_BLOCKED, state.lead));
+    }
+    if (interpretation.action === 'off_topic') {
+      return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.OFF_TOPIC, state.lead));
+    }
+    if (interpretation.action === 'why') {
       const whyKey = whyPhraseKey(currentQuestionId);
-      const prefix = whyKey ? receptionistPhrase(runtime.core, whyKey, state.lead) : receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead);
+      const prefix = whyKey
+        ? receptionistPhrase(runtime.core, whyKey, state.lead)
+        : receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead);
       return askQuestion(currentQuestionId === 'none' ? 'ask_estimate' : currentQuestionId, prefix);
     }
 
     if (currentQuestionId === 'ask_estimate' || currentQuestionId === 'continue_estimate') {
-      if (SIMPLE_YES.test(text)) {
+      if (interpretation.action === 'yes') {
         state.memory.estimateStarted = true;
         return askQuestion('service');
       }
-      if (SIMPLE_NO.test(text)) return askQuestion('more_questions');
+      if (interpretation.action === 'no') return askQuestion('more_questions');
       return askQuestion(currentQuestionId, receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead));
     }
 
     if (currentQuestionId === 'more_questions') {
-      if (SIMPLE_NO.test(text)) return speakClosingAndEnd();
+      if (interpretation.action === 'no' || interpretation.action === 'more_questions_no') return speakClosingAndEnd();
       return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead), { questionId: 'more_questions' });
     }
 
-    if (currentQuestionId === 'confirm_summary') {
-      const correction = applySummaryCorrections(text, state.lead);
-      if (correction.changed.length) {
-        state.lead = correction.updated;
+    const before = { ...state.lead };
+    const applied = applyRealtimeInterpretation(runtime.core, state.lead, interpretation);
+    state.lead = applied.lead;
+
+    if (!currentFieldChanged(currentQuestionId, applied.changedFields)) {
+      state.lead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
+    }
+
+    if (currentQuestionId === 'notes' && interpretation.action === 'no' && !clean(state.lead.notes)) {
+      state.lead.notes = 'none';
+    }
+    if (currentQuestionId === 'contact_consent') {
+      if (interpretation.action === 'yes') state.lead.contactConsent = true;
+      if (interpretation.action === 'no') state.lead.contactConsent = false;
+    }
+
+    const changes = changedLeadFields(before, state.lead);
+    if (changes.length) {
+      if (state.memory.completedQuestionIds.includes('confirm_summary')) {
         state.memory.completedQuestionIds = state.memory.completedQuestionIds.filter((id) => id !== 'confirm_summary');
-        debug('summary.correction_applied', { transcript: text, changedFields: correction.changed, lead: state.lead });
+      }
+      markAllCompletions(state.memory, state.lead);
+      debug('lead.interpreted_committed', {
+        transcript: text,
+        currentQuestionId,
+        changedFields: changes,
+        lead: state.lead,
+      });
+    }
+
+    if (currentQuestionId === 'confirm_summary') {
+      const deterministicCorrection = applySummaryCorrections(text, state.lead);
+      if (deterministicCorrection.changed.length) {
+        state.lead = deterministicCorrection.updated;
+        state.memory.completedQuestionIds = state.memory.completedQuestionIds.filter((id) => id !== 'confirm_summary');
+        debug('summary.correction_applied', {
+          transcript: text,
+          changedFields: deterministicCorrection.changed,
+          lead: state.lead,
+        });
         return askQuestion('confirm_summary');
       }
-      if (isUnqualifiedSummaryYes(text)) {
+
+      const hasCorrection = interpretation.action === 'summary_correction'
+        || SUMMARY_CORRECTION_PATTERN.test(text)
+        || changes.length > 0;
+      if (hasCorrection) return askQuestion('confirm_summary');
+
+      if (interpretation.action === 'summary_confirm' || interpretation.action === 'yes') {
         state.memory.completedQuestionIds = mergeUnique(state.memory.completedQuestionIds, ['confirm_summary']);
         const submission = await submitLeadSafely();
-        if (submission.ok) return askQuestion('more_questions', receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_SUCCESS, state.lead).replace(baseQuestionFor(runtime.core, 'more_questions', state.lead), ''));
+        if (submission.ok) {
+          const success = receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_SUCCESS, state.lead)
+            .replace(baseQuestionFor(runtime.core, 'more_questions', state.lead), '');
+          return askQuestion('more_questions', success);
+        }
         if (submission.invalid) {
           const questionId = validationQuestion(submission.errors);
           removeCompletion(state.memory, questionId);
           const validationKey = validationPhraseKey(questionId);
           return askQuestion(questionId, validationKey ? receptionistPhrase(runtime.core, validationKey, state.lead) : '');
         }
-        return askQuestion('more_questions', receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_FAILURE, state.lead).replace(baseQuestionFor(runtime.core, 'more_questions', state.lead), ''));
+        const failure = receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_FAILURE, state.lead)
+          .replace(baseQuestionFor(runtime.core, 'more_questions', state.lead), '');
+        return askQuestion('more_questions', failure);
       }
+
       return askQuestion('confirm_summary', receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead));
-    }
-
-    const before = { ...state.lead };
-    let mayCapture = true;
-
-    if (currentQuestionId === 'notes') {
-      if (NO_NOTES_PATTERN.test(text)) {
-        state.lead.notes = 'none';
-        mayCapture = false;
-      } else if (!isSafeNotesAnswer(text)) {
-        mayCapture = false;
-      }
-    }
-
-    if (currentQuestionId === 'contact_consent') {
-      if (SIMPLE_YES.test(text)) {
-        state.lead.contactConsent = true;
-        mayCapture = false;
-      } else if (SIMPLE_NO.test(text)) {
-        state.lead.contactConsent = false;
-        mayCapture = false;
-      } else {
-        mayCapture = false;
-      }
-    }
-
-    if (mayCapture) state.lead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
-    const changes = changedLeadFields(before, state.lead);
-    if (changes.length) {
-      state.memory.completedQuestionIds = markDeterministicCompletions(currentQuestionId, state.lead, state.memory.completedQuestionIds);
-      debug('lead.deterministic_committed', { transcript: text, currentQuestionId, changedFields: changes, lead: state.lead });
     }
 
     const nextQuestion = nextRequiredQuestion(state.memory, state.lead);
     if (nextQuestion !== currentQuestionId) {
-      const acknowledgement = acknowledgementFor(currentQuestionId, text, state.lead, runtime.core);
+      const acknowledgement = acknowledgementFor(runtime.core, interpretation.ack, state.lead);
       return askQuestion(nextQuestion, acknowledgement);
     }
 
@@ -431,7 +519,11 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     silenceMs: runtime.core.SILENCE_DURATION_MS,
     voice: runtime.core.REALTIME_VOICE,
     speed: runtime.core.SPEECH_SPEED,
-    onReady: (session) => debug('realtime_voice.ready', { realtimeVoiceModel: session.realtimeVoiceModel, transcriptionModel: session.transcriptionModel }),
+    onReady: (session) => debug('realtime_voice.ready', {
+      realtimeVoiceModel: session.realtimeVoiceModel,
+      transcriptionModel: session.transcriptionModel,
+      speechModel: session.speechModel,
+    }),
     onSpeechStarted: () => {
       state.turnRevision += 1;
       clearSilenceTimer();
@@ -469,7 +561,11 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     snapshot() {
       return {
         lead: { ...state.lead },
-        memory: { ...state.memory, askedCounts: { ...state.memory.askedCounts }, completedQuestionIds: [...state.memory.completedQuestionIds] },
+        memory: {
+          ...state.memory,
+          askedCounts: { ...state.memory.askedCounts },
+          completedQuestionIds: [...state.memory.completedQuestionIds],
+        },
         history: [...state.history],
         speaking: state.speaking,
         ttsPending: state.ttsPending,
