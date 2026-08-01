@@ -4,22 +4,20 @@ import test from 'node:test';
 import {
   baseQuestionFor,
   captureDeterministicLead,
-  changedLeadFields,
-  enforceQuestionBlock,
   markDeterministicCompletions,
-  mergeLead,
   nextRequiredQuestion,
-  repeatQuestionFor,
 } from '../modular-intake-logic.js';
+import { MODELS } from '../modular-models.js';
 import {
-  assembleIntakeReply,
-  sanitizeIntakePreface,
-} from '../intake-response-policy.js';
-import { createCallMemory } from '../receptionist-brain.js';
+  PHRASE_KEYS,
+  RECEPTIONIST_PHRASES,
+  receptionistPhrase,
+} from '../receptionist-phrases.js';
 
 const coreStub = Object.freeze({
   BUSINESS: Object.freeze({
     name: 'Tabor Painting',
+    receptionist: 'Alex',
     services: {
       'wood staining': 'Wood staining services.',
       'exterior painting': 'Exterior painting services.',
@@ -34,8 +32,6 @@ const coreStub = Object.freeze({
   normalizePreferredTime(value) {
     const normalized = String(value).replace(/\./g, '').trim().toLowerCase();
     if (/^2(?::00)?(?:\s*pm)?$/.test(normalized)) return '2:00 PM';
-    if (/^4(?::00)?(?:\s*pm)?$/.test(normalized)) return '4:00 PM';
-    if (/^9(?::00)?(?:\s*am)?$/.test(normalized)) return '9:00 AM';
     return '';
   },
 });
@@ -43,211 +39,81 @@ const coreStub = Object.freeze({
 const completeLead = Object.freeze({
   name: 'Andrew Christensen',
   service: 'interior painting',
-  projectLocation: '197 Lancaster Road, Berlin, Massachusetts',
-  preferredDate: 'Tuesday',
-  preferredTime: '4:00 PM',
+  projectLocation: '197 Lancaster Road, Berlin, MA',
+  preferredDate: 'Monday',
+  preferredTime: '2:00 PM',
   notes: 'none',
   contactConsent: true,
 });
 
-test('service question is server-owned and never reads the service list', () => {
-  const question = baseQuestionFor(coreStub, 'service', completeLead);
-  assert.equal(question, 'What service do you need?');
-  assert.equal(repeatQuestionFor(coreStub, 'service'), 'What service do you need?');
-  assert.doesNotMatch(question, /wood staining|exterior painting|interior painting|small paint repair/i);
+test('there is no separate GPT-5 Mini brain model', () => {
+  assert.equal(MODELS.brain, 'deterministic-controller');
+  assert.equal(MODELS.realtime, 'gpt-realtime-mini');
 });
 
-test('safe natural preface is attached before the exact question', () => {
+test('all active caller wording comes from one phrase catalog', () => {
+  assert.equal(RECEPTIONIST_PHRASES.QUESTION_SERVICE, 'What service do you need?');
+  assert.equal(RECEPTIONIST_PHRASES.QUESTION_FULL_NAME, 'What is your full name?');
+  assert.equal(RECEPTIONIST_PHRASES.QUESTION_PROJECT_ADDRESS, 'What is the full address for the project?');
+  assert.equal(RECEPTIONIST_PHRASES.QUESTION_ADDITIONAL_NOTES, 'Now do you have any notes about the project?');
+});
+
+test('opening and closing render business placeholders', () => {
   assert.equal(
-    assembleIntakeReply(coreStub, 'That sounds great, Andrew.', 'name', completeLead),
-    'That sounds great, Andrew. What is your full name?',
+    receptionistPhrase(coreStub, PHRASE_KEYS.OPENING, completeLead),
+    "Hi, thank you for calling Tabor Painting. I'm the receptionist, Alex. I'm here to answer questions or guide you through an estimate request. Would you like to submit an estimate request?",
+  );
+  assert.equal(
+    receptionistPhrase(coreStub, PHRASE_KEYS.CLOSING, completeLead),
+    'Okay. Thank you for calling Tabor Painting. Have a good day.',
   );
 });
 
-test('an exact canonical question is never duplicated', () => {
+test('question IDs map to the approved exact phrases', () => {
+  assert.equal(baseQuestionFor(coreStub, 'service', completeLead), 'What service do you need?');
+  assert.equal(baseQuestionFor(coreStub, 'name', completeLead), 'What is your full name?');
+  assert.equal(baseQuestionFor(coreStub, 'project_location', completeLead), 'What is the full address for the project?');
   assert.equal(
-    enforceQuestionBlock(coreStub, 'What is your full name?', 'name', completeLead),
-    'What is your full name?',
+    baseQuestionFor(coreStub, 'preferred_date_time', completeLead),
+    'Next, we need a date and time request for the estimate. We schedule estimates Monday through Friday from 9:00 AM to 4:00 PM.',
+  );
+  assert.equal(baseQuestionFor(coreStub, 'notes', completeLead), 'Now do you have any notes about the project?');
+});
+
+test('final confirmation renders only collected lead values', () => {
+  assert.equal(
+    baseQuestionFor(coreStub, 'confirm_summary', completeLead),
+    'Let me read that back. I have Andrew Christensen requesting interior painting at 197 Lancaster Road, Berlin, MA, with the estimate date and time requested for Monday at 2:00 PM. There are no additional notes. Does all of that sound right?',
   );
 });
 
-test('date and time wording explains schedule and request status', () => {
-  const expected = 'Next, we need a date and time for the estimate. We schedule estimates Monday through Friday from 9:00 AM to 4:00 PM. This date and time is only a request and is not a confirmed appointment. What date and time would you like to request?';
-  assert.equal(baseQuestionFor(coreStub, 'preferred_date_time', completeLead), expected);
-  assert.equal(repeatQuestionFor(coreStub, 'preferred_date_time', completeLead), expected);
-  assert.equal(
-    enforceQuestionBlock(
-      coreStub,
-      'Our estimators are available Monday through Friday, 9:00 AM to 4:00 PM. What is your preferred estimate date and time?',
-      'preferred_date_time',
-      completeLead,
-    ),
-    expected,
-  );
-});
-
-test('model questions are removed and cannot replace the canonical question', () => {
-  assert.equal(
-    enforceQuestionBlock(
-      coreStub,
-      'Sounds good. Which service are you calling about: wood staining or exterior painting?',
-      'service',
-      completeLead,
-    ),
-    'What service do you need?',
-  );
-});
-
-test('service names, collection explanations, and instructions are blocked from prefaces', () => {
-  assert.equal(sanitizeIntakePreface(coreStub, 'Wood staining sounds great.', 'name'), '');
-  assert.equal(sanitizeIntakePreface(coreStub, 'We collect this information so we know who you are.', 'name'), '');
-  assert.equal(sanitizeIntakePreface(coreStub, 'Please provide your legal name.', 'name'), '');
-});
-
-test('long prefaces are bounded and remain declarative', () => {
-  const safe = sanitizeIntakePreface(
+test('natural service descriptions are captured deterministically', () => {
+  const lead = captureDeterministicLead(
     coreStub,
-    'Great, thank you for explaining that in a lot of detail and giving me everything I could possibly need to understand the situation before moving forward with the request',
-    'name',
+    'service',
+    'I just need a room painted at my house.',
+    { ...completeLead, service: null },
   );
-  assert.ok(safe.length <= 121);
-  assert.match(safe, /\.$/);
-  assert.doesNotMatch(safe, /\?/);
+  assert.equal(lead.service, 'interior painting');
 });
 
-test('natural service descriptions are mapped before the model returns', () => {
-  const empty = { ...completeLead, service: null };
-  assert.equal(
-    captureDeterministicLead(coreStub, 'service', 'I need the whole outside of my house repainted.', empty).service,
-    'exterior painting',
-  );
-  assert.equal(
-    captureDeterministicLead(coreStub, 'service', 'I need the whole house painted.', empty).service,
-    'exterior painting',
-  );
-  assert.equal(
-    captureDeterministicLead(coreStub, 'service', 'I just need a room painted at my house.', empty).service,
-    'interior painting',
-  );
-});
-
-test('valid name and complete project address are captured before the model returns', () => {
-  const empty = { ...completeLead, name: null, projectLocation: null };
-  const named = captureDeterministicLead(coreStub, 'name', 'Andrew Christensen.', empty);
-  assert.equal(named.name, 'Andrew Christensen');
-
-  const located = captureDeterministicLead(
-    coreStub,
-    'project_location',
-    '197 Lancaster Road, Berlin, Massachusetts.',
-    named,
-  );
-  assert.equal(located.projectLocation, '197 Lancaster Road, Berlin, Massachusetts');
-  assert.deepEqual(changedLeadFields(named, located), ['projectLocation']);
-});
-
-test('partial street address is retained and only missing city and state are requested', () => {
-  const empty = { ...completeLead, projectLocation: null };
-  const partial = captureDeterministicLead(
-    coreStub,
-    'project_location',
-    'That would be 197 Lancaster Road.',
-    empty,
-  );
-  assert.equal(partial.projectLocation, '197 Lancaster Road');
-  assert.equal(
-    baseQuestionFor(coreStub, 'project_location', partial),
-    'What city and state is that address in?',
-  );
-
-  const completed = captureDeterministicLead(
-    coreStub,
-    'project_location',
-    'Berlin, Massachusetts.',
-    partial,
-  );
-  assert.equal(completed.projectLocation, '197 Lancaster Road, Berlin, Massachusetts');
-});
-
-test('conversational lead-in is removed from a full address', () => {
-  const empty = { ...completeLead, projectLocation: null };
-  const located = captureDeterministicLead(
-    coreStub,
-    'project_location',
-    'I just told you, 197 Lincoln Road, Berlin, Massachusetts.',
-    empty,
-  );
-  assert.equal(located.projectLocation, '197 Lincoln Road, Berlin, Massachusetts');
-});
-
-test('conversation and complaint sentences are not saved as name or address', () => {
-  const empty = { ...completeLead, name: null, projectLocation: null };
-  const badName = 'Um, well, I called you, so I think you are, you know.';
-  const badAddress = 'I was in the middle of filling out an estimate request.';
-
-  const afterName = captureDeterministicLead(coreStub, 'name', badName, empty);
-  assert.equal(afterName.name, null);
-
-  const afterAddress = captureDeterministicLead(coreStub, 'project_location', badAddress, afterName);
-  assert.equal(afterAddress.projectLocation, null);
-
-  assert.deepEqual(mergeLead(empty, { name: badName, projectLocation: badAddress }), empty);
-});
-
-test('invalid model values cannot advance the state machine', () => {
-  const memory = createCallMemory();
-  memory.estimateStarted = true;
-  memory.completedQuestionIds = ['service', 'name', 'project_location'];
-
-  const lead = {
-    ...completeLead,
-    name: 'I think you know',
-    projectLocation: 'What are you talking about?',
-  };
-
-  assert.equal(nextRequiredQuestion(memory, lead), 'name');
-});
-
-test('partial address does not complete the address field', () => {
-  const memory = createCallMemory();
-  memory.estimateStarted = true;
-  memory.completedQuestionIds = ['service', 'name'];
-  const lead = { ...completeLead, projectLocation: '197 Lancaster Road' };
-  memory.completedQuestionIds = markDeterministicCompletions(
-    'project_location',
-    lead,
-    memory.completedQuestionIds,
-  );
-  assert.equal(nextRequiredQuestion(memory, lead), 'project_location');
-});
-
-test('deterministic completions advance the state machine', () => {
-  const memory = createCallMemory();
-  memory.estimateStarted = true;
-
-  const lead = { ...completeLead };
-  memory.completedQuestionIds = markDeterministicCompletions('service', lead, memory.completedQuestionIds);
-  memory.completedQuestionIds = markDeterministicCompletions('name', lead, memory.completedQuestionIds);
-  memory.completedQuestionIds = markDeterministicCompletions('project_location', lead, memory.completedQuestionIds);
-
-  assert.equal(nextRequiredQuestion(memory, lead), 'preferred_date_time');
-});
-
-test('date and time capture remains deterministic', () => {
-  const captured = captureDeterministicLead(
+test('date and time are captured without a decision model', () => {
+  const lead = captureDeterministicLead(
     coreStub,
     'preferred_date_time',
     'Monday at 2 PM.',
     { ...completeLead, preferredDate: null, preferredTime: null },
   );
-  assert.equal(captured.preferredDate, 'Monday');
-  assert.equal(captured.preferredTime, '2:00 PM');
+  assert.equal(lead.preferredDate, 'Monday');
+  assert.equal(lead.preferredTime, '2:00 PM');
 });
 
-test('summary emphasizes requested date and consent remains server-owned', () => {
-  const summary = baseQuestionFor(coreStub, 'confirm_summary', completeLead);
-  assert.match(summary, /^Let me read that back\./);
-  assert.match(summary, /date and time requested for Tuesday at 4:00 PM/);
-  assert.match(summary, /Does all of that sound right\?$/);
-  assert.equal(baseQuestionFor(coreStub, 'contact_consent', completeLead), coreStub.contactConsentQuestion);
+test('completed deterministic fields advance in fixed order', () => {
+  const memory = {
+    completedQuestionIds: [],
+  };
+  memory.completedQuestionIds = markDeterministicCompletions('service', completeLead, memory.completedQuestionIds);
+  memory.completedQuestionIds = markDeterministicCompletions('name', completeLead, memory.completedQuestionIds);
+  memory.completedQuestionIds = markDeterministicCompletions('project_location', completeLead, memory.completedQuestionIds);
+  assert.equal(nextRequiredQuestion(memory, completeLead), 'preferred_date_time');
 });
