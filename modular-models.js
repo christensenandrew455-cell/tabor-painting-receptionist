@@ -2,6 +2,7 @@ export const MODELS = Object.freeze({
   realtime: process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini',
   realtimeVoice: process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini',
   transcription: process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
+  brain: 'deterministic-controller',
   voice: process.env.AI_VOICE || 'alloy',
 });
 
