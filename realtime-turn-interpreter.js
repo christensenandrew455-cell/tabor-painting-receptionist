@@ -28,9 +28,37 @@ const ACTION_SET = new Set(INTERPRETER_ACTIONS);
 const ACK_SET = new Set(INTERPRETER_ACKS);
 const QUESTION_LIKE_PATTERN = /\?\s*$|^(?:what|why|how|when|where|who|hello|huh|sorry)\b/i;
 const NO_NOTES_PATTERN = /^(?:no|nope|nah|ne)[.!?\s]*$|\b(?:no additional notes?|no notes?|do not have any notes?|don't have any notes?|nothing else|none)\b/i;
+const LEADING_FILLER_PATTERN = /^(?:(?:um+|uh+|erm|hmm+|well|so|like)\b[,.;:\s-]*)+/i;
+const SPOKEN_HOURS = Object.freeze({
+  one: '1:00 PM',
+  two: '2:00 PM',
+  too: '2:00 PM',
+  three: '3:00 PM',
+  four: '4:00 PM',
+  nine: '9:00 AM',
+  ten: '10:00 AM',
+  eleven: '11:00 AM',
+  twelve: '12:00 PM',
+});
 
 function clean(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function cleanName(value) {
+  return clean(value)
+    .replace(LEADING_FILLER_PATTERN, '')
+    .replace(/[.!?,;:]+$/g, '')
+    .trim();
+}
+
+function normalizeSpokenTime(value) {
+  const text = clean(value);
+  if (!text) return '';
+  const simplified = text.toLowerCase().replace(/[.!?,]/g, '').trim();
+  if (SPOKEN_HOURS[simplified]) return SPOKEN_HOURS[simplified];
+  const wordMatch = simplified.match(/(?:at\s+)?(one|two|too|three|four|nine|ten|eleven|twelve)(?:\s*(?:o'clock)?)?$/i);
+  return wordMatch ? SPOKEN_HOURS[wordMatch[1].toLowerCase()] : text;
 }
 
 function nullableString(value, maxLength = 300) {
@@ -122,12 +150,12 @@ export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}
   const matchedService = configuredServices.find((candidate) => candidate.toLowerCase() === service);
   if (matchedService) next.service = matchedService;
 
-  if (updates.name) next = mergeLead(next, { name: updates.name });
+  if (updates.name) next = mergeLead(next, { name: cleanName(updates.name) });
   if (updates.projectLocation) next = mergeLead(next, { projectLocation: updates.projectLocation });
 
   if (updates.preferredDate) next.preferredDate = clean(updates.preferredDate);
   if (updates.preferredTime) {
-    const normalizedTime = clean(core.normalizePreferredTime(updates.preferredTime));
+    const normalizedTime = clean(core.normalizePreferredTime(normalizeSpokenTime(updates.preferredTime)));
     if (normalizedTime) next.preferredTime = normalizedTime;
   }
 
