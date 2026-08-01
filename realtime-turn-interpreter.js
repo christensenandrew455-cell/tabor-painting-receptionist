@@ -1,4 +1,5 @@
 import { changedLeadFields, mergeLead } from './modular-intake-logic.js';
+import { resolveEstimateDate } from './estimate-date.js';
 
 export const INTERPRETER_ACTIONS = Object.freeze([
   'answer',
@@ -102,6 +103,13 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     currentLead: lead,
     recentConversation: history.slice(-8),
     configuredServices: services,
+    currentDate: new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      weekday: 'long',
+    }).format(new Date()),
     estimateSchedule: {
       days: clean(core?.BUSINESS?.estimateDays),
       earliest: clean(core?.BUSINESS?.earliestEstimateStart),
@@ -129,7 +137,8 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     'Map decks, fences, wood, or staining to wood staining when that configured service exists.',
     'For names, remove fillers such as um, uh, well, like, or so. Return a real first and last name only when supplied.',
     'For addresses, return only the address information. A partial street address is allowed and may be combined later.',
-    'For dates and times, normalize spoken numbers. Example: Monday at two means preferredDate Monday and preferredTime 2:00 PM.',
+    'For dates and times, preserve the caller date phrase or explicit date in preferredDate. The application will convert weekdays, tomorrow, and written dates into an actual M/D/YY calendar date.',
+    'Normalize spoken time numbers. Example: Monday at two means preferredDate Monday and preferredTime 2:00 PM.',
     'Times outside the stated estimate schedule must be null so the controller can ask again.',
     'For notes, a clear no means notes is the string none. Do not save confused questions as notes.',
     'For consent, set contactConsent only for a clear yes or no.',
@@ -140,7 +149,7 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
   ].join('\n');
 }
 
-export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}) {
+export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}, options = {}) {
   const before = { ...lead };
   const updates = interpretation.updates || {};
   let next = { ...lead };
@@ -153,7 +162,10 @@ export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}
   if (updates.name) next = mergeLead(next, { name: cleanName(updates.name) });
   if (updates.projectLocation) next = mergeLead(next, { projectLocation: updates.projectLocation });
 
-  if (updates.preferredDate) next.preferredDate = clean(updates.preferredDate);
+  if (updates.preferredDate) {
+    const resolvedDate = resolveEstimateDate(updates.preferredDate, options);
+    if (resolvedDate) next.preferredDate = resolvedDate;
+  }
   if (updates.preferredTime) {
     const normalizedTime = clean(core.normalizePreferredTime(normalizeSpokenTime(updates.preferredTime)));
     if (normalizedTime) next.preferredTime = normalizedTime;
