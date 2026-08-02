@@ -60,8 +60,8 @@ const completeLead = Object.freeze({
 
 const AUGUST_FIRST_2026 = new Date('2026-08-01T16:00:00.000Z');
 
-test('Realtime Mini is the only configured AI model', () => {
-  assert.equal(MODELS.realtime, 'gpt-realtime-mini');
+test('GPT Realtime 2.1 mini is the only configured AI model', () => {
+  assert.equal(MODELS.realtime, 'gpt-realtime-2.1-mini');
   assert.equal(MODELS.realtimeVoice, MODELS.realtime);
   assert.equal(MODELS.brain, MODELS.realtime);
   assert.equal(Object.hasOwn(MODELS, 'transcription'), false);
