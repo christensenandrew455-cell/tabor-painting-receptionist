@@ -105,6 +105,8 @@ test('Realtime interpretation prompt forbids painter referrals and extra questio
   assert.match(prompt, /Never ask whether the caller will do the work themselves/i);
   assert.match(prompt, /Do not write a caller-facing response/i);
   assert.match(prompt, /configuredServices/);
+  assert.match(prompt, /Never copy unchanged values from currentLead/i);
+  assert.match(prompt, /summary_confirm or summary_correction only when currentQuestionId is confirm_summary/i);
 });
 
 test('Realtime interpretation parses only bounded actions, acknowledgements, and updates', () => {
@@ -143,6 +145,29 @@ test('Realtime interpretation removes leading fillers from names', () => {
     updates: { name: 'Um Andrew Christensen' },
   });
   assert.equal(result.lead.name, 'Andrew Christensen');
+});
+
+test('deterministic name fallback also removes leading fillers', () => {
+  const result = captureDeterministicLead(
+    coreStub,
+    'name',
+    'Um, Andrew Christensen.',
+    { ...completeLead, name: null },
+  );
+  assert.equal(result.name, 'Andrew Christensen');
+});
+
+test('an address correction does not change the saved name', () => {
+  const result = applyRealtimeInterpretation(coreStub, completeLead, {
+    action: 'summary_correction',
+    ack: 'thanks',
+    updates: {
+      projectLocation: '197 Lancaster Road, Berlin, MA',
+      name: null,
+    },
+  });
+  assert.equal(result.lead.name, 'Andrew Christensen');
+  assert.equal(result.lead.projectLocation, '197 Lancaster Road, Berlin, MA');
 });
 
 test('weekday phrases resolve to the next actual calendar date', () => {
