@@ -43,6 +43,25 @@ const ACK_PHRASE_KEYS = Object.freeze({
   got_it: PHRASE_KEYS.ACK_GOT_IT,
 });
 
+const QUESTION_FIELDS = Object.freeze({
+  service: ['service'],
+  name: ['name'],
+  project_location: ['projectLocation'],
+  preferred_date_time: ['preferredDate', 'preferredTime'],
+  notes: ['notes'],
+  contact_consent: ['contactConsent'],
+  confirm_summary: ['name', 'service', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent'],
+});
+
+const ALLOWED_ACKS = Object.freeze({
+  service: new Set(['sorry', 'sounds_good']),
+  name: new Set(['thanks', 'thanks_name']),
+  project_location: new Set(['thanks', 'got_it', 'sounds_good']),
+  preferred_date_time: new Set(['thanks', 'got_it', 'sounds_good']),
+  notes: new Set(['thanks', 'got_it']),
+  contact_consent: new Set(['thanks', 'got_it']),
+});
+
 function clean(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
@@ -105,9 +124,12 @@ function whyPhraseKey(questionId) {
   }[questionId] || null;
 }
 
-function acknowledgementFor(core, ack, lead) {
+function acknowledgementFor(core, ack, lead, previousQuestionId) {
+  const allowed = ALLOWED_ACKS[previousQuestionId];
+  if (!allowed?.has(ack)) return '';
   const key = ACK_PHRASE_KEYS[ack];
   if (!key) return '';
+  if (ack === 'thanks_name' && previousQuestionId !== 'name') return '';
   if (ack === 'thanks_name' && !clean(lead.name)) return receptionistPhrase(core, PHRASE_KEYS.ACK_THANKS, lead);
   return receptionistPhrase(core, key, lead);
 }
@@ -142,15 +164,59 @@ function fallbackInterpretation(currentQuestionId, text) {
   };
 }
 
+function fastInterpretation(currentQuestionId, text) {
+  const yes = SIMPLE_YES.test(text);
+  const no = SIMPLE_NO.test(text);
+  if (!yes && !no) return null;
+
+  if (currentQuestionId === 'ask_estimate' || currentQuestionId === 'continue_estimate') {
+    return fallbackInterpretation(currentQuestionId, text);
+  }
+  if (currentQuestionId === 'more_questions') {
+    return fallbackInterpretation(currentQuestionId, text);
+  }
+  if (currentQuestionId === 'notes' && no) {
+    return fallbackInterpretation(currentQuestionId, text);
+  }
+  if (currentQuestionId === 'contact_consent') {
+    return fallbackInterpretation(currentQuestionId, text);
+  }
+  if (currentQuestionId === 'confirm_summary' && yes) {
+    return fallbackInterpretation(currentQuestionId, text);
+  }
+  return null;
+}
+
+function hasUpdateValue(value) {
+  return typeof value === 'boolean' || (value !== null && value !== undefined && clean(value) !== '');
+}
+
+function interpretationHasCurrentField(questionId, interpretation) {
+  const fields = QUESTION_FIELDS[questionId] || [];
+  return fields.some((field) => hasUpdateValue(interpretation?.updates?.[field]));
+}
+
+function scopeInterpretation(questionId, interpretation) {
+  const allowedFields = new Set(QUESTION_FIELDS[questionId] || []);
+  const updates = interpretation?.updates || {};
+  return {
+    ...interpretation,
+    updates: {
+      name: allowedFields.has('name') ? updates.name ?? null : null,
+      service: allowedFields.has('service') ? updates.service ?? null : null,
+      projectLocation: allowedFields.has('projectLocation') ? updates.projectLocation ?? null : null,
+      preferredDate: allowedFields.has('preferredDate') ? updates.preferredDate ?? null : null,
+      preferredTime: allowedFields.has('preferredTime') ? updates.preferredTime ?? null : null,
+      notes: allowedFields.has('notes') ? updates.notes ?? null : null,
+      contactConsent: allowedFields.has('contactConsent') && typeof updates.contactConsent === 'boolean'
+        ? updates.contactConsent
+        : null,
+    },
+  };
+}
+
 function currentFieldChanged(questionId, changedFields) {
-  const fields = {
-    service: ['service'],
-    name: ['name'],
-    project_location: ['projectLocation'],
-    preferred_date_time: ['preferredDate', 'preferredTime'],
-    notes: ['notes'],
-    contact_consent: ['contactConsent'],
-  }[questionId] || [];
+  const fields = QUESTION_FIELDS[questionId] || [];
   return fields.some((field) => changedFields.includes(field));
 }
 
@@ -163,8 +229,8 @@ function applySummaryCorrections(text, lead) {
     changed.push('notes');
   }
 
-  const nameMatch = text.match(/\b(?:my name(?:'s| is)?|i'm|i am)\s+(?:not\s+[^,.]+[,;]?\s*)?(?:it's|it is|is)?\s*([A-Za-z][A-Za-z'’-]*)(?:\s+([A-Za-z][A-Za-z'’-]*))?/i)
-    || text.match(/\bnot\s+[A-Za-z][A-Za-z'’-]*[,;]?\s+(?:it's|it is)\s+([A-Za-z][A-Za-z'’-]*)(?:\s+([A-Za-z][A-Za-z'’-]*))?/i);
+  const nameMatch = text.match(/\b(?:my full name is|my name(?:'s| is)?)\s+(?:not\s+[^,.]+[,;]?\s*)?(?:it's|it is|is)?\s*([A-Za-z][A-Za-z'’-]*)(?:\s+([A-Za-z][A-Za-z'’-]*))?/i)
+    || text.match(/\b(?:i'm|i am)\s+([A-Za-z][A-Za-z'’-]*)(?:\s+([A-Za-z][A-Za-z'’-]*))?/i);
   if (nameMatch) {
     const first = nameMatch[1];
     const last = nameMatch[2] || clean(updated.name).split(/\s+/).slice(1).join(' ');
@@ -185,6 +251,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     history: [],
     speaking: false,
     ttsPending: false,
+    interpreting: false,
     stopped: false,
     generation: 0,
     turnRevision: 0,
@@ -286,6 +353,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     const reply = clean(text);
     if (!reply || state.stopped) return;
     stopSpeaking();
+    if (questionId !== 'none') state.memory.currentQuestionId = questionId;
     debug('tts.requested', {
       engine: 'speech-api',
       reply,
@@ -303,6 +371,15 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       frames = await realtimeVoice.synthesize(reply);
     } catch (error) {
       if (isSpeechCancellation(error) || state.stopped || generation !== state.generation) return;
+      state.ttsPending = false;
+      state.pendingReplyText = '';
+      state.pendingReplyRemembered = false;
+      state.pendingQuestionId = 'none';
+      debug('tts.failed', { reply, questionId, error: error?.message || String(error) });
+      if (questionId !== 'none') {
+        scheduleBaseQuestionRepeat(questionId);
+        return;
+      }
       throw error;
     }
     if (state.stopped || generation !== state.generation) return;
@@ -374,32 +451,43 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     debug('caller.transcript', { transcript: text, currentQuestionId, lead: state.lead, memory: state.memory });
 
     if (isControlSpeech(text)) {
-      return speak(controlSpeechReply(runtime.core, currentQuestionId, state.lead), { questionId: currentQuestionId });
+      const nextQuestionId = nextRequiredQuestion(state.memory, state.lead);
+      const effectiveQuestionId = nextQuestionId !== 'none' ? nextQuestionId : currentQuestionId;
+      return speak(controlSpeechReply(runtime.core, effectiveQuestionId, state.lead), { questionId: effectiveQuestionId });
     }
 
-    let interpretation;
-    try {
-      const prompt = buildRealtimeTurnPrompt({
-        core: runtime.core,
-        transcript: text,
-        currentQuestionId,
-        lead: state.lead,
-        history: state.history,
-      });
-      debug('realtime_interpreter.request', { turnRevision, currentQuestionId, transcript: text });
-      const rawInterpretation = await realtimeVoice.interpret(prompt);
-      if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
-        debug('realtime_interpreter.stale_discarded', { turnRevision, currentTurnRevision: state.turnRevision });
-        return;
+    let interpretation = fastInterpretation(currentQuestionId, text);
+    if (interpretation) {
+      debug('turn.fast_interpretation', { turnRevision, currentQuestionId, interpretation });
+    } else {
+      state.interpreting = true;
+      try {
+        const prompt = buildRealtimeTurnPrompt({
+          core: runtime.core,
+          transcript: text,
+          currentQuestionId,
+          lead: state.lead,
+          history: state.history,
+        });
+        debug('realtime_interpreter.request', { turnRevision, currentQuestionId, transcript: text });
+        const rawInterpretation = await realtimeVoice.interpret(prompt);
+        if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) {
+          debug('realtime_interpreter.stale_discarded', { turnRevision, currentTurnRevision: state.turnRevision });
+          return;
+        }
+        interpretation = parseRealtimeTurnInterpretation(rawInterpretation);
+        debug('realtime_interpreter.response', { turnRevision, interpretation });
+      } catch (error) {
+        if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) return;
+        log.warn('[Realtime interpretation failed; using deterministic fallback]', error?.message || String(error));
+        interpretation = fallbackInterpretation(currentQuestionId, text);
+        debug('realtime_interpreter.fallback', { turnRevision, interpretation });
+      } finally {
+        state.interpreting = false;
       }
-      interpretation = parseRealtimeTurnInterpretation(rawInterpretation);
-      debug('realtime_interpreter.response', { turnRevision, interpretation });
-    } catch (error) {
-      if (turnRevision !== state.turnRevision || state.stopped || state.closingStarted) return;
-      log.warn('[Realtime interpretation failed; using deterministic fallback]', error?.message || String(error));
-      interpretation = fallbackInterpretation(currentQuestionId, text);
-      debug('realtime_interpreter.fallback', { turnRevision, interpretation });
     }
+
+    interpretation = scopeInterpretation(currentQuestionId, interpretation);
 
     if (interpretation.action === 'identity') {
       return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.AI_IDENTITY, state.lead));
@@ -419,24 +507,27 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     if (currentQuestionId === 'ask_estimate' || currentQuestionId === 'continue_estimate') {
-      if (interpretation.action === 'yes') {
+      if (interpretation.action === 'yes' || SIMPLE_YES.test(text)) {
         state.memory.estimateStarted = true;
         return askQuestion('service');
       }
-      if (interpretation.action === 'no') return askQuestion('more_questions');
+      if (interpretation.action === 'no' || SIMPLE_NO.test(text)) return askQuestion('more_questions');
       return askQuestion(currentQuestionId, receptionistPhrase(runtime.core, PHRASE_KEYS.CLARIFY, state.lead));
     }
 
     if (currentQuestionId === 'more_questions') {
-      if (interpretation.action === 'no' || interpretation.action === 'more_questions_no') return speakClosingAndEnd();
+      if (interpretation.action === 'no' || interpretation.action === 'more_questions_no' || SIMPLE_NO.test(text)) {
+        return speakClosingAndEnd();
+      }
       return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead), { questionId: 'more_questions' });
     }
 
     const before = { ...state.lead };
+    const hadCurrentFieldUpdate = interpretationHasCurrentField(currentQuestionId, interpretation);
     const applied = applyRealtimeInterpretation(runtime.core, state.lead, interpretation);
     state.lead = applied.lead;
 
-    if (!currentFieldChanged(currentQuestionId, applied.changedFields)) {
+    if (!hadCurrentFieldUpdate && !currentFieldChanged(currentQuestionId, applied.changedFields)) {
       state.lead = captureDeterministicLead(runtime.core, currentQuestionId, text, state.lead);
     }
 
@@ -463,24 +554,28 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     if (currentQuestionId === 'confirm_summary') {
-      const deterministicCorrection = applySummaryCorrections(text, state.lead);
-      if (deterministicCorrection.changed.length) {
-        state.lead = deterministicCorrection.updated;
+      if (interpretation.action === 'summary_correction' && changes.length) {
         state.memory.completedQuestionIds = state.memory.completedQuestionIds.filter((id) => id !== 'confirm_summary');
-        debug('summary.correction_applied', {
-          transcript: text,
-          changedFields: deterministicCorrection.changed,
-          lead: state.lead,
-        });
         return askQuestion('confirm_summary');
       }
 
-      const hasCorrection = interpretation.action === 'summary_correction'
-        || SUMMARY_CORRECTION_PATTERN.test(text)
-        || changes.length > 0;
-      if (hasCorrection) return askQuestion('confirm_summary');
+      if (interpretation.action === 'summary_correction' || SUMMARY_CORRECTION_PATTERN.test(text)) {
+        const deterministicCorrection = applySummaryCorrections(text, state.lead);
+        if (deterministicCorrection.changed.length) {
+          state.lead = deterministicCorrection.updated;
+          state.memory.completedQuestionIds = state.memory.completedQuestionIds.filter((id) => id !== 'confirm_summary');
+          debug('summary.correction_applied', {
+            transcript: text,
+            changedFields: deterministicCorrection.changed,
+            lead: state.lead,
+          });
+        }
+        return askQuestion('confirm_summary');
+      }
 
-      if (interpretation.action === 'summary_confirm' || interpretation.action === 'yes') {
+      if (changes.length > 0) return askQuestion('confirm_summary');
+
+      if (interpretation.action === 'summary_confirm' || interpretation.action === 'yes' || SIMPLE_YES.test(text)) {
         state.memory.completedQuestionIds = mergeUnique(state.memory.completedQuestionIds, ['confirm_summary']);
         const submission = await submitLeadSafely();
         if (submission.ok) {
@@ -504,7 +599,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
     const nextQuestion = nextRequiredQuestion(state.memory, state.lead);
     if (nextQuestion !== currentQuestionId) {
-      const acknowledgement = acknowledgementFor(runtime.core, interpretation.ack, state.lead);
+      const acknowledgement = acknowledgementFor(runtime.core, interpretation.ack, state.lead, currentQuestionId);
       return askQuestion(nextQuestion, acknowledgement);
     }
 
@@ -525,7 +620,6 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       speechModel: session.speechModel,
     }),
     onSpeechStarted: () => {
-      state.turnRevision += 1;
       clearSilenceTimer();
       if (state.speaking || state.ttsPending || state.queuedFrames.length) stopSpeaking();
     },
@@ -569,6 +663,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         history: [...state.history],
         speaking: state.speaking,
         ttsPending: state.ttsPending,
+        interpreting: state.interpreting,
         turnRevision: state.turnRevision,
         pendingCallerFragment: state.pendingCallerFragment,
         greetingSent: state.greetingSent,
