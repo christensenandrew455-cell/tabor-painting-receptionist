@@ -1,4 +1,4 @@
-const REALTIME_MODEL = process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini';
+const REALTIME_MODEL = 'gpt-realtime-2.1-mini';
 
 export const MODELS = Object.freeze({
   realtime: REALTIME_MODEL,
