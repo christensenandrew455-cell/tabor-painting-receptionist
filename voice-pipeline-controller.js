@@ -31,9 +31,10 @@ const QUESTION_IDS = Object.freeze([
 const ESTIMATE_QUESTION_IDS = new Set(ESTIMATE_ORDER);
 const SILENCE_REPEAT_MS = 5000;
 const SIMPLE_YES = /^(?:yes|yeah|yep|ya|yah|sure|okay|ok|correct|right|sounds good|that's right|that is right)[.!?\s]*$/i;
-const SIMPLE_NO = /^(?:no|nope|nah|ne|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$/i;
+const SIMPLE_NO = /^(?:no|nope|nah|ne|não|nao|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$/i;
+const MORE_QUESTIONS_NO = /^(?:no|nope|nah|ne|não|nao|not really|nothing else|no more questions?|that's all|that is all|i'm all set|im all set)[.!?\s]*$|\b(?:i said no|said no|no more questions?|do not have any more questions?|don't have any more questions?)\b/i;
 const SUMMARY_CORRECTION_PATTERN = /\b(?:but|except|actually|correction|wrong|not correct|isn't right|is not right|change|update)\b/i;
-const NO_NOTES_PATTERN = /^(?:no|nope|nah|ne)[.!?\s]*$|\b(?:no additional notes?|no notes?|do not have any notes?|don't have any notes?|nothing else|none|didn't give you any additional notes|did not give you any additional notes)\b/i;
+const NO_NOTES_PATTERN = /^(?:no|nope|nah|ne|não|nao)[.!?\s]*$|\b(?:no additional notes?|no notes?|do not have any notes?|don't have any notes?|nothing else|none|didn't give you any additional notes|did not give you any additional notes)\b/i;
 
 const ACK_PHRASE_KEYS = Object.freeze({
   sorry: PHRASE_KEYS.ACK_SORRY,
@@ -146,7 +147,9 @@ function markAllCompletions(memory, lead) {
 function fallbackInterpretation(currentQuestionId, text) {
   let action = 'answer';
   if (SIMPLE_YES.test(text)) action = currentQuestionId === 'confirm_summary' ? 'summary_confirm' : 'yes';
-  else if (SIMPLE_NO.test(text)) action = currentQuestionId === 'more_questions' ? 'more_questions_no' : 'no';
+  else if (SIMPLE_NO.test(text) || (currentQuestionId === 'more_questions' && MORE_QUESTIONS_NO.test(text))) {
+    action = currentQuestionId === 'more_questions' ? 'more_questions_no' : 'no';
+  }
   return {
     action,
     ack: 'none',
@@ -166,7 +169,7 @@ function fallbackInterpretation(currentQuestionId, text) {
 
 function fastInterpretation(currentQuestionId, text) {
   const yes = SIMPLE_YES.test(text);
-  const no = SIMPLE_NO.test(text);
+  const no = SIMPLE_NO.test(text) || (currentQuestionId === 'more_questions' && MORE_QUESTIONS_NO.test(text));
   if (!yes && !no) return null;
 
   if (currentQuestionId === 'ask_estimate' || currentQuestionId === 'continue_estimate') {
@@ -252,6 +255,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     speaking: false,
     ttsPending: false,
     interpreting: false,
+    callerSpeaking: false,
     stopped: false,
     generation: 0,
     turnRevision: 0,
@@ -290,6 +294,10 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     if (!repeatQuestion || state.stopped || state.closingStarted) return;
     state.silenceTimer = setTimeout(() => {
       state.silenceTimer = null;
+      if (state.callerSpeaking || state.interpreting) {
+        scheduleBaseQuestionRepeat(questionId);
+        return;
+      }
       state.pendingCallerFragment = '';
       if (state.stopped || state.closingStarted || state.memory.currentQuestionId !== questionId) return;
       debug('silence.base_question_repeat', { questionId, baseQuestion: repeatQuestion });
@@ -355,7 +363,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     stopSpeaking();
     if (questionId !== 'none') state.memory.currentQuestionId = questionId;
     debug('tts.requested', {
-      engine: 'speech-api',
+      engine: 'realtime',
       reply,
       currentQuestionId: state.memory.currentQuestionId,
       pendingQuestionId: questionId,
@@ -516,7 +524,12 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     }
 
     if (currentQuestionId === 'more_questions') {
-      if (interpretation.action === 'no' || interpretation.action === 'more_questions_no' || SIMPLE_NO.test(text)) {
+      if (
+        interpretation.action === 'no'
+        || interpretation.action === 'more_questions_no'
+        || SIMPLE_NO.test(text)
+        || MORE_QUESTIONS_NO.test(text)
+      ) {
         return speakClosingAndEnd();
       }
       return speak(receptionistPhrase(runtime.core, PHRASE_KEYS.UNKNOWN_INFORMATION, state.lead), { questionId: 'more_questions' });
@@ -616,12 +629,14 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     speed: runtime.core.SPEECH_SPEED,
     onReady: (session) => debug('realtime_voice.ready', {
       realtimeVoiceModel: session.realtimeVoiceModel,
-      transcriptionModel: session.transcriptionModel,
-      speechModel: session.speechModel,
     }),
     onSpeechStarted: () => {
+      state.callerSpeaking = true;
       clearSilenceTimer();
       if (state.speaking || state.ttsPending || state.queuedFrames.length) stopSpeaking();
+    },
+    onSpeechStopped: () => {
+      state.callerSpeaking = false;
     },
     onTranscript: (value) => processTranscript(value).catch((error) => {
       if (!isSpeechCancellation(error)) log.error('[Transcript processing failed]', error);
@@ -647,6 +662,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
       state.stopped = true;
       state.turnRevision += 1;
       state.pendingCallerFragment = '';
+      state.callerSpeaking = false;
       clearSilenceTimer();
       stopSpeaking();
       realtimeVoice.close();
@@ -664,6 +680,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
         speaking: state.speaking,
         ttsPending: state.ttsPending,
         interpreting: state.interpreting,
+        callerSpeaking: state.callerSpeaking,
         turnRevision: state.turnRevision,
         pendingCallerFragment: state.pendingCallerFragment,
         greetingSent: state.greetingSent,
