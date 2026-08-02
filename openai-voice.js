@@ -1,11 +1,12 @@
 import { WebSocket } from 'ws';
 import { MODELS, TURN } from './modular-models.js';
-import { pcm24kToPcmu8k, splitPcmuFrames } from './audio-codec.js';
+import { splitPcmuFrames } from './audio-codec.js';
 
 const MAX_PENDING_AUDIO_CHUNKS = 250;
-const INTERPRETATION_TIMEOUT_MS = Math.max(1000, Number(process.env.AI_INTERPRETATION_TIMEOUT_MS || 5000));
-const SPEECH_TIMEOUT_MS = Math.max(2000, Number(process.env.AI_SPEECH_TIMEOUT_MS || 10000));
-const SPEECH_ATTEMPTS = Math.max(1, Number(process.env.AI_SPEECH_ATTEMPTS || 2));
+const TEXT_TIMEOUT_MS = Math.max(1500, Number(process.env.AI_INTERPRETATION_TIMEOUT_MS || 6000));
+const SPEECH_TIMEOUT_MS = Math.max(2500, Number(process.env.AI_SPEECH_TIMEOUT_MS || 10000));
+const TEXT_ATTEMPTS = Math.max(1, Number(process.env.AI_TEXT_ATTEMPTS || 2));
+const SPEECH_ATTEMPTS = Math.max(1, Number(process.env.AI_SPEECH_ATTEMPTS || 3));
 
 function sendJson(ws, payload) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
@@ -22,6 +23,19 @@ function responseText(response = {}) {
     .trim();
 }
 
+function normalizedSpeechText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/[^a-z0-9'\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function exactSpeechMatches(expected, actual) {
+  return normalizedSpeechText(expected) === normalizedSpeechText(actual);
+}
+
 export function createRealtimeVoice({
   onTranscript,
   onSpeechStarted,
@@ -33,16 +47,16 @@ export function createRealtimeVoice({
   voice = MODELS.voice,
   speed = 1,
 } = {}) {
-  void silenceMs;
-  void prefixPaddingMs;
-
   const pendingAudio = [];
-  const pendingInterpretations = [];
-  const interpretationRequests = new Map();
-  const activeSpeechControllers = new Set();
+  const pendingTextRequests = [];
+  const textRequests = new Map();
+  const pendingSpeechRequests = [];
+  const speechRequests = new Map();
   let closed = false;
   let ready = false;
   let terminalErrorReported = false;
+  let nativeTranscriptionBusy = false;
+  let committedTurnsWaiting = 0;
 
   const ws = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODELS.realtime)}`,
@@ -55,70 +69,212 @@ export function createRealtimeVoice({
     onError?.(error);
   }
 
-  function clearInterpretationTimer(request) {
+  function clearTimer(request) {
     if (request?.timer) clearTimeout(request.timer);
     if (request) request.timer = null;
   }
 
-  function rejectInterpretations(error) {
-    for (const request of interpretationRequests.values()) {
-      clearInterpretationTimer(request);
-      request.reject(error);
-    }
-    interpretationRequests.clear();
-    while (pendingInterpretations.length) {
-      const request = pendingInterpretations.shift();
-      clearInterpretationTimer(request);
-      request.reject(error);
-    }
-  }
-
-  function interpretationForEvent(event) {
+  function requestForEvent(map, event, metadataKey) {
     const responseId = event.response_id || event.response?.id || '';
     if (responseId) {
-      const entry = [...interpretationRequests.values()].find((request) => request.responseId === responseId);
-      if (entry) return entry;
+      const byResponse = [...map.values()].find((request) => request.responseId === responseId);
+      if (byResponse) return byResponse;
     }
 
-    const requestId = event.response?.metadata?.interpretation_request_id
-      || event.metadata?.interpretation_request_id;
-    if (requestId && interpretationRequests.has(requestId)) return interpretationRequests.get(requestId);
+    const requestId = event.response?.metadata?.[metadataKey]
+      || event.metadata?.[metadataKey];
+    if (requestId && map.has(requestId)) return map.get(requestId);
 
-    return [...interpretationRequests.values()].find((request) => !request.responseId) || null;
+    return [...map.values()].find((request) => !request.responseId) || null;
   }
 
-  function startInterpretation(request) {
+  function rejectTextRequests(error) {
+    for (const request of textRequests.values()) {
+      clearTimer(request);
+      request.reject(error);
+    }
+    textRequests.clear();
+    while (pendingTextRequests.length) {
+      const request = pendingTextRequests.shift();
+      clearTimer(request);
+      request.reject(error);
+    }
+  }
+
+  function rejectSpeechRequests(error) {
+    for (const request of speechRequests.values()) {
+      clearTimer(request);
+      request.reject(error);
+    }
+    speechRequests.clear();
+    while (pendingSpeechRequests.length) {
+      const request = pendingSpeechRequests.shift();
+      clearTimer(request);
+      request.reject(error);
+    }
+  }
+
+  function retryTextRequest(request, error) {
+    textRequests.delete(request.id);
+    clearTimer(request);
+    if (!closed && ready && request.attempt < request.maxAttempts) {
+      startTextRequest(request);
+      return;
+    }
+    request.reject(error);
+  }
+
+  function startTextRequest(request) {
     request.responseId = '';
     request.text = '';
-    clearInterpretationTimer(request);
-    interpretationRequests.set(request.id, request);
+    request.attempt = Number(request.attempt || 0) + 1;
+    clearTimer(request);
+    textRequests.set(request.id, request);
+
     request.timer = setTimeout(() => {
-      if (!interpretationRequests.has(request.id)) return;
-      interpretationRequests.delete(request.id);
-      request.reject(new Error('Realtime interpretation timed out.'));
-    }, INTERPRETATION_TIMEOUT_MS);
+      if (!textRequests.has(request.id)) return;
+      if (request.responseId) sendJson(ws, { type: 'response.cancel', response_id: request.responseId });
+      retryTextRequest(request, new Error(`${request.purpose} timed out.`));
+    }, TEXT_TIMEOUT_MS);
+
+    const sent = sendJson(ws, {
+      type: 'response.create',
+      response: {
+        conversation: request.conversation,
+        output_modalities: ['text'],
+        metadata: {
+          text_request_id: request.id,
+          text_request_purpose: request.purpose,
+        },
+        instructions: request.instructions,
+        max_output_tokens: request.maxOutputTokens,
+      },
+    });
+
+    if (!sent) {
+      retryTextRequest(request, new Error('Realtime socket is not open.'));
+    }
+  }
+
+  function requestText(instructions, {
+    conversation = 'none',
+    purpose = 'Realtime interpretation',
+    maxOutputTokens = 350,
+    maxAttempts = TEXT_ATTEMPTS,
+  } = {}) {
+    const value = String(instructions || '').trim();
+    if (!value) return Promise.reject(new Error('Realtime text instructions are required.'));
+
+    return new Promise((resolve, reject) => {
+      const request = {
+        id: `text_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        instructions: value,
+        conversation,
+        purpose,
+        maxOutputTokens,
+        maxAttempts,
+        attempt: 0,
+        responseId: '',
+        text: '',
+        timer: null,
+        resolve,
+        reject,
+      };
+      if (ready) startTextRequest(request);
+      else pendingTextRequests.push(request);
+    });
+  }
+
+  function retrySpeechRequest(request, error) {
+    speechRequests.delete(request.id);
+    clearTimer(request);
+    if (!closed && ready && request.attempt < SPEECH_ATTEMPTS) {
+      startSpeechRequest(request);
+      return;
+    }
+    request.reject(error);
+  }
+
+  function startSpeechRequest(request) {
+    request.audio = [];
+    request.spokenTranscript = '';
+    request.responseId = '';
+    request.attempt = Number(request.attempt || 0) + 1;
+    clearTimer(request);
+    speechRequests.set(request.id, request);
+
+    request.timer = setTimeout(() => {
+      if (!speechRequests.has(request.id)) return;
+      if (request.responseId) sendJson(ws, { type: 'response.cancel', response_id: request.responseId });
+      retrySpeechRequest(request, new Error('Realtime speech timed out.'));
+    }, SPEECH_TIMEOUT_MS);
 
     const sent = sendJson(ws, {
       type: 'response.create',
       response: {
         conversation: 'none',
-        output_modalities: ['text'],
-        metadata: { interpretation_request_id: request.id },
-        instructions: request.instructions,
-        max_output_tokens: 350,
+        output_modalities: ['audio'],
+        metadata: { speech_request_id: request.id },
+        instructions: [
+          'You are an exact telephone speech transport.',
+          'Speak only the text between SPEAK START and SPEAK END.',
+          'Do not answer the text. Do not paraphrase it. Do not add or remove any words.',
+          'Preserve the exact word order.',
+          `SPEAK START: ${request.text}`,
+          'SPEAK END',
+        ].join('\n'),
+        max_output_tokens: 512,
       },
     });
 
     if (!sent) {
-      interpretationRequests.delete(request.id);
-      clearInterpretationTimer(request);
-      request.reject(new Error('Realtime interpreter socket is not open.'));
+      retrySpeechRequest(request, new Error('Realtime socket is not open.'));
     }
   }
 
   function flushPending() {
     pendingAudio.splice(0).forEach((audio) => sendJson(ws, { type: 'input_audio_buffer.append', audio }));
-    pendingInterpretations.splice(0).forEach(startInterpretation);
+    pendingTextRequests.splice(0).forEach(startTextRequest);
+    pendingSpeechRequests.splice(0).forEach(startSpeechRequest);
+  }
+
+  function deleteResponseItems(response = {}) {
+    for (const item of response.output || []) {
+      if (item?.id) sendJson(ws, { type: 'conversation.item.delete', item_id: item.id });
+    }
+  }
+
+  function runNextNativeTranscription() {
+    if (closed || !ready || nativeTranscriptionBusy || committedTurnsWaiting <= 0) return;
+    committedTurnsWaiting -= 1;
+    nativeTranscriptionBusy = true;
+
+    requestText([
+      'Transcribe only the most recent caller audio turn.',
+      'Return only what the caller said, with normal punctuation.',
+      'Do not answer, explain, summarize, or add labels.',
+      "The call is in English. Normalize a short affirmative to 'Yes.' and a short negative to 'No.' even when accent or recognition might otherwise render another language.",
+      "If the audio is genuinely unintelligible, return exactly: [unintelligible]",
+    ].join('\n'), {
+      conversation: 'auto',
+      purpose: 'Realtime native transcription',
+      maxOutputTokens: 180,
+      maxAttempts: TEXT_ATTEMPTS,
+    })
+      .then((transcript) => {
+        const value = String(transcript || '').trim();
+        if (value) onTranscript?.(value);
+      })
+      .catch((error) => reportError(error))
+      .finally(() => {
+        nativeTranscriptionBusy = false;
+        runNextNativeTranscription();
+      });
+  }
+
+  function queueNativeTranscription() {
+    committedTurnsWaiting += 1;
+    runNextNativeTranscription();
   }
 
   ws.on('open', () => {
@@ -128,25 +284,29 @@ export function createRealtimeVoice({
       session: {
         type: 'realtime',
         model: MODELS.realtime,
-        output_modalities: ['text'],
-        instructions: 'Do not respond automatically. When the application requests a turn interpretation, return only the requested compact JSON.',
+        output_modalities: ['audio'],
+        instructions: 'Do not respond automatically. The application will explicitly request either a transcription, a structured interpretation, or exact caller-facing speech.',
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
             noise_reduction: { type: 'near_field' },
-            transcription: {
-              model: MODELS.transcription,
-              language: 'en',
-            },
+            transcription: null,
             turn_detection: {
-              type: 'semantic_vad',
-              eagerness: 'high',
+              type: 'server_vad',
+              threshold: 0.5,
+              prefix_padding_ms: Math.max(200, Number(prefixPaddingMs) || 300),
+              silence_duration_ms: Math.max(1200, Number(silenceMs) || 1500),
               create_response: false,
               interrupt_response: false,
             },
           },
+          output: {
+            format: { type: 'audio/pcmu' },
+            voice: String(voice || MODELS.voice).trim() || MODELS.voice,
+            speed: Math.max(0.25, Math.min(1.5, Number(speed) || 1)),
+          },
         },
-        max_output_tokens: 350,
+        max_output_tokens: 512,
       },
     });
   });
@@ -156,138 +316,139 @@ export function createRealtimeVoice({
     try { event = JSON.parse(raw.toString()); } catch { return; }
 
     if (event.type === 'error') {
-      const error = new Error(event.error?.message || 'Realtime interpreter error');
+      const error = new Error(event.error?.message || 'Realtime error');
       error.code = event.error?.code || event.error?.type || '';
       error.param = event.error?.param || '';
-      rejectInterpretations(error);
+      rejectTextRequests(error);
+      rejectSpeechRequests(error);
       reportError(error);
       return;
     }
 
     if (event.type === 'session.updated') {
       ready = true;
-      onReady?.({
-        ...event.session,
-        realtimeVoiceModel: MODELS.realtime,
-        transcriptionModel: MODELS.transcription,
-        speechModel: MODELS.speech,
-      });
+      onReady?.({ ...event.session, realtimeVoiceModel: MODELS.realtime });
       flushPending();
+      runNextNativeTranscription();
       return;
     }
 
     if (event.type === 'input_audio_buffer.speech_started') return onSpeechStarted?.();
     if (event.type === 'input_audio_buffer.speech_stopped') return onSpeechStopped?.();
-
-    if (event.type === 'conversation.item.input_audio_transcription.completed') {
-      const transcript = String(event.transcript || '').trim();
-      if (transcript) onTranscript?.(transcript);
+    if (event.type === 'input_audio_buffer.committed') {
+      queueNativeTranscription();
       return;
     }
 
     if (event.type === 'response.created') {
-      const request = interpretationForEvent(event);
-      if (request) request.responseId = event.response?.id || '';
+      const textRequest = requestForEvent(textRequests, event, 'text_request_id');
+      if (textRequest) {
+        textRequest.responseId = event.response?.id || '';
+        return;
+      }
+      const speechRequest = requestForEvent(speechRequests, event, 'speech_request_id');
+      if (speechRequest) speechRequest.responseId = event.response?.id || '';
       return;
     }
 
     if (event.type === 'response.output_text.delta') {
-      const request = interpretationForEvent(event);
+      const request = requestForEvent(textRequests, event, 'text_request_id');
       if (request && event.delta) request.text += String(event.delta);
       return;
     }
 
     if (event.type === 'response.output_text.done') {
-      const request = interpretationForEvent(event);
+      const request = requestForEvent(textRequests, event, 'text_request_id');
       if (request && event.text) request.text = String(event.text).trim();
       return;
     }
 
+    if (event.type === 'response.output_audio_transcript.delta') {
+      const request = requestForEvent(speechRequests, event, 'speech_request_id');
+      if (request && event.delta) request.spokenTranscript += String(event.delta);
+      return;
+    }
+
+    if (event.type === 'response.output_audio_transcript.done') {
+      const request = requestForEvent(speechRequests, event, 'speech_request_id');
+      if (request && event.transcript) request.spokenTranscript = String(event.transcript).trim();
+      return;
+    }
+
+    if (event.type === 'response.output_audio.delta') {
+      const request = requestForEvent(speechRequests, event, 'speech_request_id');
+      if (!request || !event.delta) return;
+      if (event.response_id && !request.responseId) request.responseId = event.response_id;
+      request.audio.push(Buffer.from(event.delta, 'base64'));
+      return;
+    }
+
     if (event.type === 'response.done') {
-      const request = interpretationForEvent(event);
-      if (!request) return;
-      interpretationRequests.delete(request.id);
-      clearInterpretationTimer(request);
+      const textRequest = requestForEvent(textRequests, event, 'text_request_id');
+      if (textRequest) {
+        textRequests.delete(textRequest.id);
+        clearTimer(textRequest);
+
+        if (event.response?.status !== 'completed') {
+          retryTextRequest(textRequest, new Error(`${textRequest.purpose} ${event.response?.status || 'failed'}.`));
+          return;
+        }
+
+        const text = String(textRequest.text || responseText(event.response)).trim();
+        if (!text) {
+          retryTextRequest(textRequest, new Error(`${textRequest.purpose} returned no text.`));
+          return;
+        }
+
+        if (textRequest.conversation === 'auto') deleteResponseItems(event.response);
+        textRequest.resolve(text);
+        return;
+      }
+
+      const speechRequest = requestForEvent(speechRequests, event, 'speech_request_id');
+      if (!speechRequest) return;
+      speechRequests.delete(speechRequest.id);
+      clearTimer(speechRequest);
 
       if (event.response?.status !== 'completed') {
-        request.reject(new Error(`Realtime interpretation ${event.response?.status || 'failed'}.`));
+        retrySpeechRequest(speechRequest, new Error(`Realtime speech ${event.response?.status || 'failed'}.`));
         return;
       }
 
-      const text = String(request.text || responseText(event.response)).trim();
-      if (!text) {
-        request.reject(new Error('Realtime interpreter returned no text.'));
+      const spokenTranscript = String(speechRequest.spokenTranscript || responseText(event.response)).trim();
+      if (spokenTranscript && !exactSpeechMatches(speechRequest.text, spokenTranscript)) {
+        const error = new Error('Realtime speech did not match the requested phrase.');
+        error.code = 'REALTIME_SPEECH_MISMATCH';
+        error.expectedText = speechRequest.text;
+        error.actualText = spokenTranscript;
+        retrySpeechRequest(speechRequest, error);
         return;
       }
-      request.resolve(text);
+
+      const pcmu = Buffer.concat(speechRequest.audio);
+      if (!pcmu.length) {
+        retrySpeechRequest(speechRequest, new Error('Realtime speech returned no audio.'));
+        return;
+      }
+
+      speechRequest.resolve(splitPcmuFrames(pcmu));
     }
   });
 
   ws.on('error', (error) => {
-    rejectInterpretations(error);
+    rejectTextRequests(error);
+    rejectSpeechRequests(error);
     reportError(error, { terminal: true });
   });
 
   ws.on('close', (code, reasonBuffer) => {
     ready = false;
     const reason = String(reasonBuffer || '').trim();
-    const error = new Error(`Realtime interpreter socket closed (${code})${reason ? `: ${reason}` : ''}`);
-    rejectInterpretations(error);
+    const error = new Error(`Realtime socket closed (${code})${reason ? `: ${reason}` : ''}`);
+    rejectTextRequests(error);
+    rejectSpeechRequests(error);
     if (!closed && !terminalErrorReported) reportError(error, { terminal: true });
   });
-
-  async function synthesizeExactSpeech(text) {
-    const controller = new AbortController();
-    activeSpeechControllers.add(controller);
-    let lastError;
-
-    try {
-      for (let attempt = 1; attempt <= SPEECH_ATTEMPTS; attempt += 1) {
-        const timeoutSignal = AbortSignal.timeout(SPEECH_TIMEOUT_MS);
-        const signal = AbortSignal.any([controller.signal, timeoutSignal]);
-
-        try {
-          const response = await fetch('https://api.openai.com/v1/audio/speech', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            signal,
-            body: JSON.stringify({
-              model: MODELS.speech,
-              voice: String(voice || MODELS.voice).trim() || MODELS.voice,
-              input: String(text),
-              instructions: 'Read the input exactly as written. Speak warmly and naturally. Do not add or remove words.',
-              response_format: 'pcm',
-              speed: Math.max(0.25, Math.min(4, Number(speed) || 1)),
-            }),
-          });
-
-          if (!response.ok) {
-            const body = await response.text().catch(() => '');
-            throw new Error(`Speech API failed (${response.status})${body ? `: ${body}` : ''}`);
-          }
-
-          const pcm24k = Buffer.from(await response.arrayBuffer());
-          const pcmu8k = pcm24kToPcmu8k(pcm24k);
-          if (!pcmu8k.length) throw new Error('Speech API returned no audio.');
-          return splitPcmuFrames(pcmu8k);
-        } catch (error) {
-          if (controller.signal.aborted) throw new Error('Speech synthesis cancelled.');
-          lastError = error;
-          if (attempt >= SPEECH_ATTEMPTS) {
-            if (timeoutSignal.aborted) throw new Error('Speech synthesis timed out.');
-            throw error;
-          }
-        }
-      }
-    } finally {
-      activeSpeechControllers.delete(controller);
-    }
-
-    throw lastError || new Error('Speech synthesis failed.');
-  }
 
   return {
     append(base64Pcmu) {
@@ -298,41 +459,55 @@ export function createRealtimeVoice({
     },
 
     interpret(instructions) {
-      const value = String(instructions || '').trim();
-      if (!value) return Promise.reject(new Error('Realtime interpretation instructions are required.'));
-      return new Promise((resolve, reject) => {
-        const request = {
-          id: `interpret_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          instructions: value,
-          responseId: '',
-          text: '',
-          timer: null,
-          resolve,
-          reject,
-        };
-        if (ready) startInterpretation(request);
-        else pendingInterpretations.push(request);
+      return requestText(instructions, {
+        conversation: 'none',
+        purpose: 'Realtime interpretation',
+        maxOutputTokens: 350,
+        maxAttempts: TEXT_ATTEMPTS,
       });
     },
 
     synthesize(text) {
       const value = String(text || '').trim();
       if (!value) return Promise.resolve([]);
-      return synthesizeExactSpeech(value);
+      return new Promise((resolve, reject) => {
+        const request = {
+          id: `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          text: value,
+          audio: [],
+          spokenTranscript: '',
+          responseId: '',
+          attempt: 0,
+          timer: null,
+          resolve,
+          reject,
+        };
+        if (ready) startSpeechRequest(request);
+        else pendingSpeechRequests.push(request);
+      });
     },
 
     cancelSpeech() {
-      for (const controller of activeSpeechControllers) controller.abort();
-      activeSpeechControllers.clear();
+      for (const request of speechRequests.values()) {
+        clearTimer(request);
+        if (request.responseId) sendJson(ws, { type: 'response.cancel', response_id: request.responseId });
+        request.reject(new Error('Realtime speech cancelled.'));
+      }
+      speechRequests.clear();
+      while (pendingSpeechRequests.length) {
+        const request = pendingSpeechRequests.shift();
+        clearTimer(request);
+        request.reject(new Error('Realtime speech cancelled.'));
+      }
     },
 
     close() {
       closed = true;
       ready = false;
       pendingAudio.length = 0;
-      rejectInterpretations(new Error('Realtime interpreter session closed.'));
-      for (const controller of activeSpeechControllers) controller.abort();
-      activeSpeechControllers.clear();
+      committedTurnsWaiting = 0;
+      rejectTextRequests(new Error('Realtime session closed.'));
+      rejectSpeechRequests(new Error('Realtime session closed.'));
       try { ws.close(); } catch {}
     },
 
