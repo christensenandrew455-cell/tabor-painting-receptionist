@@ -227,7 +227,7 @@ export function createRealtimeVoice({
           'Keep the same words and word order. Natural pronunciation and punctuation are allowed.',
           `RECEPTIONIST LINE: ${JSON.stringify(request.text)}`,
         ].join('\n'),
-        max_output_tokens: Math.max(64, Math.min(512, Math.ceil(request.text.length / 2) + 48)),
+        max_output_tokens: 512,
       },
     });
 
@@ -415,18 +415,37 @@ export function createRealtimeVoice({
       speechRequests.delete(speechRequest.id);
       clearTimer(speechRequest);
 
-      if (event.response?.status !== 'completed') {
-        retrySpeechRequest(speechRequest, new Error(`Realtime speech ${event.response?.status || 'failed'}.`));
+      const status = event.response?.status || 'failed';
+      const statusDetails = event.response?.status_details || null;
+      const pcmu = Buffer.concat(speechRequest.audio);
+      const spokenTranscript = String(speechRequest.spokenTranscript || responseText(event.response)).trim();
+
+      if (status !== 'completed') {
+        if (pcmu.length && spokenTranscript && exactSpeechMatches(speechRequest.text, spokenTranscript)) {
+          console.warn('[Realtime speech incomplete but usable]', JSON.stringify({
+            status,
+            statusDetails,
+            spokenTranscript,
+          }));
+          speechRequest.resolve(splitPcmuFrames(pcmu));
+          return;
+        }
+
+        const detail = statusDetails?.reason
+          || statusDetails?.error?.message
+          || statusDetails?.error?.code
+          || '';
+        const error = new Error(`Realtime speech ${status}${detail ? ` (${detail})` : ''}.`);
+        error.statusDetails = statusDetails;
+        retrySpeechRequest(speechRequest, error);
         return;
       }
 
-      const pcmu = Buffer.concat(speechRequest.audio);
       if (!pcmu.length) {
         retrySpeechRequest(speechRequest, new Error('Realtime speech returned no audio.'));
         return;
       }
 
-      const spokenTranscript = String(speechRequest.spokenTranscript || responseText(event.response)).trim();
       if (spokenTranscript && !exactSpeechMatches(speechRequest.text, spokenTranscript)) {
         console.warn('[Realtime speech wording drift]', JSON.stringify({
           expectedText: speechRequest.text,
