@@ -1,15 +1,15 @@
+const REALTIME_MODEL = process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini';
+
 export const MODELS = Object.freeze({
-  realtime: process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini',
-  realtimeVoice: process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini',
-  transcription: process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
-  brain: process.env.REALTIME_INTERPRETER_MODEL || process.env.REALTIME_VOICE_MODEL || 'gpt-realtime-mini',
-  speech: process.env.SPEECH_MODEL || 'gpt-4o-mini-tts',
+  realtime: REALTIME_MODEL,
+  realtimeVoice: REALTIME_MODEL,
+  brain: REALTIME_MODEL,
   voice: process.env.AI_VOICE || 'alloy',
 });
 
 export const TURN = Object.freeze({
-  silenceMs: Number(process.env.AI_SILENCE_MS || 1100),
-  prefixPaddingMs: Number(process.env.AI_PREFIX_PADDING_MS || 250),
+  silenceMs: Number(process.env.AI_SILENCE_MS || 1500),
+  prefixPaddingMs: Number(process.env.AI_PREFIX_PADDING_MS || 300),
   bargeInMs: Number(process.env.AI_BARGE_IN_MS || 120),
   maxReplyCharacters: Number(process.env.AI_MAX_REPLY_CHARACTERS || 280),
 });
