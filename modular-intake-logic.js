@@ -5,12 +5,10 @@ import {
   repeatQuestionFor,
   summaryStatement,
 } from './intake-response-policy.js';
+import { resolveEstimateDate } from './estimate-date.js';
 
 export { availabilityStatement, baseQuestionFor, repeatQuestionFor, summaryStatement };
 
-const WEEKDAY_PATTERN = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
-const MONTH_DAY_PATTERN = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+\d{4})?\b/i;
-const ORDINAL_DAY_PATTERN = /\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/i;
 const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
 const CONTINUATION_FILLER_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like|right|yeah|yep|okay|ok)[.!?…\s]*$/i;
 const INCOMPLETE_PATTERN = /^(?:(?:uh|um|erm|hmm|well|so|and)\s*)?(?:(?:that|it|this|the address|my address|the date|the time|my name|can i do)\s*)?(?:(?:would be|is|is at|is on|would be at|would be on)\s*)?$/i;
@@ -19,6 +17,19 @@ const NO_NOTES_PATTERN = /\b(?:no additional notes?|no notes?|there (?:was|were|
 const AFFIRMATIVE_PATTERN = /\b(?:yes|yeah|yep|sure|correct|right|okay|ok|sounds good|that's right|that is right|other than that|otherwise)\b/i;
 const NON_NAME_SENTENCE_PATTERN = /\b(?:i|you|we|they|called|calling|think|know|what|why|because|estimate|request|talking|paint|address|phone|number)\b/i;
 const NAME_TOKEN_PATTERN = /^[A-Za-z][A-Za-z'’-]*$/;
+const LEADING_NAME_FILLER_PATTERN = /^(?:(?:um+|uh+|erm|hmm+|well|so|like|yeah|yes|okay|ok)\b[,.;:\s-]*)+/i;
+const SPOKEN_TIME_PATTERN = /\bat\s+(one|two|too|three|four|nine|ten|eleven|twelve)\b/i;
+const SPOKEN_TIMES = Object.freeze({
+  one: '1:00 PM',
+  two: '2:00 PM',
+  too: '2:00 PM',
+  three: '3:00 PM',
+  four: '4:00 PM',
+  nine: '9:00 AM',
+  ten: '10:00 AM',
+  eleven: '11:00 AM',
+  twelve: '12:00 PM',
+});
 
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
@@ -39,7 +50,12 @@ function serviceNames(core) {
 }
 
 function normalizedName(value) {
-  return clean(value).replace(/[.!?,;:]+$/g, '').replace(/\s+/g, ' ');
+  return clean(value)
+    .replace(LEADING_NAME_FILLER_PATTERN, '')
+    .replace(/^(?:like i said[,]?\s*)?(?:my full name is|my name is|i am|i'm)\s+/i, '')
+    .replace(/[.!?,;:]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizedAddress(value) {
@@ -205,6 +221,8 @@ function rawTimeFromTranscript(transcript = '') {
   const normalized = clean(transcript)
     .replace(/\blike\b/gi, ' ')
     .replace(/\s+/g, ' ');
+  const spoken = normalized.match(SPOKEN_TIME_PATTERN);
+  if (spoken) return SPOKEN_TIMES[spoken[1].toLowerCase()] || '';
   const atTime = normalized.match(/\bat\s*,?\s*(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?\b/i);
   const explicitTime = normalized.match(/\b(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i);
   const match = atTime || explicitTime;
@@ -213,17 +231,6 @@ function rawTimeFromTranscript(transcript = '') {
   const minutes = match[2] ? `:${match[2]}` : '';
   const meridiem = clean(match[3]).replace(/\./g, '').toUpperCase();
   return `${hour}${minutes}${meridiem ? ` ${meridiem}` : ''}`;
-}
-
-function rawDateFromTranscript(transcript = '') {
-  const text = clean(transcript);
-  const weekdays = [...text.matchAll(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi)];
-  if (weekdays.length) return weekdays.at(-1)[1];
-  const monthDay = text.match(MONTH_DAY_PATTERN);
-  if (monthDay) return monthDay[0];
-  const ordinal = text.match(ORDINAL_DAY_PATTERN);
-  if (ordinal) return ordinal[0];
-  return '';
 }
 
 export function isControlSpeech(value) {
@@ -255,7 +262,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   }
 
   if (currentQuestionId === 'preferred_date_time') {
-    const preferredDate = rawDateFromTranscript(text);
+    const preferredDate = resolveEstimateDate(text);
     const rawTime = rawTimeFromTranscript(text);
     const preferredTime = rawTime ? clean(core.normalizePreferredTime(rawTime)) : '';
     if (preferredDate) captured.preferredDate = preferredDate;
@@ -268,8 +275,8 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   }
 
   if (currentQuestionId === 'contact_consent') {
-    if (/\b(?:yes|yeah|yep|sure|i do|that's fine|that is fine)\b/i.test(text)) captured.contactConsent = true;
-    if (/\b(?:no|nope|do not|don't)\b/i.test(text)) captured.contactConsent = false;
+    if (/\b(?:yes|yeah|yep|ya|yah|sure|i do|that's fine|that is fine)\b/i.test(text)) captured.contactConsent = true;
+    if (/\b(?:no|nope|nah|ne|do not|don't)\b/i.test(text)) captured.contactConsent = false;
   }
 
   if (currentQuestionId === 'confirm_summary' && NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
