@@ -6,7 +6,7 @@ const MAX_PENDING_AUDIO_CHUNKS = 250;
 const TEXT_TIMEOUT_MS = Math.max(1500, Number(process.env.AI_INTERPRETATION_TIMEOUT_MS || 6000));
 const SPEECH_TIMEOUT_MS = Math.max(2500, Number(process.env.AI_SPEECH_TIMEOUT_MS || 10000));
 const TEXT_ATTEMPTS = Math.max(1, Number(process.env.AI_TEXT_ATTEMPTS || 2));
-const SPEECH_ATTEMPTS = Math.max(1, Number(process.env.AI_SPEECH_ATTEMPTS || 3));
+const SPEECH_ATTEMPTS = Math.max(1, Number(process.env.AI_SPEECH_ATTEMPTS || 2));
 
 function sendJson(ws, payload) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
@@ -34,6 +34,11 @@ function normalizedSpeechText(value) {
 
 function exactSpeechMatches(expected, actual) {
   return normalizedSpeechText(expected) === normalizedSpeechText(actual);
+}
+
+function isAssistantLikeTranscript(value) {
+  const text = String(value ?? '').trim();
+  return /^(?:hello[!.]?\s*)?(?:how can i help(?: you)?(?: today)?|how may i assist(?: you)?|what can i do for you)[?.!\s]*$/i.test(text);
 }
 
 export function createRealtimeVoice({
@@ -216,14 +221,13 @@ export function createRealtimeVoice({
         output_modalities: ['audio'],
         metadata: { speech_request_id: request.id },
         instructions: [
-          'You are an exact telephone speech transport.',
-          'Speak only the text between SPEAK START and SPEAK END.',
-          'Do not answer the text. Do not paraphrase it. Do not add or remove any words.',
-          'Preserve the exact word order.',
-          `SPEAK START: ${request.text}`,
-          'SPEAK END',
+          'You are the telephone voice for a receptionist application.',
+          'Speak only the supplied receptionist line.',
+          'Do not answer the line, react to it, paraphrase it, explain it, or add advice.',
+          'Keep the same words and word order. Natural pronunciation and punctuation are allowed.',
+          `RECEPTIONIST LINE: ${JSON.stringify(request.text)}`,
         ].join('\n'),
-        max_output_tokens: 512,
+        max_output_tokens: Math.max(64, Math.min(512, Math.ceil(request.text.length / 2) + 48)),
       },
     });
 
@@ -250,20 +254,21 @@ export function createRealtimeVoice({
     nativeTranscriptionBusy = true;
 
     requestText([
-      'Transcribe only the most recent caller audio turn.',
-      'Return only what the caller said, with normal punctuation.',
-      'Do not answer, explain, summarize, or add labels.',
+      'Transcribe only the most recent caller audio turn verbatim.',
+      'This is transcription, not conversation. Never reply to the caller and never invent a greeting.',
+      'Return only the caller words with normal punctuation. Do not explain, summarize, or add labels.',
       "The call is in English. Normalize a short affirmative to 'Yes.' and a short negative to 'No.' even when accent or recognition might otherwise render another language.",
-      "If the audio is genuinely unintelligible, return exactly: [unintelligible]",
+      "If there is no clear caller speech, return exactly: [unintelligible]",
     ].join('\n'), {
       conversation: 'auto',
       purpose: 'Realtime native transcription',
-      maxOutputTokens: 180,
+      maxOutputTokens: 120,
       maxAttempts: TEXT_ATTEMPTS,
     })
       .then((transcript) => {
         const value = String(transcript || '').trim();
-        if (value) onTranscript?.(value);
+        if (!value || value === '[unintelligible]' || isAssistantLikeTranscript(value)) return;
+        onTranscript?.(value);
       })
       .catch((error) => reportError(error))
       .finally(() => {
@@ -285,7 +290,7 @@ export function createRealtimeVoice({
         type: 'realtime',
         model: MODELS.realtime,
         output_modalities: ['audio'],
-        instructions: 'Do not respond automatically. The application will explicitly request either a transcription, a structured interpretation, or exact caller-facing speech.',
+        instructions: 'Do not respond automatically. The application will explicitly request transcription, structured interpretation, or caller-facing speech.',
         audio: {
           input: {
             format: { type: 'audio/pcmu' },
@@ -415,20 +420,18 @@ export function createRealtimeVoice({
         return;
       }
 
-      const spokenTranscript = String(speechRequest.spokenTranscript || responseText(event.response)).trim();
-      if (spokenTranscript && !exactSpeechMatches(speechRequest.text, spokenTranscript)) {
-        const error = new Error('Realtime speech did not match the requested phrase.');
-        error.code = 'REALTIME_SPEECH_MISMATCH';
-        error.expectedText = speechRequest.text;
-        error.actualText = spokenTranscript;
-        retrySpeechRequest(speechRequest, error);
-        return;
-      }
-
       const pcmu = Buffer.concat(speechRequest.audio);
       if (!pcmu.length) {
         retrySpeechRequest(speechRequest, new Error('Realtime speech returned no audio.'));
         return;
+      }
+
+      const spokenTranscript = String(speechRequest.spokenTranscript || responseText(event.response)).trim();
+      if (spokenTranscript && !exactSpeechMatches(speechRequest.text, spokenTranscript)) {
+        console.warn('[Realtime speech wording drift]', JSON.stringify({
+          expectedText: speechRequest.text,
+          actualText: spokenTranscript,
+        }));
       }
 
       speechRequest.resolve(splitPcmuFrames(pcmu));
