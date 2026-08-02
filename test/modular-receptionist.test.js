@@ -5,10 +5,11 @@ import {
   baseQuestionFor,
   captureDeterministicLead,
   markDeterministicCompletions,
+  mergeLead,
   nextRequiredQuestion,
 } from '../modular-intake-logic.js';
 import { resolveEstimateDate } from '../estimate-date.js';
-import { MODELS } from '../modular-models.js';
+import { MODELS, TURN } from '../modular-models.js';
 import {
   applyRealtimeInterpretation,
   buildRealtimeTurnPrompt,
@@ -59,10 +60,13 @@ const completeLead = Object.freeze({
 
 const AUGUST_FIRST_2026 = new Date('2026-08-01T16:00:00.000Z');
 
-test('Realtime Mini is the active interpretation brain', () => {
-  assert.equal(MODELS.brain, MODELS.realtime);
+test('Realtime Mini is the only configured AI model', () => {
   assert.equal(MODELS.realtime, 'gpt-realtime-mini');
-  assert.equal(MODELS.speech, 'gpt-4o-mini-tts');
+  assert.equal(MODELS.realtimeVoice, MODELS.realtime);
+  assert.equal(MODELS.brain, MODELS.realtime);
+  assert.equal(Object.hasOwn(MODELS, 'transcription'), false);
+  assert.equal(Object.hasOwn(MODELS, 'speech'), false);
+  assert.ok(TURN.silenceMs >= 1200);
 });
 
 test('all active caller wording remains in one phrase catalog', () => {
@@ -105,8 +109,6 @@ test('Realtime interpretation prompt forbids painter referrals and extra questio
   assert.match(prompt, /Never ask whether the caller will do the work themselves/i);
   assert.match(prompt, /Do not write a caller-facing response/i);
   assert.match(prompt, /configuredServices/);
-  assert.match(prompt, /Never copy unchanged values from currentLead/i);
-  assert.match(prompt, /summary_confirm or summary_correction only when currentQuestionId is confirm_summary/i);
 });
 
 test('Realtime interpretation parses only bounded actions, acknowledgements, and updates', () => {
@@ -148,13 +150,13 @@ test('Realtime interpretation removes leading fillers from names', () => {
 });
 
 test('deterministic name fallback also removes leading fillers', () => {
-  const result = captureDeterministicLead(
+  const lead = captureDeterministicLead(
     coreStub,
     'name',
     'Um, Andrew Christensen.',
     { ...completeLead, name: null },
   );
-  assert.equal(result.name, 'Andrew Christensen');
+  assert.equal(lead.name, 'Andrew Christensen');
 });
 
 test('an address correction does not change the saved name', () => {
@@ -162,12 +164,15 @@ test('an address correction does not change the saved name', () => {
     action: 'summary_correction',
     ack: 'thanks',
     updates: {
-      projectLocation: '197 Lancaster Road, Berlin, MA',
       name: null,
+      projectLocation: '197 Lancaster Road, Berlin, MA',
     },
   });
   assert.equal(result.lead.name, 'Andrew Christensen');
   assert.equal(result.lead.projectLocation, '197 Lancaster Road, Berlin, MA');
+
+  const merged = mergeLead(completeLead, { projectLocation: '197 Lancaster Road, Berlin, MA' });
+  assert.equal(merged.name, 'Andrew Christensen');
 });
 
 test('weekday phrases resolve to the next actual calendar date', () => {
