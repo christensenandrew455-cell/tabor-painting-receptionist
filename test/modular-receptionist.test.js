@@ -172,7 +172,7 @@ test('an address correction does not change the saved name', () => {
 
 test('weekday phrases resolve to the next actual calendar date', () => {
   assert.equal(resolveEstimateDate('Monday', { now: AUGUST_FIRST_2026 }), '8/3/26');
-  assert.equal(resolveEstimateDate('next Monday', { now: AUGUST_FIRST_2026 }), '8/3/26');
+  assert.equal(resolveEstimateDate('next Monday', { now: AUGUST_FIRST_2026 }), '8/10/26');
 });
 
 test('explicit dates are preserved and past dates are rejected', () => {
