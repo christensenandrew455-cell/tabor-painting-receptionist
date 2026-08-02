@@ -3,6 +3,9 @@ import { MODELS, TURN } from './modular-models.js';
 import { pcm24kToPcmu8k, splitPcmuFrames } from './audio-codec.js';
 
 const MAX_PENDING_AUDIO_CHUNKS = 250;
+const INTERPRETATION_TIMEOUT_MS = Math.max(1000, Number(process.env.AI_INTERPRETATION_TIMEOUT_MS || 5000));
+const SPEECH_TIMEOUT_MS = Math.max(2000, Number(process.env.AI_SPEECH_TIMEOUT_MS || 10000));
+const SPEECH_ATTEMPTS = Math.max(1, Number(process.env.AI_SPEECH_ATTEMPTS || 2));
 
 function sendJson(ws, payload) {
   if (ws?.readyState !== WebSocket.OPEN) return false;
@@ -52,10 +55,22 @@ export function createRealtimeVoice({
     onError?.(error);
   }
 
+  function clearInterpretationTimer(request) {
+    if (request?.timer) clearTimeout(request.timer);
+    if (request) request.timer = null;
+  }
+
   function rejectInterpretations(error) {
-    for (const request of interpretationRequests.values()) request.reject(error);
+    for (const request of interpretationRequests.values()) {
+      clearInterpretationTimer(request);
+      request.reject(error);
+    }
     interpretationRequests.clear();
-    while (pendingInterpretations.length) pendingInterpretations.shift().reject(error);
+    while (pendingInterpretations.length) {
+      const request = pendingInterpretations.shift();
+      clearInterpretationTimer(request);
+      request.reject(error);
+    }
   }
 
   function interpretationForEvent(event) {
@@ -75,7 +90,13 @@ export function createRealtimeVoice({
   function startInterpretation(request) {
     request.responseId = '';
     request.text = '';
+    clearInterpretationTimer(request);
     interpretationRequests.set(request.id, request);
+    request.timer = setTimeout(() => {
+      if (!interpretationRequests.has(request.id)) return;
+      interpretationRequests.delete(request.id);
+      request.reject(new Error('Realtime interpretation timed out.'));
+    }, INTERPRETATION_TIMEOUT_MS);
 
     const sent = sendJson(ws, {
       type: 'response.create',
@@ -90,6 +111,7 @@ export function createRealtimeVoice({
 
     if (!sent) {
       interpretationRequests.delete(request.id);
+      clearInterpretationTimer(request);
       request.reject(new Error('Realtime interpreter socket is not open.'));
     }
   }
@@ -185,6 +207,7 @@ export function createRealtimeVoice({
       const request = interpretationForEvent(event);
       if (!request) return;
       interpretationRequests.delete(request.id);
+      clearInterpretationTimer(request);
 
       if (event.response?.status !== 'completed') {
         request.reject(new Error(`Realtime interpretation ${event.response?.status || 'failed'}.`));
@@ -216,40 +239,54 @@ export function createRealtimeVoice({
   async function synthesizeExactSpeech(text) {
     const controller = new AbortController();
     activeSpeechControllers.add(controller);
+    let lastError;
 
     try {
-      const response = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: MODELS.speech,
-          voice: String(voice || MODELS.voice).trim() || MODELS.voice,
-          input: String(text),
-          instructions: 'Read the input exactly as written. Speak warmly and naturally. Do not add or remove words.',
-          response_format: 'pcm',
-          speed: Math.max(0.25, Math.min(4, Number(speed) || 1)),
-        }),
-      });
+      for (let attempt = 1; attempt <= SPEECH_ATTEMPTS; attempt += 1) {
+        const timeoutSignal = AbortSignal.timeout(SPEECH_TIMEOUT_MS);
+        const signal = AbortSignal.any([controller.signal, timeoutSignal]);
 
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`Speech API failed (${response.status})${body ? `: ${body}` : ''}`);
+        try {
+          const response = await fetch('https://api.openai.com/v1/audio/speech', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+            signal,
+            body: JSON.stringify({
+              model: MODELS.speech,
+              voice: String(voice || MODELS.voice).trim() || MODELS.voice,
+              input: String(text),
+              instructions: 'Read the input exactly as written. Speak warmly and naturally. Do not add or remove words.',
+              response_format: 'pcm',
+              speed: Math.max(0.25, Math.min(4, Number(speed) || 1)),
+            }),
+          });
+
+          if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            throw new Error(`Speech API failed (${response.status})${body ? `: ${body}` : ''}`);
+          }
+
+          const pcm24k = Buffer.from(await response.arrayBuffer());
+          const pcmu8k = pcm24kToPcmu8k(pcm24k);
+          if (!pcmu8k.length) throw new Error('Speech API returned no audio.');
+          return splitPcmuFrames(pcmu8k);
+        } catch (error) {
+          if (controller.signal.aborted) throw new Error('Speech synthesis cancelled.');
+          lastError = error;
+          if (attempt >= SPEECH_ATTEMPTS) {
+            if (timeoutSignal.aborted) throw new Error('Speech synthesis timed out.');
+            throw error;
+          }
+        }
       }
-
-      const pcm24k = Buffer.from(await response.arrayBuffer());
-      const pcmu8k = pcm24kToPcmu8k(pcm24k);
-      if (!pcmu8k.length) throw new Error('Speech API returned no audio.');
-      return splitPcmuFrames(pcmu8k);
-    } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('Speech synthesis cancelled.');
-      throw error;
     } finally {
       activeSpeechControllers.delete(controller);
     }
+
+    throw lastError || new Error('Speech synthesis failed.');
   }
 
   return {
@@ -269,6 +306,7 @@ export function createRealtimeVoice({
           instructions: value,
           responseId: '',
           text: '',
+          timer: null,
           resolve,
           reject,
         };
