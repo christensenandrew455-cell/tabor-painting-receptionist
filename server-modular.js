@@ -18,6 +18,8 @@ const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
 const MAX_PENDING_INPUT_CHUNKS = 250;
 const CALL_WARNING_MS = 5.5 * 60 * 1000;
 const CALL_HARD_LIMIT_MS = 6 * 60 * 1000;
+const CALL_WARNING_RETRY_MS = 5000;
+const POST_SUBMISSION_GRACE_MS = 90 * 1000;
 const CALL_WARNING_LINE = "I'm sorry. But this call will abruptly end in about thirty seconds to prevent spamming. If you haven't filled an estimate request or have more questions or wish to do so, please call again.";
 
 const activeCalls = new Map();
@@ -254,16 +256,47 @@ function requestHangup(ctx, reason = 'completed') {
   }
 }
 
-function startCallTimers(ctx) {
-  if (ctx.startedAt) return;
-  ctx.startedAt = Date.now();
+function scheduleCallWarning(ctx, delayMs = CALL_WARNING_MS) {
+  if (ctx.warningTimer) clearTimeout(ctx.warningTimer);
   ctx.warningTimer = setTimeout(() => {
-    if (ctx.cleanedUp || ctx.ending) return;
+    ctx.warningTimer = null;
+    if (ctx.cleanedUp || ctx.ending || ctx.leadSaved) return;
+    const snapshot = ctx.pipeline?.snapshot?.();
+    if (snapshot?.speaking || snapshot?.ttsPending || snapshot?.interpreting) {
+      debug('call.warning_deferred', {
+        callId: ctx.callControlId || ctx.id,
+        currentQuestionId: snapshot?.memory?.currentQuestionId,
+      });
+      scheduleCallWarning(ctx, CALL_WARNING_RETRY_MS);
+      return;
+    }
     debug('call.warning_30_seconds', { callId: ctx.callControlId || ctx.id });
     ctx.pipeline?.announce?.(CALL_WARNING_LINE)
       .catch((error) => console.error('[Call warning failed]', error.message));
-  }, CALL_WARNING_MS);
+  }, delayMs);
+}
+
+function startCallTimers(ctx) {
+  if (ctx.startedAt) return;
+  ctx.startedAt = Date.now();
+  scheduleCallWarning(ctx);
   ctx.hardLimitTimer = setTimeout(() => requestHangup(ctx, 'max-duration'), CALL_HARD_LIMIT_MS);
+}
+
+function grantPostSubmissionGrace(ctx) {
+  if (ctx.cleanedUp || ctx.ending) return;
+  if (ctx.warningTimer) clearTimeout(ctx.warningTimer);
+  if (ctx.hardLimitTimer) clearTimeout(ctx.hardLimitTimer);
+  ctx.warningTimer = null;
+
+  const originalDeadline = Number(ctx.startedAt || Date.now()) + CALL_HARD_LIMIT_MS;
+  const graceDeadline = Date.now() + POST_SUBMISSION_GRACE_MS;
+  const delayMs = Math.max(1000, Math.max(originalDeadline, graceDeadline) - Date.now());
+  ctx.hardLimitTimer = setTimeout(() => requestHangup(ctx, 'max-duration'), delayMs);
+  debug('call.post_submission_grace_started', {
+    callId: ctx.callControlId || ctx.id,
+    graceSeconds: Math.round(delayMs / 1000),
+  });
 }
 
 async function saveLead(ctx, { payload }) {
@@ -282,6 +315,7 @@ async function saveLead(ctx, { payload }) {
       const raw = await response.text();
       if (!response.ok) throw new Error(`OCM ${response.status}: ${raw}`);
       ctx.leadSaved = true;
+      grantPostSubmissionGrace(ctx);
       debug('lead.saved', {
         callId: ctx.callControlId || ctx.id,
         clientId: ctx.runtimeData.clientId,
@@ -310,7 +344,7 @@ app.get('/', (_req, res) => {
   res.json({
     ok: true,
     provider: 'Telnyx',
-    architecture: 'realtime voice -> GPT-5 Mini brain -> deterministic controller -> realtime voice',
+    architecture: 'realtime interpretation -> fixed question controller -> speech API',
     models: MODELS,
     codec: 'PCMU 8 kHz',
     voiceWebhook: `${PUBLIC_URL}/voice-api-webhook`,
@@ -322,16 +356,18 @@ app.get('/', (_req, res) => {
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    architecture: 'realtime-voice-with-text-brain',
+    architecture: 'realtime-interpretation-with-fixed-flow',
     realtimeVoiceModel: MODELS.realtimeVoice,
     transcriptionModel: MODELS.transcription,
     brainModel: MODELS.brain,
+    speechModel: MODELS.speech,
     codec: 'PCMU',
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
     activeCalls: activeCalls.size,
     mappedCalls: [...callMetadata.values()].filter((entry) => entry.runtimeData).length,
     callMaximumSeconds: CALL_HARD_LIMIT_MS / 1000,
+    postSubmissionGraceSeconds: POST_SUBMISSION_GRACE_MS / 1000,
   });
 });
 
@@ -479,6 +515,7 @@ wss.on('connection', (telnyx) => {
         realtimeVoiceModel: MODELS.realtimeVoice,
         transcriptionModel: MODELS.transcription,
         brainModel: MODELS.brain,
+        speechModel: MODELS.speech,
         voice: ctx.runtime.core.REALTIME_VOICE || MODELS.voice,
       });
 
@@ -552,5 +589,5 @@ server.listen(PORT, () => {
   console.log(`Voice webhook: ${PUBLIC_URL}/voice-api-webhook`);
   console.log(`Media stream: ${STREAM_URL}`);
   console.log(`ARK OCM runtime lookup: ${runtimeEndpoint()}`);
-  console.log(`Models: ${MODELS.realtimeVoice} -> ${MODELS.brain} -> ${MODELS.realtimeVoice}`);
+  console.log(`Models: ${MODELS.realtimeVoice} interpretation -> fixed controller -> ${MODELS.speech}`);
 });
