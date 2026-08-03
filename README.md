@@ -1,22 +1,22 @@
 # ARK AI Receptionist Bridge
 
-This Railway service answers Telnyx calls, runs the fixed estimate-intake workflow through OpenAI Realtime, and saves caller-confirmed leads into ARK OCM.
+This Railway service answers Telnyx calls, runs one deterministic estimate-intake workflow, and saves caller-confirmed leads into the matched ARK OCM workspace.
 
 ## Call flow
 
-1. A customer calls a Telnyx number.
-2. Telnyx sends the signed call event to Railway.
-3. Railway forwards that signed event to ARK OCM.
-4. ARK OCM verifies the Telnyx signature and matches the dialed number to the correct business account.
-5. ARK OCM returns that account's business information, services, schedule, AI voice settings, and private lead destination.
-6. Railway starts the receptionist using those settings for that call.
-7. A confirmed lead is saved into the matched business workspace.
+1. Telnyx sends a signed call event to Railway.
+2. Railway forwards the signed event to ARK OCM.
+3. ARK OCM verifies the signature and matches the dialed number to one business account.
+4. ARK OCM returns that business's facts, services, estimate schedule, voice settings, and private lead endpoints.
+5. Railway starts one modular OpenAI Realtime voice pipeline for the call.
+6. The controller chooses fixed phrase keys and fixed question order.
+7. A lead is saved only after validation, consent, and final caller confirmation.
 
-The receptionist script and model remain hard-coded in this repository. Business-specific information is never required as a Railway variable.
+Caller-facing wording, workflow rules, and model selection stay in this repository. Business facts and voice settings are supplied per call by ARK OCM.
 
 ## Railway variables
 
-Railway needs only:
+Required:
 
 ```text
 OPENAI_API_KEY
@@ -25,57 +25,55 @@ TELNYX_API_KEY
 
 `PUBLIC_URL` is optional when Railway supplies `RAILWAY_PUBLIC_DOMAIN`. Railway supplies `PORT` automatically.
 
-Do not add these old per-business variables:
+Do not configure old per-business Railway variables. ARK OCM supplies the temporary per-call business environment internally.
+
+## Deterministic intake order
+
+1. Service
+2. Full name
+3. Full project address
+4. Requested estimate date and time
+5. Additional notes
+6. Permission to be contacted
+7. Final readback and confirmation
+
+The controller—not the model—owns the question order and spoken wording. The Realtime model is limited to transcription, structured interpretation, and exact speech playback.
+
+## Runtime structure
 
 ```text
-AI_SILENCE_MS
-AI_SPEECH_SPEED
-AI_VOICE
-BUSINESS_INFO
-OCM_CLIENT_ID
-OCM_CONNECTION_KEY
-RECEPTIONIST_SCRIPT
+server-modular.js             Telnyx webhook, media stream, call limits, usage reporting
+runtime-loader.js              Signed ARK OCM business lookup and runtime cache
+receptionist-core.js           Business validation, date/time rules, lead validation, OCM payload
+voice-pipeline-controller.js   Deterministic call state and question progression
+receptionist-phrases.js        Single caller-facing phrase catalog
+modular-intake-logic.js        Field extraction and intake completion rules
+realtime-turn-interpreter.js   Structured caller interpretation only
+openai-voice.js                Realtime audio, transcription, interpretation, and speech requests
+ordered-log.js                 One numbered stdout stream for readable event ordering
 ```
 
-ARK OCM now supplies those settings per call by matching the dialed Telnyx phone number.
+There is no legacy server or runtime guard chain. `npm start` has one supported production path.
 
-## Settings managed in ARK OCM
+## Ordered logs
 
-Each connected account stores:
+Every `console` message is written to stdout with a six-digit sequence number, ISO timestamp, and level:
 
-- Connected receptionist phone number
-- Business name and owner name
-- Business phone and email
-- Business hours and time zone
-- Estimate days and time range
-- Service areas and services
-- About and additional business information
-- Opening and closing lines
-- AI voice, speech speed, and silence timing
+```text
+[000123] 2026-08-03T14:00:00.000Z INFO [Modular receptionist debug] {...}
+```
 
-The connected phone number must be unique and must match the number receiving the Telnyx call.
-
-## Fixed receptionist workflow
-
-The hard-coded workflow:
-
-1. Delivers the business's configured opening line.
-2. Collects name, optional email, service, city, street address, contact method, estimate day, estimate time, and additional notes.
-3. Confirms the completed information once.
-4. Asks for permission to be contacted before saving.
-5. Saves only after the caller agrees.
-6. Never reads or repeats the caller-ID phone number.
-7. Never quotes pricing or promises appointment availability.
+This keeps Railway logs in emission order even when the original call used `console.warn` or `console.error`.
 
 ## Telnyx
 
-Point the Voice API application webhook to:
+Voice API webhook:
 
 ```text
 https://YOUR-RAILWAY-DOMAIN/voice-api-webhook
 ```
 
-The media stream is:
+Media stream:
 
 ```text
 wss://YOUR-RAILWAY-DOMAIN/media-stream
@@ -90,4 +88,4 @@ npm test
 npm start
 ```
 
-Never commit real provider credentials or private ARK connection values.
+Never commit provider credentials or private ARK connection values.
