@@ -19,6 +19,7 @@ const NON_NAME_SENTENCE_PATTERN = /\b(?:i|you|we|they|called|calling|think|know|
 const NAME_TOKEN_PATTERN = /^[A-Za-z][A-Za-z'’-]*$/;
 const LEADING_NAME_FILLER_PATTERN = /^(?:(?:um+|uh+|erm|hmm+|well|so|like|yeah|yes|okay|ok)\b[,.;:\s-]*)+/i;
 const SPOKEN_TIME_PATTERN = /\bat\s+(one|two|too|three|four|nine|ten|eleven|twelve)\b/i;
+const PROJECT_NOTE_DETAIL_PATTERN = /\b(?:paint|painting|primer|primed|wall|ceiling|room|upstairs|downstairs|spray|surface|color|coat|trim|door|window|siding|deck|fence|repair|prep|project)\b/i;
 const SPOKEN_TIMES = Object.freeze({
   one: '1:00 PM',
   two: '2:00 PM',
@@ -233,6 +234,11 @@ function rawTimeFromTranscript(transcript = '') {
   return `${hour}${minutes}${meridiem ? ` ${meridiem}` : ''}`;
 }
 
+function isSchedulingAnswerOnly(transcript = '') {
+  const text = clean(transcript);
+  return Boolean(resolveEstimateDate(text) && rawTimeFromTranscript(text) && !PROJECT_NOTE_DETAIL_PATTERN.test(text));
+}
+
 export function isControlSpeech(value) {
   return CONTROL_SPEECH_PATTERN.test(clean(value));
 }
@@ -271,7 +277,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
 
   if (currentQuestionId === 'notes') {
     if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
-    else if (text) captured.notes = text;
+    else if (text && !isSchedulingAnswerOnly(text)) captured.notes = text;
   }
 
   if (currentQuestionId === 'contact_consent') {
