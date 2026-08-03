@@ -399,6 +399,13 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
     pumpFrames(generation);
   }
 
+  async function speakAndWait(text) {
+    await speak(text, { scheduleRepeat: false });
+    while (!state.stopped && (state.ttsPending || state.speaking || state.queuedFrames.length > 0)) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   async function speakClosingAndEnd() {
     if (state.closingStarted || state.stopped) return;
     state.closingStarted = true;
@@ -590,6 +597,7 @@ export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clea
 
       if (interpretation.action === 'summary_confirm' || interpretation.action === 'yes' || SIMPLE_YES.test(text)) {
         state.memory.completedQuestionIds = mergeUnique(state.memory.completedQuestionIds, ['confirm_summary']);
+        await speakAndWait(receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_START, state.lead));
         const submission = await submitLeadSafely();
         if (submission.ok) {
           const success = receptionistPhrase(runtime.core, PHRASE_KEYS.SUBMISSION_SUCCESS, state.lead)

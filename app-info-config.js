@@ -41,6 +41,13 @@ function text(value, fallback = '') {
   return clean(value) || fallback;
 }
 
+function spokenBusinessName(value) {
+  return clean(value)
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
 function list(value, fallback = []) {
   if (!Array.isArray(value)) return [...fallback];
   return value.map(clean).filter(Boolean);
@@ -64,7 +71,7 @@ export function describeAppInfo(profile = {}) {
   const base = text(profile[APP_INFO_FIELDS.businessBase], APP_INFO_DEFAULTS.businessBase);
   const areas = list(profile[APP_INFO_FIELDS.serviceAreas]);
   return Object.freeze({
-    businessName: text(profile[APP_INFO_FIELDS.businessName]),
+    businessName: spokenBusinessName(profile[APP_INFO_FIELDS.businessName]),
     receptionistName: text(profile[APP_INFO_FIELDS.receptionistName], APP_INFO_DEFAULTS.receptionistName),
     ownerName: text(profile[APP_INFO_FIELDS.ownerName]),
     businessPhone: text(profile[APP_INFO_FIELDS.businessPhone]),
