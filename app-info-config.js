@@ -1,8 +1,3 @@
-// Single source of truth for business information supplied by ARK Websites OCM.
-// Model selection, script wording, workflow rules, and memory behavior stay inside this receptionist repository.
-
-import { RECEPTIONIST_SCRIPT_SECTIONS } from './receptionist-script.js';
-
 export const APP_INFO_FIELDS = Object.freeze({
   businessName: 'businessName',
   receptionistName: 'receptionistName',
@@ -38,83 +33,67 @@ export const APP_INFO_DEFAULTS = Object.freeze({
   aiSilenceMs: 1050,
 });
 
-function cleanText(value) {
+function clean(value) {
   return String(value ?? '').trim();
 }
 
-function textOrDefault(value, fallback = '') {
-  return cleanText(value) || fallback;
+function text(value, fallback = '') {
+  return clean(value) || fallback;
 }
 
-function listOrDefault(value, fallback = []) {
+function list(value, fallback = []) {
   if (!Array.isArray(value)) return [...fallback];
-  return value.map((item) => cleanText(item)).filter(Boolean);
+  return value.map(clean).filter(Boolean);
 }
 
-function servicesOrEmpty(value) {
+function services(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(
     Object.entries(value)
-      .map(([name, description]) => [cleanText(name), cleanText(description)])
+      .map(([name, description]) => [clean(name), clean(description)])
       .filter(([name, description]) => name && description),
   );
 }
 
-function finiteNumber(value, fallback) {
+function number(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function renderScript(value, replacements = {}) {
-  const text = Array.isArray(value) ? value.join(' ') : String(value || '');
-  return text.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (match, key) => {
-    const replacement = replacements[String(key).toLowerCase()];
-    return replacement === undefined ? match : replacement;
-  }).replace(/\s+/g, ' ').trim();
-}
-
 export function describeAppInfo(profile = {}) {
-  const base = textOrDefault(profile[APP_INFO_FIELDS.businessBase], APP_INFO_DEFAULTS.businessBase);
-  const configuredAreas = listOrDefault(profile[APP_INFO_FIELDS.serviceAreas]);
-
+  const base = text(profile[APP_INFO_FIELDS.businessBase], APP_INFO_DEFAULTS.businessBase);
+  const areas = list(profile[APP_INFO_FIELDS.serviceAreas]);
   return Object.freeze({
-    businessName: textOrDefault(profile[APP_INFO_FIELDS.businessName]),
-    receptionistName: textOrDefault(profile[APP_INFO_FIELDS.receptionistName], APP_INFO_DEFAULTS.receptionistName),
-    ownerName: textOrDefault(profile[APP_INFO_FIELDS.ownerName]),
-    businessPhone: textOrDefault(profile[APP_INFO_FIELDS.businessPhone]),
-    businessEmail: textOrDefault(profile[APP_INFO_FIELDS.businessEmail]),
-    businessHours: textOrDefault(profile[APP_INFO_FIELDS.businessHours], APP_INFO_DEFAULTS.businessHours),
-    timeZone: textOrDefault(profile[APP_INFO_FIELDS.timeZone], APP_INFO_DEFAULTS.timeZone),
-    estimateDays: textOrDefault(profile[APP_INFO_FIELDS.estimateDays], APP_INFO_DEFAULTS.estimateDays),
-    estimateWeekdays: listOrDefault(profile[APP_INFO_FIELDS.estimateWeekdays]),
-    earliestEstimateStart: textOrDefault(
+    businessName: text(profile[APP_INFO_FIELDS.businessName]),
+    receptionistName: text(profile[APP_INFO_FIELDS.receptionistName], APP_INFO_DEFAULTS.receptionistName),
+    ownerName: text(profile[APP_INFO_FIELDS.ownerName]),
+    businessPhone: text(profile[APP_INFO_FIELDS.businessPhone]),
+    businessEmail: text(profile[APP_INFO_FIELDS.businessEmail]),
+    businessHours: text(profile[APP_INFO_FIELDS.businessHours], APP_INFO_DEFAULTS.businessHours),
+    timeZone: text(profile[APP_INFO_FIELDS.timeZone], APP_INFO_DEFAULTS.timeZone),
+    estimateDays: text(profile[APP_INFO_FIELDS.estimateDays], APP_INFO_DEFAULTS.estimateDays),
+    estimateWeekdays: list(profile[APP_INFO_FIELDS.estimateWeekdays]),
+    earliestEstimateStart: text(
       profile[APP_INFO_FIELDS.earliestEstimateStart],
       APP_INFO_DEFAULTS.earliestEstimateStart,
     ),
-    latestEstimateStart: textOrDefault(
+    latestEstimateStart: text(
       profile[APP_INFO_FIELDS.latestEstimateStart],
       APP_INFO_DEFAULTS.latestEstimateStart,
     ),
     businessBase: base,
-    serviceAreas: configuredAreas.length ? configuredAreas : [base],
-    services: servicesOrEmpty(profile[APP_INFO_FIELDS.services]),
-    about: listOrDefault(profile[APP_INFO_FIELDS.about]),
-    extraInformation: textOrDefault(profile[APP_INFO_FIELDS.extraInformation]),
-    aiVoice: textOrDefault(profile[APP_INFO_FIELDS.aiVoice], APP_INFO_DEFAULTS.aiVoice),
-    aiSpeechSpeed: finiteNumber(profile[APP_INFO_FIELDS.aiSpeechSpeed], APP_INFO_DEFAULTS.aiSpeechSpeed),
-    aiSilenceMs: Math.round(finiteNumber(profile[APP_INFO_FIELDS.aiSilenceMs], APP_INFO_DEFAULTS.aiSilenceMs)),
+    serviceAreas: areas.length ? areas : [base],
+    services: services(profile[APP_INFO_FIELDS.services]),
+    about: list(profile[APP_INFO_FIELDS.about]),
+    extraInformation: text(profile[APP_INFO_FIELDS.extraInformation]),
+    aiVoice: text(profile[APP_INFO_FIELDS.aiVoice], APP_INFO_DEFAULTS.aiVoice),
+    aiSpeechSpeed: number(profile[APP_INFO_FIELDS.aiSpeechSpeed], APP_INFO_DEFAULTS.aiSpeechSpeed),
+    aiSilenceMs: Math.round(number(profile[APP_INFO_FIELDS.aiSilenceMs], APP_INFO_DEFAULTS.aiSilenceMs)),
   });
 }
 
-// Maps OCM business facts to the stable names consumed by receptionist-core.js.
-// Opening and closing wording always come from the Tabor receptionist script below.
 export function businessInfoFromAppProfile(profile = {}) {
   const info = describeAppInfo(profile);
-  const replacements = {
-    business_name: info.businessName,
-    ai_name: info.receptionistName,
-    receptionist_name: info.receptionistName,
-  };
   return Object.freeze({
     name: info.businessName,
     receptionist: info.receptionistName,
@@ -131,59 +110,17 @@ export function businessInfoFromAppProfile(profile = {}) {
     serviceAreas: info.serviceAreas,
     services: info.services,
     about: info.about,
-    openingLine: renderScript(RECEPTIONIST_SCRIPT_SECTIONS.opening, replacements),
-    closingLine: renderScript(RECEPTIONIST_SCRIPT_SECTIONS.closing, replacements),
     extraInformation: info.extraInformation,
   });
 }
 
-// Creates temporary runtime values for business-specific information only.
-// AI_MODEL is a local legacy compatibility value; the modular models are fixed in modular-models.js.
 export function runtimeEnvironmentFromApp({ profile = {}, clientId = '' } = {}) {
   const info = describeAppInfo(profile);
   return Object.freeze({
-    AI_MODEL: 'gpt-realtime-mini',
     AI_VOICE: info.aiVoice,
     AI_SPEECH_SPEED: info.aiSpeechSpeed,
     AI_SILENCE_MS: info.aiSilenceMs,
     BUSINESS_INFO: JSON.stringify(businessInfoFromAppProfile(profile)),
-    OCM_CLIENT_ID: cleanText(clientId),
+    OCM_CLIENT_ID: clean(clientId),
   });
-}
-
-export function serviceListFromBusiness(services = {}) {
-  const names = Object.keys(services);
-  if (names.length <= 1) return names[0] || 'the configured services';
-  return `${names.slice(0, -1).join(', ')}, or ${names.at(-1)}`;
-}
-
-export function buildBusinessKnowledge(business = {}) {
-  const services = Object.entries(business.services || {})
-    .map(([name, description]) => `- ${name}: ${description}`)
-    .join('\n') || '- No services were configured.';
-  const about = Array.isArray(business.about) && business.about.length
-    ? `- About: ${business.about.join(' ')}\n`
-    : '';
-  const extra = cleanText(business.extraInformation)
-    ? `- Additional information: ${cleanText(business.extraInformation)}\n`
-    : '';
-  return [
-    'BUSINESS INFORMATION',
-    `- Business name: ${cleanText(business.name)}`,
-    `- Receptionist name: ${cleanText(business.receptionist)}`,
-    `- Owner and main contact: ${cleanText(business.owner)}`,
-    `- Business phone: ${cleanText(business.phone)}`,
-    `- Business email: ${cleanText(business.email)}`,
-    `- Hours: ${cleanText(business.hours)}`,
-    `- Estimate days: ${cleanText(business.estimateDays)}`,
-    `- Estimate request times: ${cleanText(business.earliestEstimateStart)} through ${cleanText(business.latestEstimateStart)}`,
-    `- Time zone: ${cleanText(business.timeZone)}`,
-    `- Based in: ${cleanText(business.base)}`,
-    `- Common service areas: ${(business.serviceAreas || []).join(', ')}`,
-    '- Services:',
-    services,
-    about.trimEnd(),
-    extra.trimEnd(),
-    '- Never quote an unconfigured price, promise availability, or invent information.',
-  ].filter(Boolean).join('\n');
 }
