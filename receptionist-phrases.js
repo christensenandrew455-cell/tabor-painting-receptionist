@@ -34,6 +34,7 @@ export const PHRASE_KEYS = Object.freeze({
   UNEXPECTED_END_CLARIFY: 'RESPONSE_UNEXPECTED_END_CLARIFY',
   RESTART_BLOCKED: 'RESPONSE_RESTART_BLOCKED',
   AI_IDENTITY: 'RESPONSE_AI_IDENTITY',
+  SUBMISSION_START: 'RESPONSE_SUBMISSION_START',
   SUBMISSION_SUCCESS: 'RESPONSE_SUBMISSION_SUCCESS',
   SUBMISSION_FAILURE: 'RESPONSE_SUBMISSION_FAILURE',
   VALIDATION_NAME: 'VALIDATION_NAME',
@@ -65,7 +66,7 @@ export const RECEPTIONIST_PHRASES = Object.freeze({
   QUESTION_ESTIMATE_DATE_TIME: 'Next, we need a date and time request for the estimate. We schedule estimates {{estimate_days}} from {{earliest_estimate_time}} to {{latest_estimate_time}}.',
   QUESTION_ADDITIONAL_NOTES: 'Now do you have any notes about the project?',
   QUESTION_CONTACT_CONSENT: 'Do you consent to being contacted by {{business_name}}?',
-  QUESTION_FINAL_CONFIRMATION: 'Let me read that back. I have {{full_name}} requesting {{service}} at {{project_address}}, with the estimate date and time requested for {{requested_date}} at {{requested_time}}. {{notes_summary}} Does all of that sound right?',
+  QUESTION_FINAL_CONFIRMATION: 'Let me read that back. I have {{full_name}} requesting {{service}} at {{project_address}}, with the estimate date and time requested for {{requested_date}} at {{requested_time}}. {{notes_summary}} Is all of that correct? You can tell me what needs to be changed, or say yes to submit it.',
   QUESTION_CLARIFY: "I'm sorry, I didn't catch that. Could you repeat that?",
 
   ACK_SORRY: "I'm sorry about that.",
@@ -80,7 +81,8 @@ export const RECEPTIONIST_PHRASES = Object.freeze({
   RESPONSE_RESTART_BLOCKED: 'You can update the estimate request information when I summarize it at the end.',
   RESPONSE_AI_IDENTITY: 'I am an AI receptionist working for {{business_name}}, managed by ARK client center.',
 
-  RESPONSE_SUBMISSION_SUCCESS: 'Okay, your estimate request has been submitted. Here is the final summary: {{service}} at {{project_address}}, requested for {{requested_date}} at {{requested_time}}. {{notes_summary}} {{business_name}} will follow up with you shortly. Do you have any more questions about {{business_name}}?',
+  RESPONSE_SUBMISSION_START: 'Okay. Submitting your request now.',
+  RESPONSE_SUBMISSION_SUCCESS: 'Your estimate request has been submitted. {{business_name}} will follow up with you shortly. Do you have any more questions about {{business_name}}?',
   RESPONSE_SUBMISSION_FAILURE: "I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. Do you have any more questions about {{business_name}}?",
 
   VALIDATION_NAME: 'I still need both your first and last name.',
