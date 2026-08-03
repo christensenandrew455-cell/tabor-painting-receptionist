@@ -80,7 +80,7 @@ export const RECEPTIONIST_PHRASES = Object.freeze({
   RESPONSE_RESTART_BLOCKED: 'You can update the estimate request information when I summarize it at the end.',
   RESPONSE_AI_IDENTITY: 'I am an AI receptionist working for {{business_name}}, managed by ARK client center.',
 
-  RESPONSE_SUBMISSION_SUCCESS: 'Okay, your estimate request has been submitted. {{business_name}} will follow up with you shortly. Do you have any more questions about {{business_name}}?',
+  RESPONSE_SUBMISSION_SUCCESS: 'Okay, your estimate request has been submitted. Here is the final summary: {{service}} at {{project_address}}, requested for {{requested_date}} at {{requested_time}}. {{notes_summary}} {{business_name}} will follow up with you shortly. Do you have any more questions about {{business_name}}?',
   RESPONSE_SUBMISSION_FAILURE: "I'm sorry. Something went wrong and I couldn't send the request. Please call again within the next 24 hours. Do you have any more questions about {{business_name}}?",
 
   VALIDATION_NAME: 'I still need both your first and last name.',
