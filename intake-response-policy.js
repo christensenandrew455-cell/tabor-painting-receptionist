@@ -28,6 +28,7 @@ export function baseQuestionFor(core, questionId, lead = {}) {
     more_questions: PHRASE_KEYS.MORE_QUESTIONS,
     service: PHRASE_KEYS.SERVICE,
     name: PHRASE_KEYS.FULL_NAME,
+    callback_phone: PHRASE_KEYS.CALLBACK_PHONE,
     project_location: PHRASE_KEYS.PROJECT_ADDRESS,
     preferred_date_time: PHRASE_KEYS.ESTIMATE_DATE_TIME,
     notes: PHRASE_KEYS.ADDITIONAL_NOTES,
