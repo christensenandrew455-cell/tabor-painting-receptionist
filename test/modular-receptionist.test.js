@@ -86,7 +86,8 @@ test('question IDs map to approved exact phrases', () => {
   assert.equal(baseQuestionFor(core, 'service', completeLead), 'What service do you need?');
   assert.equal(baseQuestionFor(core, 'name', completeLead), 'What is your full name?');
   assert.match(baseQuestionFor(core, 'project_location', completeLead), /street number and name/);
-  assert.match(baseQuestionFor(core, 'preferred_date_time', completeLead), /Monday through Friday/);
+  assert.match(baseQuestionFor(core, 'preferred_date', completeLead), /Monday through Friday/);
+  assert.match(baseQuestionFor(core, 'preferred_time', completeLead), /9:00 AM through 4:00 PM/);
 });
 
 test('interpretation prompt is tenant-timezone-aware and emits no caller prose', () => {
@@ -212,7 +213,7 @@ test('deterministic service capture does not invent unconfigured categories', ()
 
 test('completed fields advance in locked order and consent false does not complete intake', () => {
   const memory = { completedQuestionIds: [] };
-  for (const questionId of ['service', 'name', 'callback_phone', 'project_location', 'preferred_date_time', 'notes']) {
+  for (const questionId of ['service', 'name', 'callback_phone', 'project_location', 'preferred_date', 'preferred_time', 'notes']) {
     memory.completedQuestionIds = markDeterministicCompletions(
       core,
       questionId,
