@@ -1,14 +1,14 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "3.0.0",
-  "description": "Deterministic Telnyx receptionist with one modular OpenAI Realtime voice pipeline and ordered runtime logs.",
+  "version": "4.0.0",
+  "description": "Tenant-isolated Telnyx receptionist with canonical intake validation and idempotent OCM delivery.",
   "main": "server-modular.js",
   "type": "module",
   "scripts": {
-    "start": "node --import ./ordered-log.js --import ./stream-call-link.js server-modular.js",
-    "dev": "node --watch --import ./ordered-log.js --import ./stream-call-link.js server-modular.js",
-    "check": "node --check ordered-log.js && node --check modular-models.js && node --check audio-codec.js && node --check estimate-date.js && node --check openai-voice.js && node --check realtime-turn-interpreter.js && node --check receptionist-phrases.js && node --check intake-response-policy.js && node --check modular-intake-logic.js && node --check voice-pipeline-controller.js && node --check app-info-config.js && node --check runtime-loader.js && node --check receptionist-core.js && node --check call-policy.js && node --check stream-call-link.js && node --check server-modular.js && node --check test/test-env.js && node --check test/receptionist.test.js && node --check test/modular-receptionist.test.js && node --check test/realtime-voice-schema.test.js",
-    "test": "node --import ./test/test-env.js --test test/receptionist.test.js test/modular-receptionist.test.js test/realtime-voice-schema.test.js"
+    "start": "node --import ./ordered-log.js server-modular.js",
+    "dev": "node --watch --import ./ordered-log.js server-modular.js",
+    "check": "node --check ordered-log.js && node --check modular-models.js && node --check audio-codec.js && node --check intake-schema.js && node --check estimate-date.js && node --check openai-voice.js && node --check ocm-delivery.js && node --check realtime-turn-interpreter.js && node --check receptionist-phrases.js && node --check intake-response-policy.js && node --check modular-intake-logic.js && node --check voice-pipeline-controller.js && node --check app-info-config.js && node --check runtime-loader.js && node --check receptionist-core.js && node --check call-policy.js && node --check server-modular.js && node --check test/test-env.js && node --check test/receptionist.test.js && node --check test/ocm-delivery.test.js && node --check test/modular-receptionist.test.js && node --check test/realtime-voice-schema.test.js",
+    "test": "node --import ./test/test-env.js --test test/receptionist.test.js test/modular-receptionist.test.js test/ocm-delivery.test.js test/realtime-voice-schema.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

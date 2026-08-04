@@ -5,8 +5,7 @@ import {
   repeatQuestionFor,
   summaryStatement,
 } from './intake-response-policy.js';
-import { resolveEstimateDate } from './estimate-date.js';
-
+import { isValidFullName } from './intake-schema.js';
 export { availabilityStatement, baseQuestionFor, repeatQuestionFor, summaryStatement };
 
 const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
@@ -35,8 +34,10 @@ const SPOKEN_TIMES = Object.freeze({
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
   'name',
+  'callback_phone',
   'project_location',
-  'preferred_date_time',
+  'preferred_date',
+  'preferred_time',
   'notes',
   'contact_consent',
   'confirm_summary',
@@ -66,12 +67,16 @@ function normalizedAddress(value) {
 function addressParts(projectLocation = '') {
   const segments = normalizedAddress(projectLocation).split(',').map((part) => clean(part)).filter(Boolean);
   const street = segments.shift() || '';
+  const unit = segments.length >= 3 && /^(?:apt|apartment|unit|suite|ste|#)\b/i.test(segments[0])
+    ? segments.shift()
+    : '';
   const cityOrTown = segments.shift() || '';
-  const state = segments.join(', ');
+  const state = segments.join(' ');
   const streetMatch = street.match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
   return {
     streetNumber: streetMatch?.[1] || '',
     streetName: streetMatch?.[2] || '',
+    unit,
     cityOrTown,
     state,
   };
@@ -81,13 +86,15 @@ function streetAddressCandidate(value) {
   const text = normalizedAddress(value);
   const streetStart = text.search(/\b\d+[A-Za-z-]*\s+[A-Za-z0-9]/);
   if (streetStart < 0) return '';
-  return text
+  const segments = text
     .slice(streetStart)
     .split(',')
     .map((part) => clean(part))
-    .filter(Boolean)
-    .slice(0, 3)
-    .join(', ');
+    .filter(Boolean);
+  const limit = segments.length >= 4 && /^(?:apt|apartment|unit|suite|ste|#)\b/i.test(segments[1])
+    ? 4
+    : 3;
+  return segments.slice(0, limit).join(', ');
 }
 
 function addressAnswerWithoutLeadIn(value) {
@@ -103,10 +110,8 @@ function isPlausibleStreetAddress(value) {
   return Boolean(parts.streetNumber && parts.streetName.length >= 2);
 }
 
-function isPlausibleProjectAddress(value) {
-  if (!isPlausibleStreetAddress(value)) return false;
-  const parts = addressParts(value);
-  return Boolean(parts.cityOrTown.length >= 2 && parts.state.length >= 2);
+function isPlausibleProjectAddress(core, value) {
+  return core.parseProjectAddress(value).valid;
 }
 
 function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
@@ -119,7 +124,7 @@ function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
   const answer = addressAnswerWithoutLeadIn(transcript);
   if (!answer || /[?]/.test(answer) || /\d/.test(answer)) return '';
   const segments = answer.split(',').map((part) => clean(part)).filter(Boolean);
-  const street = `${current.streetNumber} ${current.streetName}`;
+  const street = [`${current.streetNumber} ${current.streetName}`, current.unit].filter(Boolean).join(', ');
 
   if (!current.cityOrTown && !current.state && segments.length >= 2) {
     return `${street}, ${segments[0]}, ${segments.slice(1).join(', ')}`;
@@ -135,52 +140,11 @@ function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
 }
 
 function isPlausibleFullName(value) {
-  const name = normalizedName(value);
-  if (!name || name.length > 80 || /[?]/.test(name) || NON_NAME_SENTENCE_PATTERN.test(name)) return false;
-  const tokens = name.split(/\s+/).filter(Boolean);
-  return tokens.length >= 2
-    && tokens.length <= 5
-    && tokens.every((token) => NAME_TOKEN_PATTERN.test(token));
-}
-
-function configuredServiceMatching(core, servicePattern) {
-  return serviceNames(core).find((service) => servicePattern.test(service));
+  return isValidFullName(normalizedName(value));
 }
 
 function inferService(core, transcript = '') {
-  const text = clean(transcript).toLowerCase();
-  if (!text) return '';
-
-  const exact = serviceNames(core)
-    .find((candidate) => text.includes(candidate.toLowerCase()));
-  if (exact) return exact;
-
-  const rules = [
-    {
-      servicePattern: /\b(?:wood\s+stain|staining)\b/i,
-      callerPattern: /\b(?:stain|staining|re-?stain|deck staining|fence staining|wood staining)\b/i,
-    },
-    {
-      servicePattern: /\b(?:small\s+paint\s+repair|paint\s+repair|touch[- ]?up)\b/i,
-      callerPattern: /\b(?:touch[- ]?up|small paint repair|paint repair|small patch|paint chip repair)\b/i,
-    },
-    {
-      servicePattern: /\binterior\b/i,
-      callerPattern: /\b(?:inside|interior|rooms?|bedrooms?|living room|kitchen|walls?|ceilings?)\b/i,
-    },
-    {
-      servicePattern: /\bexterior\b/i,
-      callerPattern: /\b(?:outside|exterior|siding|facade|outside of (?:my|the) house|whole house(?: painted| repainted)?)\b/i,
-    },
-  ];
-
-  for (const rule of rules) {
-    if (!rule.callerPattern.test(text)) continue;
-    const service = configuredServiceMatching(core, rule.servicePattern);
-    if (service) return service;
-  }
-
-  return '';
+  return core.matchService(transcript);
 }
 
 export function mergeLead(current = {}, updates = {}) {
@@ -205,12 +169,13 @@ export function mergeLead(current = {}, updates = {}) {
   return merged;
 }
 
-export function validationLeadFromModular(lead = {}) {
-  const address = addressParts(lead.projectLocation);
+export function validationLeadFromModular(core, lead = {}) {
+  const address = core.parseProjectAddress(lead.projectLocation);
   return {
     fullName: normalizedName(lead.name),
-    serviceType: clean(lead.service).toLowerCase(),
-    ...address,
+    serviceType: clean(lead.service),
+    callbackPhone: clean(lead.callbackPhone),
+    projectLocation: address.formatted || clean(lead.projectLocation),
     preferredDateOrDay: clean(lead.preferredDate),
     preferredTime: clean(lead.preferredTime),
     additionalNotes: clean(lead.notes),
@@ -234,9 +199,9 @@ function rawTimeFromTranscript(transcript = '') {
   return `${hour}${minutes}${meridiem ? ` ${meridiem}` : ''}`;
 }
 
-function isSchedulingAnswerOnly(transcript = '') {
+function isSchedulingAnswerOnly(core, transcript = '') {
   const text = clean(transcript);
-  return Boolean(resolveEstimateDate(text) && rawTimeFromTranscript(text) && !PROJECT_NOTE_DETAIL_PATTERN.test(text));
+  return Boolean(core.resolvePreferredDate(text) && rawTimeFromTranscript(text) && !PROJECT_NOTE_DETAIL_PATTERN.test(text));
 }
 
 export function isControlSpeech(value) {
@@ -262,22 +227,30 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     captured.name = normalizedName(text);
   }
 
+  if (currentQuestionId === 'callback_phone') {
+    const callbackPhone = core.normalizePhone(text);
+    if (callbackPhone) captured.callbackPhone = callbackPhone;
+  }
+
   if (currentQuestionId === 'project_location') {
     const projectLocation = mergeProjectLocationAnswer(captured.projectLocation, text);
     if (isPlausibleStreetAddress(projectLocation)) captured.projectLocation = projectLocation;
   }
 
-  if (currentQuestionId === 'preferred_date_time') {
-    const preferredDate = resolveEstimateDate(text);
-    const rawTime = rawTimeFromTranscript(text);
-    const preferredTime = rawTime ? clean(core.normalizePreferredTime(rawTime)) : '';
+  if (currentQuestionId === 'preferred_date') {
+    const preferredDate = core.resolvePreferredDate(text);
     if (preferredDate) captured.preferredDate = preferredDate;
+  }
+
+  if (currentQuestionId === 'preferred_time') {
+    const rawTime = rawTimeFromTranscript(text) || text;
+    const preferredTime = clean(core.normalizePreferredTime(rawTime));
     if (preferredTime) captured.preferredTime = preferredTime;
   }
 
   if (currentQuestionId === 'notes') {
     if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
-    else if (text && !isSchedulingAnswerOnly(text)) captured.notes = text;
+    else if (text && !isSchedulingAnswerOnly(core, text)) captured.notes = text;
   }
 
   if (currentQuestionId === 'contact_consent') {
@@ -290,7 +263,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
 }
 
 export function changedLeadFields(before = {}, after = {}) {
-  return ['name', 'service', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent']
+  return ['name', 'service', 'callbackPhone', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent']
     .filter((key) => before[key] !== after[key]);
 }
 
@@ -298,25 +271,29 @@ export function callerAffirmsSummary(transcript = '') {
   return AFFIRMATIVE_PATTERN.test(clean(transcript));
 }
 
-export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
+export function markDeterministicCompletions(core, currentQuestionId, lead, completedIds = []) {
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
   if (currentQuestionId === 'name' && isPlausibleFullName(lead.name)) completed.add('name');
-  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(lead.projectLocation)) completed.add('project_location');
-  if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
+  if (currentQuestionId === 'callback_phone' && core.normalizePhone(lead.callbackPhone)) completed.add('callback_phone');
+  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(core, lead.projectLocation)) completed.add('project_location');
+  if (currentQuestionId === 'preferred_date' && clean(lead.preferredDate)) completed.add('preferred_date');
+  if (currentQuestionId === 'preferred_time' && clean(lead.preferredTime)) completed.add('preferred_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
-  if (currentQuestionId === 'contact_consent' && typeof lead.contactConsent === 'boolean') completed.add('contact_consent');
+  if (currentQuestionId === 'contact_consent' && lead.contactConsent === true) completed.add('contact_consent');
   return [...completed];
 }
 
-export function nextRequiredQuestion(memory, lead = {}) {
+export function nextRequiredQuestion(core, memory, lead = {}) {
   const completed = new Set(memory.completedQuestionIds || []);
   if (!completed.has('service') || !clean(lead.service)) return 'service';
   if (!completed.has('name') || !isPlausibleFullName(lead.name)) return 'name';
-  if (!completed.has('project_location') || !isPlausibleProjectAddress(lead.projectLocation)) return 'project_location';
-  if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
+  if (!core.normalizePhone(lead.callbackPhone)) return 'callback_phone';
+  if (!completed.has('project_location') || !isPlausibleProjectAddress(core, lead.projectLocation)) return 'project_location';
+  if (!completed.has('preferred_date') || !clean(lead.preferredDate)) return 'preferred_date';
+  if (!completed.has('preferred_time') || !clean(lead.preferredTime)) return 'preferred_time';
   if (!completed.has('notes')) return 'notes';
-  if (!completed.has('contact_consent') || typeof lead.contactConsent !== 'boolean') return 'contact_consent';
+  if (!completed.has('contact_consent') || lead.contactConsent !== true) return 'contact_consent';
   if (!completed.has('confirm_summary')) return 'confirm_summary';
   return 'none';
 }
@@ -329,8 +306,10 @@ export function validationQuestion(errors = []) {
   const text = errors.join(' ').toLowerCase();
   if (/first and last name/.test(text)) return 'name';
   if (/configured service/.test(text)) return 'service';
-  if (/city or town|project state|street number|street name/.test(text)) return 'project_location';
-  if (/estimate date|weekday|estimate time/.test(text)) return 'preferred_date_time';
+  if (/callback phone/.test(text)) return 'callback_phone';
+  if (/project address|city or town|valid state|street number|street name/.test(text)) return 'project_location';
+  if (/estimate date|weekday/.test(text)) return 'preferred_date';
+  if (/estimate time/.test(text)) return 'preferred_time';
   if (/consent/.test(text)) return 'contact_consent';
   return 'clarify';
 }
@@ -338,8 +317,10 @@ export function validationQuestion(errors = []) {
 export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'name') return 'I still need both your first and last name.';
   if (questionId === 'service') return 'I still need the service you want.';
+  if (questionId === 'callback_phone') return 'I still need a valid callback phone number.';
   if (questionId === 'project_location') return 'I still need the street address, city or town, and state.';
-  if (questionId === 'preferred_date_time') return 'I still need an upcoming date and a time within the estimate schedule.';
+  if (questionId === 'preferred_date') return 'I still need an upcoming date within the estimate schedule.';
+  if (questionId === 'preferred_time') return 'I still need a time within the estimate schedule.';
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
   return errors.length ? 'I still need some information before I can submit the request.' : '';
 }
