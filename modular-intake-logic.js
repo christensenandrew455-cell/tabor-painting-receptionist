@@ -34,6 +34,7 @@ const SPOKEN_TIMES = Object.freeze({
 export const ESTIMATE_ORDER = Object.freeze([
   'service',
   'name',
+  'callback_phone',
   'project_location',
   'preferred_date_time',
   'notes',
@@ -166,6 +167,7 @@ export function validationLeadFromModular(core, lead = {}) {
   return {
     fullName: normalizedName(lead.name),
     serviceType: clean(lead.service),
+    callbackPhone: clean(lead.callbackPhone),
     projectLocation: address.formatted || clean(lead.projectLocation),
     preferredDateOrDay: clean(lead.preferredDate),
     preferredTime: clean(lead.preferredTime),
@@ -218,6 +220,11 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     captured.name = normalizedName(text);
   }
 
+  if (currentQuestionId === 'callback_phone') {
+    const callbackPhone = core.normalizePhone(text);
+    if (callbackPhone) captured.callbackPhone = callbackPhone;
+  }
+
   if (currentQuestionId === 'project_location') {
     const projectLocation = mergeProjectLocationAnswer(captured.projectLocation, text);
     if (isPlausibleStreetAddress(projectLocation)) captured.projectLocation = projectLocation;
@@ -246,7 +253,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
 }
 
 export function changedLeadFields(before = {}, after = {}) {
-  return ['name', 'service', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent']
+  return ['name', 'service', 'callbackPhone', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent']
     .filter((key) => before[key] !== after[key]);
 }
 
@@ -258,6 +265,7 @@ export function markDeterministicCompletions(core, currentQuestionId, lead, comp
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
   if (currentQuestionId === 'name' && isPlausibleFullName(lead.name)) completed.add('name');
+  if (currentQuestionId === 'callback_phone' && core.normalizePhone(lead.callbackPhone)) completed.add('callback_phone');
   if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(core, lead.projectLocation)) completed.add('project_location');
   if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
@@ -269,6 +277,7 @@ export function nextRequiredQuestion(core, memory, lead = {}) {
   const completed = new Set(memory.completedQuestionIds || []);
   if (!completed.has('service') || !clean(lead.service)) return 'service';
   if (!completed.has('name') || !isPlausibleFullName(lead.name)) return 'name';
+  if (!core.normalizePhone(lead.callbackPhone)) return 'callback_phone';
   if (!completed.has('project_location') || !isPlausibleProjectAddress(core, lead.projectLocation)) return 'project_location';
   if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
   if (!completed.has('notes')) return 'notes';
@@ -294,6 +303,7 @@ export function validationQuestion(errors = []) {
 export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'name') return 'I still need both your first and last name.';
   if (questionId === 'service') return 'I still need the service you want.';
+  if (questionId === 'callback_phone') return 'I still need a valid callback phone number.';
   if (questionId === 'project_location') return 'I still need the street address, city or town, and state.';
   if (questionId === 'preferred_date_time') return 'I still need an upcoming date and a time within the estimate schedule.';
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
