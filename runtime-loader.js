@@ -88,6 +88,13 @@ export async function loadRuntimeFromSignedTelnyxEvent({ rawBody, signature, tim
     throw new Error('ARK OCM returned incomplete receptionist settings.');
   }
 
+  if (data.expiresAt) {
+    const expiresAt = Date.parse(data.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error('ARK OCM returned expired receptionist settings.');
+    }
+  }
+
   const profile = sanitizeProfile(data.profile);
   const ignoredFields = Object.keys(data.profile).filter((field) => !ALLOWED_PROFILE_FIELDS.includes(field));
   if (ignoredFields.length) {
