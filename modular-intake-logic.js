@@ -5,6 +5,7 @@ import {
   repeatQuestionFor,
   summaryStatement,
 } from './intake-response-policy.js';
+import { isValidFullName } from './intake-schema.js';
 export { availabilityStatement, baseQuestionFor, repeatQuestionFor, summaryStatement };
 
 const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
@@ -131,12 +132,7 @@ function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
 }
 
 function isPlausibleFullName(value) {
-  const name = normalizedName(value);
-  if (!name || name.length > 80 || /[?]/.test(name) || NON_NAME_SENTENCE_PATTERN.test(name)) return false;
-  const tokens = name.split(/\s+/).filter(Boolean);
-  return tokens.length >= 2
-    && tokens.length <= 5
-    && tokens.every((token) => NAME_TOKEN_PATTERN.test(token));
+  return isValidFullName(normalizedName(value));
 }
 
 function inferService(core, transcript = '') {
