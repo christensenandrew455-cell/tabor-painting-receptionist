@@ -1,5 +1,4 @@
 import { changedLeadFields, mergeLead } from './modular-intake-logic.js';
-import { resolveEstimateDate } from './estimate-date.js';
 
 export const INTERPRETER_ACTIONS = Object.freeze([
   'answer',
@@ -104,7 +103,7 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     recentConversation: history.slice(-8),
     configuredServices: services,
     currentDate: new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
+      timeZone: core?.BUSINESS?.timeZone || 'UTC',
       year: 'numeric',
       month: 'numeric',
       day: 'numeric',
@@ -143,8 +142,8 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     'Map holes, touch-ups, patches, damaged paint, or paint repair to small paint repair when that configured service exists.',
     'Map decks, fences, wood, or staining to wood staining when that configured service exists.',
     'For names, remove fillers such as um, uh, well, like, or so. Return a real first and last name only when supplied.',
-    'For addresses, return only the address information. A partial street address is allowed and may be combined later.',
-    'For dates and times, preserve the caller date phrase or explicit date in preferredDate. The application will convert weekdays, tomorrow, and written dates into an actual M/D/YY calendar date.',
+    'For addresses, return only the address information. Use commas between street, optional unit, city or town, and state. A partial street address is allowed and may be combined later.',
+    'For dates and times, preserve the caller date phrase or explicit date in preferredDate. The application will convert it into one tenant-local YYYY-MM-DD calendar date.',
     'Normalize spoken time numbers. Example: Monday at two means preferredDate Monday and preferredTime 2:00 PM.',
     'When several possible dates are mentioned, use the caller final accepted choice, not rejected or unavailable choices.',
     'Times outside the stated estimate schedule must be null so the controller can ask again.',
@@ -162,16 +161,14 @@ export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}
   const updates = interpretation.updates || {};
   let next = { ...lead };
 
-  const configuredServices = Object.keys(core?.BUSINESS?.services || {});
-  const service = clean(updates.service).toLowerCase();
-  const matchedService = configuredServices.find((candidate) => candidate.toLowerCase() === service);
+  const matchedService = core.matchService(updates.service);
   if (matchedService) next.service = matchedService;
 
   if (updates.name) next = mergeLead(next, { name: cleanName(updates.name) });
   if (updates.projectLocation) next = mergeLead(next, { projectLocation: updates.projectLocation });
 
   if (updates.preferredDate) {
-    const resolvedDate = resolveEstimateDate(updates.preferredDate, options);
+    const resolvedDate = core.resolvePreferredDate(updates.preferredDate, options.now || new Date());
     if (resolvedDate) next.preferredDate = resolvedDate;
   }
   if (updates.preferredTime) {
