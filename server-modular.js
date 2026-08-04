@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import http from 'http';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { callUsageOutcome, durationSeconds } from './call-policy.js';
@@ -12,6 +12,7 @@ import {
 import { MODELS } from './modular-models.js';
 import { createVoicePipeline } from './voice-pipeline-controller.js';
 import { normalizePhone as normalizeIntakePhone } from './intake-schema.js';
+import { deliverIntake } from './ocm-delivery.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = resolvePublicUrl();
@@ -353,77 +354,24 @@ function grantPostSubmissionGrace(ctx) {
 }
 
 async function saveLead(ctx, { payload }) {
-  const intakeUrl = clean(ctx.runtimeData?.intakeUrl);
-  if (!intakeUrl) throw new Error('The call has no ARK OCM intake URL.');
+  const result = await deliverIntake({
+    url: ctx.runtimeData?.intakeUrl,
+    token: ctx.runtimeData?.intakeToken,
+    clientId: ctx.runtimeData?.clientId,
+    callSessionId: ctx.callControlId || ctx.id,
+    payload,
+  });
 
-  const intakeRequestId = createHash('sha256')
-    .update(`${ctx.callControlId || ctx.id}:confirmed:${JSON.stringify(payload)}`)
-    .digest('hex');
-  let lastError;
-
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const response = await fetch(intakeUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': intakeRequestId,
-          ...(ctx.runtimeData.intakeToken ? { Authorization: `Bearer ${ctx.runtimeData.intakeToken}` } : {}),
-        },
-        body: JSON.stringify({
-          ...payload,
-          callSessionId: ctx.callControlId || ctx.id,
-          intakeRequestId,
-        }),
-        signal: AbortSignal.timeout(7000),
-      });
-
-      const raw = await response.text();
-      let data;
-      try {
-        data = raw ? JSON.parse(raw) : null;
-      } catch {
-        const error = new Error(`OCM returned non-JSON after intake submission: ${response.status}`);
-        error.retryable = false;
-        throw error;
-      }
-
-      if (!response.ok) {
-        const error = new Error(data?.error || `OCM intake failed: ${response.status}`);
-        error.retryable = response.status === 429 || response.status >= 500;
-        throw error;
-      }
-      if (!data || data.ok === false || data.success === false) {
-        const error = new Error(data?.error || 'OCM did not confirm that the intake was saved.');
-        error.retryable = false;
-        throw error;
-      }
-      if (data.clientId && data.clientId !== ctx.runtimeData.clientId) {
-        const error = new Error('OCM confirmed the intake for a different client.');
-        error.retryable = false;
-        throw error;
-      }
-
-      ctx.leadSaved = true;
-      ctx.intakeRequestId = intakeRequestId;
-      grantPostSubmissionGrace(ctx);
-      debug('lead.saved', {
-        callId: ctx.callControlId || ctx.id,
-        clientId: ctx.runtimeData.clientId,
-        intakeRequestId,
-        intakeId: clean(data.intakeId || data.id),
-      });
-      return data;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 1 && error.retryable !== false) {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        continue;
-      }
-      break;
-    }
-  }
-  throw lastError || new Error('The estimate request could not be saved.');
+  ctx.leadSaved = true;
+  ctx.intakeRequestId = result.intakeRequestId;
+  grantPostSubmissionGrace(ctx);
+  debug('lead.saved', {
+    callId: ctx.callControlId || ctx.id,
+    clientId: ctx.runtimeData.clientId,
+    intakeRequestId: result.intakeRequestId,
+    intakeId: clean(result.data.intakeId || result.data.id),
+  });
+  return result.data;
 }
 
 assertRuntimeConfiguration();
