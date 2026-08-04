@@ -101,9 +101,10 @@ test('intake delivery is isolated, idempotent, and verified before the server ma
   assert.match(delivery, /data\.ok === false/);
   assert.match(delivery, /data\.success === false/);
   assert.match(delivery, /different client/);
+  const saveLeadStart = server.indexOf('async function saveLead');
   const saveLeadBlock = server.slice(
-    server.indexOf('async function saveLead'),
-    server.indexOf('assertRuntimeConfiguration'),
+    saveLeadStart,
+    server.indexOf('assertRuntimeConfiguration();', saveLeadStart),
   );
   assert.ok(saveLeadBlock.indexOf('ctx.leadSaved = true') > saveLeadBlock.indexOf('await deliverIntake'));
 });
