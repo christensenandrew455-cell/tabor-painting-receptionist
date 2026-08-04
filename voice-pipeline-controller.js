@@ -49,7 +49,8 @@ const QUESTION_FIELDS = Object.freeze({
   name: ['name'],
   callback_phone: ['callbackPhone'],
   project_location: ['projectLocation'],
-  preferred_date_time: ['preferredDate', 'preferredTime'],
+  preferred_date: ['preferredDate'],
+  preferred_time: ['preferredTime'],
   notes: ['notes'],
   contact_consent: ['contactConsent'],
   confirm_summary: ['name', 'service', 'callbackPhone', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent'],
@@ -60,7 +61,8 @@ const ALLOWED_ACKS = Object.freeze({
   name: new Set(['thanks', 'thanks_name']),
   callback_phone: new Set(['thanks', 'got_it']),
   project_location: new Set(['thanks', 'got_it', 'sounds_good']),
-  preferred_date_time: new Set(['thanks', 'got_it', 'sounds_good']),
+  preferred_date: new Set(['thanks', 'got_it', 'sounds_good']),
+  preferred_time: new Set(['thanks', 'got_it', 'sounds_good']),
   notes: new Set(['thanks', 'got_it']),
   contact_consent: new Set(['thanks', 'got_it']),
 });
@@ -114,7 +116,8 @@ function validationPhraseKey(questionId) {
     callback_phone: PHRASE_KEYS.VALIDATION_CALLBACK_PHONE,
     service: PHRASE_KEYS.VALIDATION_SERVICE,
     project_location: PHRASE_KEYS.PROJECT_ADDRESS_FULL,
-    preferred_date_time: PHRASE_KEYS.VALIDATION_ESTIMATE_DATE_TIME,
+    preferred_date: PHRASE_KEYS.VALIDATION_ESTIMATE_DATE,
+    preferred_time: PHRASE_KEYS.VALIDATION_ESTIMATE_TIME,
     contact_consent: PHRASE_KEYS.VALIDATION_CONTACT_CONSENT,
   }[questionId] || null;
 }
@@ -124,7 +127,8 @@ function whyPhraseKey(questionId) {
     service: PHRASE_KEYS.WHY_SERVICE,
     name: PHRASE_KEYS.WHY_NAME,
     project_location: PHRASE_KEYS.WHY_PROJECT_ADDRESS,
-    preferred_date_time: PHRASE_KEYS.WHY_ESTIMATE_DATE_TIME,
+    preferred_date: PHRASE_KEYS.WHY_ESTIMATE_DATE_TIME,
+    preferred_time: PHRASE_KEYS.WHY_ESTIMATE_DATE_TIME,
     contact_consent: PHRASE_KEYS.WHY_CONTACT_CONSENT,
   }[questionId] || null;
 }
