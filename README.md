@@ -2,19 +2,85 @@
 
 This Railway service answers Telnyx calls, runs one deterministic estimate-intake workflow, and saves caller-confirmed leads into the matched ARK OCM workspace.
 
-## Call flow
+## Runtime flow
 
-1. Telnyx sends a signed call event to Railway.
-2. Railway forwards the signed event to ARK OCM.
-3. ARK OCM verifies the signature and matches the dialed number to one business account.
-4. ARK OCM returns that business's facts, services, estimate schedule, voice settings, and private lead endpoints.
-5. Railway starts one modular OpenAI Realtime voice pipeline for the call.
-6. The controller chooses fixed phrase keys and fixed question order.
-7. A lead is saved only after validation, consent, and final caller confirmation.
+1. Telnyx sends a signed `call.initiated` event.
+2. The bridge forwards the unmodified body and signature to ARK OCM.
+3. OCM verifies the Telnyx signature and matches the dialed number to exactly one client.
+4. OCM returns the exact client ID, business profile, intake endpoint, usage endpoint, and optional expiring endpoint tokens.
+5. The bridge validates the profile and constructs one tenant-isolated core object. It never changes global environment variables.
+6. The bridge answers the call and gives Telnyx an HMAC-signed, expiring media URL.
+7. One call session collects and validates fields in a fixed order.
+8. After explicit consent and final confirmation, the bridge submits one idempotent intake request.
+9. The lead is marked saved only after OCM returns valid JSON confirming success for the same client.
 
-Caller-facing wording, workflow rules, and model selection stay in this repository. Business facts and voice settings are supplied per call by ARK OCM.
+Client IDs are opaque values. They are validated and preserved exactly; they are never lowercased or converted to slugs.
 
-## Railway variables
+## Intake script
+
+1. Estimate offer
+2. Configured service
+3. Full name
+4. Callback phone, only when Telnyx did not provide a valid caller number
+5. Full project address
+6. Preferred estimate date
+7. Preferred estimate time
+8. Additional notes
+9. Permission to be contacted
+10. Full readback and explicit submission confirmation
+
+A caller who declines contact permission is told that the request will not be submitted, and the call closes normally.
+
+## Validation
+
+- **Service:** must resolve uniquely to a configured service.
+- **Name:** requires at least two Unicode name tokens; accents, apostrophes, hyphens, initials, and suffixes are allowed.
+- **Phone:** must normalize to E.164. The Telnyx caller number is reused when valid.
+- **Address:** requires street number, street name, city or town, and a valid US state. Unit and ZIP are optional and retained.
+- **Date:** stored once as `YYYY-MM-DD`, interpreted in the tenant IANA time zone, strictly after the tenant's current date, and restricted to configured estimate weekdays.
+- **Time:** normalized inside the configured inclusive estimate window.
+- **Notes:** optional, with `none` used for a clear negative response.
+- **Consent:** must be an explicit yes.
+- **Confirmation:** applies only to the current lead revision; any correction clears the prior confirmation.
+- **OCM response:** must be successful JSON and must not identify a different client.
+
+Service-area eligibility is not inferred from free-form text. It should be enforced only when OCM supplies a structured eligibility rule.
+
+## Intake delivery contract
+
+Every confirmed lead receives a stable SHA-256 intake request ID derived from the call session and confirmed payload.
+
+The bridge sends:
+
+```text
+Authorization: Bearer <intakeToken>       # when OCM supplies one
+Idempotency-Key: <intakeRequestId>
+Content-Type: application/json
+```
+
+Retries reuse the same idempotency key. HTTP 429 and 5xx responses may be retried; semantic failures, client mismatches, and invalid 2xx response bodies are not retried.
+
+For complete identity binding, OCM should derive the client from the intake token and use the idempotency key when persisting the lead.
+
+## Structure
+
+```text
+server-modular.js             Telnyx webhook, authenticated media stream, call lifecycle
+runtime-loader.js              Signed OCM runtime lookup and endpoint validation
+receptionist-core.js           Per-tenant core factory and OCM payload mapping
+intake-schema.js               Canonical name, phone, address, service, date, and time rules
+ocm-delivery.js                Idempotent, verified intake delivery
+voice-pipeline-controller.js   Deterministic call state and question progression
+receptionist-phrases.js        Single caller-facing phrase catalog
+modular-intake-logic.js        Field capture and completion rules
+realtime-turn-interpreter.js   Bounded structured caller interpretation
+openai-voice.js                Realtime audio transport, transcription, and speech
+ordered-log.js                 Ordered stdout logging
+```
+
+Routine debug events record state transitions and field names, not raw caller transcripts or complete leads.
+
+## Configuration
 
 Required:
 
@@ -23,63 +89,30 @@ OPENAI_API_KEY
 TELNYX_API_KEY
 ```
 
-`PUBLIC_URL` is optional when Railway supplies `RAILWAY_PUBLIC_DOMAIN`. Railway supplies `PORT` automatically.
-
-Do not configure old per-business Railway variables. ARK OCM supplies the temporary per-call business environment internally.
-
-## Deterministic intake order
-
-1. Service
-2. Full name
-3. Full project address
-4. Requested estimate date and time
-5. Additional notes
-6. Permission to be contacted
-7. Final readback and confirmation
-
-The controller—not the model—owns the question order and spoken wording. The Realtime model is limited to transcription, structured interpretation, and exact speech playback.
-
-## Runtime structure
+One public URL source is also required:
 
 ```text
-server-modular.js             Telnyx webhook, media stream, call limits, usage reporting
-runtime-loader.js              Signed ARK OCM business lookup and runtime cache
-receptionist-core.js           Business validation, date/time rules, lead validation, OCM payload
-voice-pipeline-controller.js   Deterministic call state and question progression
-receptionist-phrases.js        Single caller-facing phrase catalog
-modular-intake-logic.js        Field extraction and intake completion rules
-realtime-turn-interpreter.js   Structured caller interpretation only
-openai-voice.js                Realtime audio, transcription, interpretation, and speech requests
-ordered-log.js                 One numbered stdout stream for readable event ordering
+PUBLIC_URL
+# or Railway-provided RAILWAY_PUBLIC_DOMAIN
 ```
 
-There is no legacy server or runtime guard chain. `npm start` has one supported production path.
-
-## Ordered logs
-
-Every `console` message is written to stdout with a six-digit sequence number, ISO timestamp, and level:
+Optional for an approved staging control plane:
 
 ```text
-[000123] 2026-08-03T14:00:00.000Z INFO [Modular receptionist debug] {...}
+OCM_RUNTIME_ENDPOINT
 ```
 
-This keeps Railway logs in emission order even when the original call used `console.warn` or `console.error`.
+Do not configure per-business Railway variables. OCM supplies the business profile and exact client routing for each call.
 
-## Telnyx
-
-Voice API webhook:
+## Endpoints
 
 ```text
-https://YOUR-RAILWAY-DOMAIN/voice-api-webhook
+POST /voice-api-webhook
+GET  /health
+WS   /media-stream             # signed URLs only
 ```
 
-Media stream:
-
-```text
-wss://YOUR-RAILWAY-DOMAIN/media-stream
-```
-
-## Validation
+## Verification
 
 ```bash
 npm install
@@ -88,4 +121,4 @@ npm test
 npm start
 ```
 
-Never commit provider credentials or private ARK connection values.
+Never commit provider credentials, OCM tokens, caller transcripts, or private lead data.
