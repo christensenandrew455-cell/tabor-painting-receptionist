@@ -67,12 +67,16 @@ function normalizedAddress(value) {
 function addressParts(projectLocation = '') {
   const segments = normalizedAddress(projectLocation).split(',').map((part) => clean(part)).filter(Boolean);
   const street = segments.shift() || '';
+  const unit = segments.length >= 3 && /^(?:apt|apartment|unit|suite|ste|#)\b/i.test(segments[0])
+    ? segments.shift()
+    : '';
   const cityOrTown = segments.shift() || '';
-  const state = segments.join(', ');
+  const state = segments.join(' ');
   const streetMatch = street.match(/^(\d+[A-Za-z-]*)\s+(.+)$/);
   return {
     streetNumber: streetMatch?.[1] || '',
     streetName: streetMatch?.[2] || '',
+    unit,
     cityOrTown,
     state,
   };
@@ -82,13 +86,15 @@ function streetAddressCandidate(value) {
   const text = normalizedAddress(value);
   const streetStart = text.search(/\b\d+[A-Za-z-]*\s+[A-Za-z0-9]/);
   if (streetStart < 0) return '';
-  return text
+  const segments = text
     .slice(streetStart)
     .split(',')
     .map((part) => clean(part))
-    .filter(Boolean)
-    .slice(0, 3)
-    .join(', ');
+    .filter(Boolean);
+  const limit = segments.length >= 4 && /^(?:apt|apartment|unit|suite|ste|#)\b/i.test(segments[1])
+    ? 4
+    : 3;
+  return segments.slice(0, limit).join(', ');
 }
 
 function addressAnswerWithoutLeadIn(value) {
@@ -118,7 +124,7 @@ function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
   const answer = addressAnswerWithoutLeadIn(transcript);
   if (!answer || /[?]/.test(answer) || /\d/.test(answer)) return '';
   const segments = answer.split(',').map((part) => clean(part)).filter(Boolean);
-  const street = `${current.streetNumber} ${current.streetName}`;
+  const street = [`${current.streetNumber} ${current.streetName}`, current.unit].filter(Boolean).join(', ');
 
   if (!current.cityOrTown && !current.state && segments.length >= 2) {
     return `${street}, ${segments[0]}, ${segments.slice(1).join(', ')}`;
