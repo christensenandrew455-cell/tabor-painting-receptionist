@@ -85,6 +85,8 @@ test('media streams require an expiring HMAC and have a bounded payload', () => 
   assert.match(server, /STREAM_TOKEN_TTL_MS/);
   assert.match(server, /verifiedStreamCallId/);
   assert.match(server, /maxPayload: 64 \* 1024/);
+  assert.match(server, /stream_bidirectional_target_legs: 'self'/);
+  assert.match(server, /send_silence_when_idle: true/);
   assert.doesNotMatch(packageJson.scripts.start, /stream-call-link/);
 });
 
