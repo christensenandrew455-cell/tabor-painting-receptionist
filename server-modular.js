@@ -485,6 +485,11 @@ app.post('/voice-api-webhook', async (req, res) => {
         signature: clean(req.headers['telnyx-signature-ed25519']),
         timestamp: clean(req.headers['telnyx-timestamp']),
       });
+      const eventCalledPhone = getCalledPhone(req.body);
+      const matchedCalledPhone = normalizePhone(runtimeData.calledPhone);
+      if (eventCalledPhone && matchedCalledPhone && eventCalledPhone !== matchedCalledPhone) {
+        throw new Error('ARK OCM matched a different called phone number.');
+      }
       callMetadata.set(id, {
         ...previous,
         callerPhone: getCallerPhone(req.body) || previous.callerPhone || '',
