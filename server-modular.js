@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import http from 'http';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { callUsageOutcome, durationSeconds } from './call-policy.js';
@@ -10,6 +11,7 @@ import {
 } from './runtime-loader.js';
 import { MODELS } from './modular-models.js';
 import { createVoicePipeline } from './voice-pipeline-controller.js';
+import { normalizePhone as normalizeIntakePhone } from './intake-schema.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = resolvePublicUrl();
@@ -20,11 +22,15 @@ const CALL_WARNING_MS = 5.5 * 60 * 1000;
 const CALL_HARD_LIMIT_MS = 6 * 60 * 1000;
 const CALL_WARNING_RETRY_MS = 5000;
 const POST_SUBMISSION_GRACE_MS = 90 * 1000;
+const STREAM_TOKEN_TTL_MS = 2 * 60 * 1000;
+const CALL_METADATA_TTL_MS = 15 * 60 * 1000;
+const WEBHOOK_DEDUPE_TTL_MS = 15 * 60 * 1000;
 const CALL_WARNING_LINE = "I'm sorry. But this call will abruptly end in about thirty seconds to prevent spamming. If you haven't filled an estimate request or have more questions or wish to do so, please call again.";
 
 const activeCalls = new Map();
 const activeCallsByControlId = new Map();
 const callMetadata = new Map();
+const processedWebhookEvents = new Map();
 
 function clean(value) {
   return String(value ?? '').trim();
@@ -41,9 +47,10 @@ function debug(event, payload = {}) {
 function resolvePublicUrl() {
   const configured = clean(process.env.PUBLIC_URL);
   const railwayDomain = clean(process.env.RAILWAY_PUBLIC_DOMAIN);
-  const raw = configured || (railwayDomain
-    ? `https://${railwayDomain}`
-    : 'https://tabor-painting-receptionist-production.up.railway.app');
+  const raw = configured || (railwayDomain ? `https://${railwayDomain}` : '');
+  if (!raw) {
+    throw new Error('PUBLIC_URL or RAILWAY_PUBLIC_DOMAIN is required.');
+  }
 
   let url;
   try {
@@ -71,13 +78,7 @@ function assertRuntimeConfiguration() {
 }
 
 function normalizePhone(value) {
-  const raw = clean(value).replace(/^tel:/i, '');
-  const digits = raw.replace(/\D/g, '');
-  if (!digits) return '';
-  if (raw.startsWith('+')) return `+${digits}`;
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  return `+${digits}`;
+  return normalizeIntakePhone(value);
 }
 
 function phoneValue(candidate) {
@@ -124,6 +125,55 @@ function callControlId(body) {
     || '';
 }
 
+function webhookEventId(body) {
+  return clean(body?.data?.id || body?.id);
+}
+
+function rememberWebhookEvent(body) {
+  const id = webhookEventId(body);
+  if (!id) return true;
+  if (processedWebhookEvents.has(id)) return false;
+  processedWebhookEvents.set(id, Date.now());
+  return true;
+}
+
+function streamSignature(callId, expiresAt) {
+  return createHmac('sha256', process.env.TELNYX_API_KEY)
+    .update(`${callId}:${expiresAt}`)
+    .digest('hex');
+}
+
+function streamUrlForCall(callId) {
+  const expiresAt = Date.now() + STREAM_TOKEN_TTL_MS;
+  const url = new URL(STREAM_URL);
+  url.searchParams.set('callId', callId);
+  url.searchParams.set('expires', String(expiresAt));
+  url.searchParams.set('signature', streamSignature(callId, expiresAt));
+  return url.toString();
+}
+
+function verifiedStreamCallId(requestUrl, host = 'localhost') {
+  let url;
+  try {
+    url = new URL(requestUrl || '/', `http://${host}`);
+  } catch {
+    return '';
+  }
+  const callId = clean(url.searchParams.get('callId'));
+  const expiresAt = Number(url.searchParams.get('expires'));
+  const provided = clean(url.searchParams.get('signature'));
+  if (!callId || !Number.isFinite(expiresAt) || expiresAt < Date.now() || expiresAt > Date.now() + STREAM_TOKEN_TTL_MS) {
+    return '';
+  }
+  const expected = streamSignature(callId, expiresAt);
+  if (provided.length !== expected.length) return '';
+  try {
+    return timingSafeEqual(Buffer.from(provided, 'hex'), Buffer.from(expected, 'hex')) ? callId : '';
+  } catch {
+    return '';
+  }
+}
+
 function rememberCall(body) {
   const id = callControlId(body);
   if (!id) return;
@@ -158,8 +208,11 @@ async function postUsageAction(ctx, payload, attempts = 3) {
     try {
       const response = await fetch(usageUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: ctx.runtimeData.clientId, ...payload }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(ctx.runtimeData.usageToken ? { Authorization: `Bearer ${ctx.runtimeData.usageToken}` } : {}),
+        },
+        body: JSON.stringify({ clientId: ctx.runtimeData.clientId, callSessionId: ctx.callControlId || ctx.id, ...payload }),
         signal: AbortSignal.timeout(4000),
       });
       const raw = await response.text();
@@ -303,27 +356,71 @@ async function saveLead(ctx, { payload }) {
   const intakeUrl = clean(ctx.runtimeData?.intakeUrl);
   if (!intakeUrl) throw new Error('The call has no ARK OCM intake URL.');
 
+  const intakeRequestId = createHash('sha256')
+    .update(`${ctx.callControlId || ctx.id}:confirmed:${JSON.stringify(payload)}`)
+    .digest('hex');
   let lastError;
+
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       const response = await fetch(intakeUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': intakeRequestId,
+          ...(ctx.runtimeData.intakeToken ? { Authorization: `Bearer ${ctx.runtimeData.intakeToken}` } : {}),
+        },
+        body: JSON.stringify({
+          ...payload,
+          callSessionId: ctx.callControlId || ctx.id,
+          intakeRequestId,
+        }),
         signal: AbortSignal.timeout(7000),
       });
+
       const raw = await response.text();
-      if (!response.ok) throw new Error(`OCM ${response.status}: ${raw}`);
+      let data;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        const error = new Error(`OCM returned non-JSON after intake submission: ${response.status}`);
+        error.retryable = false;
+        throw error;
+      }
+
+      if (!response.ok) {
+        const error = new Error(data?.error || `OCM intake failed: ${response.status}`);
+        error.retryable = response.status === 429 || response.status >= 500;
+        throw error;
+      }
+      if (!data || data.ok === false || data.success === false) {
+        const error = new Error(data?.error || 'OCM did not confirm that the intake was saved.');
+        error.retryable = false;
+        throw error;
+      }
+      if (data.clientId && data.clientId !== ctx.runtimeData.clientId) {
+        const error = new Error('OCM confirmed the intake for a different client.');
+        error.retryable = false;
+        throw error;
+      }
+
       ctx.leadSaved = true;
+      ctx.intakeRequestId = intakeRequestId;
       grantPostSubmissionGrace(ctx);
       debug('lead.saved', {
         callId: ctx.callControlId || ctx.id,
         clientId: ctx.runtimeData.clientId,
+        intakeRequestId,
+        intakeId: clean(data.intakeId || data.id),
       });
-      return raw ? JSON.parse(raw) : { ok: true };
+      return data;
     } catch (error) {
       lastError = error;
-      if (attempt === 1) await new Promise((resolve) => setTimeout(resolve, 300));
+      if (attempt === 1 && error.retryable !== false) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      break;
     }
   }
   throw lastError || new Error('The estimate request could not be saved.');
@@ -358,9 +455,8 @@ app.get('/health', (_req, res) => {
     ok: true,
     architecture: 'realtime-interpretation-with-fixed-flow',
     realtimeVoiceModel: MODELS.realtimeVoice,
-    transcriptionModel: MODELS.transcription,
+    realtimeModel: MODELS.realtime,
     brainModel: MODELS.brain,
-    speechModel: MODELS.speech,
     codec: 'PCMU',
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
@@ -373,6 +469,7 @@ app.get('/health', (_req, res) => {
 
 app.post('/voice-api-webhook', async (req, res) => {
   res.sendStatus(200);
+  if (!rememberWebhookEvent(req.body)) return;
   const type = eventType(req.body);
   const id = callControlId(req.body);
   rememberCall(req.body);
@@ -397,7 +494,6 @@ app.post('/voice-api-webhook', async (req, res) => {
       });
       debug('receptionist.matched', {
         callId: id,
-        calledPhone: runtimeData.calledPhone,
         clientId: runtimeData.clientId,
         business: runtimeData.profile?.businessName,
       });
@@ -409,7 +505,7 @@ app.post('/voice-api-webhook', async (req, res) => {
     if (type === 'call.answered' && !metadata.rejected) {
       if (!metadata.runtimeData) throw new Error('No ARK OCM receptionist profile was loaded for this call.');
       await telnyxCommand(id, 'streaming_start', {
-        stream_url: STREAM_URL,
+        stream_url: streamUrlForCall(id),
         stream_track: 'inbound_track',
         stream_codec: 'PCMU',
         stream_bidirectional_mode: 'rtp',
@@ -433,20 +529,26 @@ app.post('/voice-api-webhook', async (req, res) => {
     if (type === 'call.initiated') {
       telnyxCommand(id, 'reject', { cause: 'CALL_REJECTED' })
         .catch((rejectError) => console.error('[Telnyx reject]', rejectError.message));
+    } else {
+      telnyxCommand(id, 'hangup')
+        .catch((hangupError) => console.error('[Telnyx setup hangup]', hangupError.message));
     }
   }
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
   if (url.pathname !== '/media-stream') return socket.destroy();
-  wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws));
+  const linkedCallControlId = verifiedStreamCallId(request.url, request.headers.host);
+  if (!linkedCallControlId || !callMetadata.has(linkedCallControlId)) return socket.destroy();
+  request.arkCallControlId = linkedCallControlId;
+  wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
 });
 
-wss.on('connection', (telnyx) => {
+wss.on('connection', (telnyx, request) => {
   const ctx = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     telnyx,
@@ -456,7 +558,7 @@ wss.on('connection', (telnyx) => {
     initializing: null,
     initialized: false,
     streamId: '',
-    callControlId: '',
+    callControlId: clean(request?.arkCallControlId),
     callerPhone: '',
     calledPhone: '',
     pendingInputAudio: [],
@@ -479,7 +581,7 @@ wss.on('connection', (telnyx) => {
 
     ctx.initializing = (async () => {
       ctx.streamId = message.stream_id || message.start?.stream_id || ctx.streamId;
-      ctx.callControlId = callControlId(message) || ctx.callControlId;
+      ctx.callControlId = ctx.callControlId || callControlId(message);
       const remembered = callMetadata.get(ctx.callControlId) || {};
       ctx.callerPhone = getCallerPhone(message) || remembered.callerPhone || ctx.callerPhone;
       ctx.calledPhone = getCalledPhone(message) || remembered.calledPhone || ctx.calledPhone;
@@ -513,9 +615,7 @@ wss.on('connection', (telnyx) => {
         clientId: ctx.runtimeData.clientId,
         business: ctx.runtime.core.BUSINESS.name,
         realtimeVoiceModel: MODELS.realtimeVoice,
-        transcriptionModel: MODELS.transcription,
         brainModel: MODELS.brain,
-        speechModel: MODELS.speech,
         voice: ctx.runtime.core.REALTIME_VOICE || MODELS.voice,
       });
 
@@ -584,10 +684,21 @@ wss.on('connection', (telnyx) => {
   });
 });
 
+const cleanupTimer = setInterval(() => {
+  const cutoff = Date.now();
+  for (const [id, metadata] of callMetadata) {
+    if (cutoff - Number(metadata.updatedAt || 0) > CALL_METADATA_TTL_MS) callMetadata.delete(id);
+  }
+  for (const [id, seenAt] of processedWebhookEvents) {
+    if (cutoff - seenAt > WEBHOOK_DEDUPE_TTL_MS) processedWebhookEvents.delete(id);
+  }
+}, 60 * 1000);
+cleanupTimer.unref();
+
 server.listen(PORT, () => {
   console.log(`Modular AI receptionist listening on ${PORT}`);
   console.log(`Voice webhook: ${PUBLIC_URL}/voice-api-webhook`);
   console.log(`Media stream: ${STREAM_URL}`);
   console.log(`ARK OCM runtime lookup: ${runtimeEndpoint()}`);
-  console.log(`Models: ${MODELS.realtimeVoice} interpretation -> fixed controller -> ${MODELS.speech}`);
+  console.log(`Model: ${MODELS.realtimeVoice} with fixed intake controller`);
 });
