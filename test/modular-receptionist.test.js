@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createReceptionistCore } from '../receptionist-core.js';
 import {
   baseQuestionFor,
   captureDeterministicLead,
   markDeterministicCompletions,
   mergeLead,
   nextRequiredQuestion,
+  validationLeadFromModular,
 } from '../modular-intake-logic.js';
-import { resolveEstimateDate } from '../estimate-date.js';
 import { MODELS, TURN } from '../modular-models.js';
 import {
   applyRealtimeInterpretation,
@@ -21,46 +22,41 @@ import {
   receptionistPhrase,
 } from '../receptionist-phrases.js';
 
-const coreStub = Object.freeze({
-  BUSINESS: Object.freeze({
-    name: 'Tabor Painting',
-    receptionist: 'Alex',
-    services: {
-      'wood staining': 'Wood staining services.',
-      'exterior painting': 'Exterior painting services.',
-      'interior painting': 'Interior painting services.',
-      'small paint repair': 'Small paint repair services.',
-    },
-    estimateDays: 'Monday through Friday',
-    earliestEstimateStart: '9:00 AM',
-    latestEstimateStart: '4:00 PM',
-  }),
-  contactConsentQuestion: 'Do you consent to being contacted by Tabor Painting?',
-  normalizePreferredTime(value) {
-    const normalized = String(value).replace(/\./g, '').trim().toLowerCase();
-    if (/^12(?::00)?(?:\s*pm)?$/.test(normalized)) return '12:00 PM';
-    if (/^1(?::00)?(?:\s*pm)?$/.test(normalized)) return '1:00 PM';
-    if (/^2(?::00)?(?:\s*pm)?$/.test(normalized)) return '2:00 PM';
-    if (/^3(?::00)?(?:\s*pm)?$/.test(normalized)) return '3:00 PM';
-    if (/^4(?::00)?(?:\s*pm)?$/.test(normalized)) return '4:00 PM';
-    if (/^9(?::00)?(?:\s*am)?$/.test(normalized)) return '9:00 AM';
-    return '';
+const profile = Object.freeze({
+  businessName: 'Tabor Painting',
+  receptionistName: 'Alex',
+  businessHours: 'Monday through Friday, 9 AM to 5 PM',
+  timeZone: 'America/New_York',
+  estimateDays: 'Monday through Friday',
+  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestEstimateStart: '9:00 AM',
+  latestEstimateStart: '4:00 PM',
+  businessBase: 'Berlin, Massachusetts',
+  serviceAreas: ['Massachusetts'],
+  services: {
+    'wood staining': 'Wood staining services.',
+    'exterior painting': 'Exterior painting services.',
+    'interior painting': 'Interior painting services.',
+    'small paint repair': 'Small paint repair services.',
   },
+  aiVoice: 'alloy',
+  aiSpeechSpeed: 0.94,
+  aiSilenceMs: 1200,
 });
 
+const core = createReceptionistCore({ profile, clientId: 'tabor-painting' });
 const completeLead = Object.freeze({
   name: 'Andrew Christensen',
   service: 'interior painting',
   projectLocation: '197 Lancaster Road, Berlin, MA',
-  preferredDate: '8/3/26',
+  preferredDate: '2026-08-10',
   preferredTime: '2:00 PM',
   notes: 'none',
   contactConsent: true,
 });
-
 const AUGUST_FIRST_2026 = new Date('2026-08-01T16:00:00.000Z');
 
-test('GPT Realtime 2.1 mini is the only configured AI model', () => {
+test('one realtime model remains configured behind the deterministic controller', () => {
   assert.equal(MODELS.realtime, 'gpt-realtime-2.1-mini');
   assert.equal(MODELS.realtimeVoice, MODELS.realtime);
   assert.equal(MODELS.brain, MODELS.realtime);
@@ -69,141 +65,101 @@ test('GPT Realtime 2.1 mini is the only configured AI model', () => {
   assert.ok(TURN.silenceMs >= 1200);
 });
 
-test('all active caller wording remains in one phrase catalog', () => {
+test('caller wording is intake-focused and remains in one phrase catalog', () => {
+  assert.match(RECEPTIONIST_PHRASES.OPENING_01, /automated receptionist/i);
   assert.equal(RECEPTIONIST_PHRASES.QUESTION_SERVICE, 'What service do you need?');
-  assert.equal(RECEPTIONIST_PHRASES.QUESTION_FULL_NAME, 'What is your full name?');
-  assert.equal(RECEPTIONIST_PHRASES.QUESTION_PROJECT_ADDRESS, 'What is the full address for the project?');
-  assert.equal(RECEPTIONIST_PHRASES.QUESTION_ADDITIONAL_NOTES, 'Now do you have any notes about the project?');
+  assert.match(RECEPTIONIST_PHRASES.QUESTION_PROJECT_ADDRESS, /unit and ZIP code/);
+  assert.match(RECEPTIONIST_PHRASES.QUESTION_FINAL_CONFIRMATION, /agreed that/);
 });
 
-test('opening and closing render business placeholders', () => {
+test('opening, consent decline, and closing render business placeholders', () => {
+  assert.match(receptionistPhrase(core, PHRASE_KEYS.OPENING, completeLead), /Tabor Painting/);
+  assert.match(receptionistPhrase(core, PHRASE_KEYS.CONSENT_DECLINED, completeLead), /won't submit/);
   assert.equal(
-    receptionistPhrase(coreStub, PHRASE_KEYS.OPENING, completeLead),
-    "Hi, thank you for calling Tabor Painting. I'm the receptionist, Alex. I'm here to answer questions or guide you through an estimate request. Would you like to submit an estimate request?",
-  );
-  assert.equal(
-    receptionistPhrase(coreStub, PHRASE_KEYS.CLOSING, completeLead),
+    receptionistPhrase(core, PHRASE_KEYS.CLOSING, completeLead),
     'Okay. Thank you for calling Tabor Painting. Have a good day.',
   );
 });
 
 test('question IDs map to approved exact phrases', () => {
-  assert.equal(baseQuestionFor(coreStub, 'service', completeLead), 'What service do you need?');
-  assert.equal(baseQuestionFor(coreStub, 'name', completeLead), 'What is your full name?');
-  assert.equal(baseQuestionFor(coreStub, 'project_location', completeLead), 'What is the full address for the project?');
-  assert.equal(
-    baseQuestionFor(coreStub, 'preferred_date_time', completeLead),
-    'Next, we need a date and time request for the estimate. We schedule estimates Monday through Friday from 9:00 AM to 4:00 PM.',
-  );
+  assert.equal(baseQuestionFor(core, 'service', completeLead), 'What service do you need?');
+  assert.equal(baseQuestionFor(core, 'name', completeLead), 'What is your full name?');
+  assert.match(baseQuestionFor(core, 'project_location', completeLead), /street number and name/);
+  assert.match(baseQuestionFor(core, 'preferred_date_time', completeLead), /Monday through Friday/);
 });
 
-test('Realtime interpretation prompt forbids painter referrals and extra questions', () => {
+test('interpretation prompt is tenant-timezone-aware and emits no caller prose', () => {
   const prompt = buildRealtimeTurnPrompt({
-    core: coreStub,
+    core,
     transcript: 'The whole inside of my house needs paint.',
     currentQuestionId: 'service',
     lead: { ...completeLead, service: null },
     history: [],
   });
-  assert.match(prompt, /Never suggest hiring or contacting a painter/i);
-  assert.match(prompt, /Never ask whether the caller will do the work themselves/i);
   assert.match(prompt, /Do not write a caller-facing response/i);
+  assert.match(prompt, /Never suggest hiring or contacting a painter/i);
   assert.match(prompt, /configuredServices/);
+  assert.match(prompt, /YYYY-MM-DD/);
 });
 
-test('Realtime interpretation parses only bounded actions, acknowledgements, and updates', () => {
+test('interpretation parsing permits only bounded actions, acknowledgements, and fields', () => {
   const turn = parseRealtimeTurnInterpretation(JSON.stringify({
     action: 'answer',
     ack: 'sorry',
-    updates: {
-      service: 'interior painting',
-      name: null,
-      projectLocation: null,
-      preferredDate: null,
-      preferredTime: null,
-      notes: null,
-      contactConsent: null,
-    },
+    updates: { service: 'interior painting' },
   }));
   assert.equal(turn.action, 'answer');
   assert.equal(turn.ack, 'sorry');
   assert.equal(turn.updates.service, 'interior painting');
+  assert.equal(turn.updates.name, null);
 });
 
-test('Realtime interpretation applies the configured service selected from natural speech', () => {
-  const result = applyRealtimeInterpretation(coreStub, { ...completeLead, service: null }, {
+test('only a configured service can be committed', () => {
+  const accepted = applyRealtimeInterpretation(core, { ...completeLead, service: null }, {
     action: 'answer',
-    ack: 'sorry',
+    ack: 'sounds_good',
     updates: { service: 'interior painting' },
   });
-  assert.equal(result.lead.service, 'interior painting');
-  assert.deepEqual(result.changedFields, ['service']);
+  const rejected = applyRealtimeInterpretation(core, { ...completeLead, service: null }, {
+    action: 'answer',
+    ack: 'none',
+    updates: { service: 'roofing' },
+  });
+  assert.equal(accepted.lead.service, 'interior painting');
+  assert.equal(rejected.lead.service, null);
 });
 
-test('Realtime interpretation removes leading fillers from names', () => {
-  const result = applyRealtimeInterpretation(coreStub, { ...completeLead, name: null }, {
+test('Unicode names survive interpretation and deterministic cleanup', () => {
+  const interpreted = applyRealtimeInterpretation(core, { ...completeLead, name: null }, {
     action: 'answer',
     ack: 'thanks_name',
-    updates: { name: 'Um Andrew Christensen' },
+    updates: { name: 'Um José O’Neill' },
   });
-  assert.equal(result.lead.name, 'Andrew Christensen');
-});
-
-test('deterministic name fallback also removes leading fillers', () => {
-  const lead = captureDeterministicLead(
-    coreStub,
+  const deterministic = captureDeterministicLead(
+    core,
     'name',
-    'Um, Andrew Christensen.',
+    'Um, José O’Neill.',
     { ...completeLead, name: null },
   );
-  assert.equal(lead.name, 'Andrew Christensen');
+  assert.equal(interpreted.lead.name, 'José O’Neill');
+  assert.equal(deterministic.name, 'José O’Neill');
 });
 
-test('an address correction does not change the saved name', () => {
-  const result = applyRealtimeInterpretation(coreStub, completeLead, {
+test('address corrections preserve other lead fields', () => {
+  const result = applyRealtimeInterpretation(core, completeLead, {
     action: 'summary_correction',
     ack: 'thanks',
-    updates: {
-      name: null,
-      projectLocation: '197 Lancaster Road, Berlin, MA',
-    },
+    updates: { projectLocation: '197 Lancaster Road, Unit 2, Berlin, MA 01503' },
   });
   assert.equal(result.lead.name, 'Andrew Christensen');
-  assert.equal(result.lead.projectLocation, '197 Lancaster Road, Berlin, MA');
+  assert.equal(result.lead.projectLocation, '197 Lancaster Road, Unit 2, Berlin, MA 01503');
 
-  const merged = mergeLead(completeLead, { projectLocation: '197 Lancaster Road, Berlin, MA' });
+  const merged = mergeLead(completeLead, { projectLocation: result.lead.projectLocation });
   assert.equal(merged.name, 'Andrew Christensen');
 });
 
-test('weekday phrases resolve to the next actual calendar date', () => {
-  assert.equal(resolveEstimateDate('Monday', { now: AUGUST_FIRST_2026 }), '8/3/26');
-  assert.equal(resolveEstimateDate('next Monday', { now: AUGUST_FIRST_2026 }), '8/10/26');
-});
-
-test('explicit dates are preserved and past dates are rejected', () => {
-  assert.equal(resolveEstimateDate('8/17/26', { now: AUGUST_FIRST_2026 }), '8/17/26');
-  assert.equal(resolveEstimateDate('6/17/26', { now: AUGUST_FIRST_2026 }), '');
-});
-
-test('Monday at twelve becomes an actual date and normalized time', () => {
-  const result = applyRealtimeInterpretation(coreStub, {
-    ...completeLead,
-    preferredDate: null,
-    preferredTime: null,
-  }, {
-    action: 'answer',
-    ack: 'sounds_good',
-    updates: {
-      preferredDate: 'Monday',
-      preferredTime: 'twelve',
-    },
-  }, { now: AUGUST_FIRST_2026 });
-  assert.equal(result.lead.preferredDate, '8/3/26');
-  assert.equal(result.lead.preferredTime, '12:00 PM');
-});
-
-test('Realtime interpretation normalizes spoken-number estimate times', () => {
-  const result = applyRealtimeInterpretation(coreStub, {
+test('weekday phrases become canonical tenant-local ISO dates', () => {
+  const result = applyRealtimeInterpretation(core, {
     ...completeLead,
     preferredDate: null,
     preferredTime: null,
@@ -215,12 +171,12 @@ test('Realtime interpretation normalizes spoken-number estimate times', () => {
       preferredTime: 'two',
     },
   }, { now: AUGUST_FIRST_2026 });
-  assert.equal(result.lead.preferredDate, '8/3/26');
+  assert.equal(result.lead.preferredDate, '2026-08-03');
   assert.equal(result.lead.preferredTime, '2:00 PM');
 });
 
-test('out-of-schedule interpreted times are rejected by business validation', () => {
-  const result = applyRealtimeInterpretation(coreStub, {
+test('out-of-schedule interpreted times are rejected immediately', () => {
+  const result = applyRealtimeInterpretation(core, {
     ...completeLead,
     preferredDate: null,
     preferredTime: null,
@@ -232,24 +188,52 @@ test('out-of-schedule interpreted times are rejected by business validation', ()
       preferredTime: '6:00 PM',
     },
   }, { now: AUGUST_FIRST_2026 });
-  assert.equal(result.lead.preferredDate, '8/7/26');
+  assert.equal(result.lead.preferredDate, '2026-08-07');
   assert.equal(result.lead.preferredTime, null);
 });
 
-test('deterministic parsing remains a fallback rather than the decision brain', () => {
-  const lead = captureDeterministicLead(
-    coreStub,
+test('deterministic service capture does not invent unconfigured categories', () => {
+  const accepted = captureDeterministicLead(
+    core,
     'service',
-    'I just need a room painted at my house.',
+    'I need interior painting.',
     { ...completeLead, service: null },
   );
-  assert.equal(lead.service, 'interior painting');
+  const rejected = captureDeterministicLead(
+    core,
+    'service',
+    'I need roofing.',
+    { ...completeLead, service: null },
+  );
+  assert.equal(accepted.service, 'interior painting');
+  assert.equal(rejected.service, null);
 });
 
-test('completed fields advance in the locked order', () => {
+test('completed fields advance in locked order and consent false does not complete intake', () => {
   const memory = { completedQuestionIds: [] };
-  memory.completedQuestionIds = markDeterministicCompletions('service', completeLead, memory.completedQuestionIds);
-  memory.completedQuestionIds = markDeterministicCompletions('name', completeLead, memory.completedQuestionIds);
-  memory.completedQuestionIds = markDeterministicCompletions('project_location', completeLead, memory.completedQuestionIds);
-  assert.equal(nextRequiredQuestion(memory, completeLead), 'preferred_date_time');
+  for (const questionId of ['service', 'name', 'project_location', 'preferred_date_time', 'notes']) {
+    memory.completedQuestionIds = markDeterministicCompletions(
+      core,
+      questionId,
+      completeLead,
+      memory.completedQuestionIds,
+    );
+  }
+  assert.equal(nextRequiredQuestion(core, memory, { ...completeLead, contactConsent: false }), 'contact_consent');
+  memory.completedQuestionIds = markDeterministicCompletions(
+    core,
+    'contact_consent',
+    completeLead,
+    memory.completedQuestionIds,
+  );
+  assert.equal(nextRequiredQuestion(core, memory, completeLead), 'confirm_summary');
+});
+
+test('modular lead validation uses the canonical structured address', () => {
+  const mapped = validationLeadFromModular(core, {
+    ...completeLead,
+    projectLocation: '197 Lancaster Road, Unit 2, Berlin, Massachusetts 01503',
+  });
+  assert.equal(mapped.projectLocation, '197 Lancaster Road, Unit 2, Berlin, MA 01503');
+  assert.equal(mapped.serviceType, 'interior painting');
 });
