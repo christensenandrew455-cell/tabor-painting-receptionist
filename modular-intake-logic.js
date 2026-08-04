@@ -36,7 +36,8 @@ export const ESTIMATE_ORDER = Object.freeze([
   'name',
   'callback_phone',
   'project_location',
-  'preferred_date_time',
+  'preferred_date',
+  'preferred_time',
   'notes',
   'contact_consent',
   'confirm_summary',
@@ -230,11 +231,14 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
     if (isPlausibleStreetAddress(projectLocation)) captured.projectLocation = projectLocation;
   }
 
-  if (currentQuestionId === 'preferred_date_time') {
+  if (currentQuestionId === 'preferred_date') {
     const preferredDate = core.resolvePreferredDate(text);
-    const rawTime = rawTimeFromTranscript(text);
-    const preferredTime = rawTime ? clean(core.normalizePreferredTime(rawTime)) : '';
     if (preferredDate) captured.preferredDate = preferredDate;
+  }
+
+  if (currentQuestionId === 'preferred_time') {
+    const rawTime = rawTimeFromTranscript(text) || text;
+    const preferredTime = clean(core.normalizePreferredTime(rawTime));
     if (preferredTime) captured.preferredTime = preferredTime;
   }
 
@@ -267,7 +271,8 @@ export function markDeterministicCompletions(core, currentQuestionId, lead, comp
   if (currentQuestionId === 'name' && isPlausibleFullName(lead.name)) completed.add('name');
   if (currentQuestionId === 'callback_phone' && core.normalizePhone(lead.callbackPhone)) completed.add('callback_phone');
   if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(core, lead.projectLocation)) completed.add('project_location');
-  if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
+  if (currentQuestionId === 'preferred_date' && clean(lead.preferredDate)) completed.add('preferred_date');
+  if (currentQuestionId === 'preferred_time' && clean(lead.preferredTime)) completed.add('preferred_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
   if (currentQuestionId === 'contact_consent' && lead.contactConsent === true) completed.add('contact_consent');
   return [...completed];
@@ -279,7 +284,8 @@ export function nextRequiredQuestion(core, memory, lead = {}) {
   if (!completed.has('name') || !isPlausibleFullName(lead.name)) return 'name';
   if (!core.normalizePhone(lead.callbackPhone)) return 'callback_phone';
   if (!completed.has('project_location') || !isPlausibleProjectAddress(core, lead.projectLocation)) return 'project_location';
-  if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
+  if (!completed.has('preferred_date') || !clean(lead.preferredDate)) return 'preferred_date';
+  if (!completed.has('preferred_time') || !clean(lead.preferredTime)) return 'preferred_time';
   if (!completed.has('notes')) return 'notes';
   if (!completed.has('contact_consent') || lead.contactConsent !== true) return 'contact_consent';
   if (!completed.has('confirm_summary')) return 'confirm_summary';
@@ -296,7 +302,8 @@ export function validationQuestion(errors = []) {
   if (/configured service/.test(text)) return 'service';
   if (/callback phone/.test(text)) return 'callback_phone';
   if (/project address|city or town|valid state|street number|street name/.test(text)) return 'project_location';
-  if (/estimate date|weekday|estimate time/.test(text)) return 'preferred_date_time';
+  if (/estimate date|weekday/.test(text)) return 'preferred_date';
+  if (/estimate time/.test(text)) return 'preferred_time';
   if (/consent/.test(text)) return 'contact_consent';
   return 'clarify';
 }
@@ -306,7 +313,8 @@ export function validationPreface(core, questionId, errors = []) {
   if (questionId === 'service') return 'I still need the service you want.';
   if (questionId === 'callback_phone') return 'I still need a valid callback phone number.';
   if (questionId === 'project_location') return 'I still need the street address, city or town, and state.';
-  if (questionId === 'preferred_date_time') return 'I still need an upcoming date and a time within the estimate schedule.';
+  if (questionId === 'preferred_date') return 'I still need an upcoming date within the estimate schedule.';
+  if (questionId === 'preferred_time') return 'I still need a time within the estimate schedule.';
   if (questionId === 'contact_consent') return `I still need a clear yes or no before ${core.BUSINESS.name} can contact you.`;
   return errors.length ? 'I still need some information before I can submit the request.' : '';
 }
