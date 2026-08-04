@@ -48,6 +48,7 @@ const core = createReceptionistCore({ profile, clientId: 'tabor-painting' });
 const completeLead = Object.freeze({
   name: 'Andrew Christensen',
   service: 'interior painting',
+  callbackPhone: '+15085550100',
   projectLocation: '197 Lancaster Road, Berlin, MA',
   preferredDate: '2026-08-10',
   preferredTime: '2:00 PM',
@@ -211,7 +212,7 @@ test('deterministic service capture does not invent unconfigured categories', ()
 
 test('completed fields advance in locked order and consent false does not complete intake', () => {
   const memory = { completedQuestionIds: [] };
-  for (const questionId of ['service', 'name', 'project_location', 'preferred_date_time', 'notes']) {
+  for (const questionId of ['service', 'name', 'callback_phone', 'project_location', 'preferred_date_time', 'notes']) {
     memory.completedQuestionIds = markDeterministicCompletions(
       core,
       questionId,
@@ -236,4 +237,5 @@ test('modular lead validation uses the canonical structured address', () => {
   });
   assert.equal(mapped.projectLocation, '197 Lancaster Road, Unit 2, Berlin, MA 01503');
   assert.equal(mapped.serviceType, 'interior painting');
+  assert.equal(mapped.callbackPhone, '+15085550100');
 });
