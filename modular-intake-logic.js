@@ -5,8 +5,6 @@ import {
   repeatQuestionFor,
   summaryStatement,
 } from './intake-response-policy.js';
-import { resolveEstimateDate } from './estimate-date.js';
-
 export { availabilityStatement, baseQuestionFor, repeatQuestionFor, summaryStatement };
 
 const HESITATION_PATTERN = /^(?:uh|um|erm|hmm|well|so|and|like)[.!?…\s]*$/i;
@@ -103,10 +101,8 @@ function isPlausibleStreetAddress(value) {
   return Boolean(parts.streetNumber && parts.streetName.length >= 2);
 }
 
-function isPlausibleProjectAddress(value) {
-  if (!isPlausibleStreetAddress(value)) return false;
-  const parts = addressParts(value);
-  return Boolean(parts.cityOrTown.length >= 2 && parts.state.length >= 2);
+function isPlausibleProjectAddress(core, value) {
+  return core.parseProjectAddress(value).valid;
 }
 
 function mergeProjectLocationAnswer(currentLocation = '', transcript = '') {
@@ -143,44 +139,8 @@ function isPlausibleFullName(value) {
     && tokens.every((token) => NAME_TOKEN_PATTERN.test(token));
 }
 
-function configuredServiceMatching(core, servicePattern) {
-  return serviceNames(core).find((service) => servicePattern.test(service));
-}
-
 function inferService(core, transcript = '') {
-  const text = clean(transcript).toLowerCase();
-  if (!text) return '';
-
-  const exact = serviceNames(core)
-    .find((candidate) => text.includes(candidate.toLowerCase()));
-  if (exact) return exact;
-
-  const rules = [
-    {
-      servicePattern: /\b(?:wood\s+stain|staining)\b/i,
-      callerPattern: /\b(?:stain|staining|re-?stain|deck staining|fence staining|wood staining)\b/i,
-    },
-    {
-      servicePattern: /\b(?:small\s+paint\s+repair|paint\s+repair|touch[- ]?up)\b/i,
-      callerPattern: /\b(?:touch[- ]?up|small paint repair|paint repair|small patch|paint chip repair)\b/i,
-    },
-    {
-      servicePattern: /\binterior\b/i,
-      callerPattern: /\b(?:inside|interior|rooms?|bedrooms?|living room|kitchen|walls?|ceilings?)\b/i,
-    },
-    {
-      servicePattern: /\bexterior\b/i,
-      callerPattern: /\b(?:outside|exterior|siding|facade|outside of (?:my|the) house|whole house(?: painted| repainted)?)\b/i,
-    },
-  ];
-
-  for (const rule of rules) {
-    if (!rule.callerPattern.test(text)) continue;
-    const service = configuredServiceMatching(core, rule.servicePattern);
-    if (service) return service;
-  }
-
-  return '';
+  return core.matchService(transcript);
 }
 
 export function mergeLead(current = {}, updates = {}) {
@@ -205,12 +165,12 @@ export function mergeLead(current = {}, updates = {}) {
   return merged;
 }
 
-export function validationLeadFromModular(lead = {}) {
-  const address = addressParts(lead.projectLocation);
+export function validationLeadFromModular(core, lead = {}) {
+  const address = core.parseProjectAddress(lead.projectLocation);
   return {
     fullName: normalizedName(lead.name),
-    serviceType: clean(lead.service).toLowerCase(),
-    ...address,
+    serviceType: clean(lead.service),
+    projectLocation: address.formatted || clean(lead.projectLocation),
     preferredDateOrDay: clean(lead.preferredDate),
     preferredTime: clean(lead.preferredTime),
     additionalNotes: clean(lead.notes),
@@ -234,9 +194,9 @@ function rawTimeFromTranscript(transcript = '') {
   return `${hour}${minutes}${meridiem ? ` ${meridiem}` : ''}`;
 }
 
-function isSchedulingAnswerOnly(transcript = '') {
+function isSchedulingAnswerOnly(core, transcript = '') {
   const text = clean(transcript);
-  return Boolean(resolveEstimateDate(text) && rawTimeFromTranscript(text) && !PROJECT_NOTE_DETAIL_PATTERN.test(text));
+  return Boolean(core.resolvePreferredDate(text) && rawTimeFromTranscript(text) && !PROJECT_NOTE_DETAIL_PATTERN.test(text));
 }
 
 export function isControlSpeech(value) {
@@ -268,7 +228,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
   }
 
   if (currentQuestionId === 'preferred_date_time') {
-    const preferredDate = resolveEstimateDate(text);
+    const preferredDate = core.resolvePreferredDate(text);
     const rawTime = rawTimeFromTranscript(text);
     const preferredTime = rawTime ? clean(core.normalizePreferredTime(rawTime)) : '';
     if (preferredDate) captured.preferredDate = preferredDate;
@@ -277,7 +237,7 @@ export function captureDeterministicLead(core, currentQuestionId, transcript, le
 
   if (currentQuestionId === 'notes') {
     if (NO_NOTES_PATTERN.test(text)) captured.notes = 'none';
-    else if (text && !isSchedulingAnswerOnly(text)) captured.notes = text;
+    else if (text && !isSchedulingAnswerOnly(core, text)) captured.notes = text;
   }
 
   if (currentQuestionId === 'contact_consent') {
@@ -298,25 +258,25 @@ export function callerAffirmsSummary(transcript = '') {
   return AFFIRMATIVE_PATTERN.test(clean(transcript));
 }
 
-export function markDeterministicCompletions(currentQuestionId, lead, completedIds = []) {
+export function markDeterministicCompletions(core, currentQuestionId, lead, completedIds = []) {
   const completed = new Set(completedIds || []);
   if (currentQuestionId === 'service' && clean(lead.service)) completed.add('service');
   if (currentQuestionId === 'name' && isPlausibleFullName(lead.name)) completed.add('name');
-  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(lead.projectLocation)) completed.add('project_location');
+  if (currentQuestionId === 'project_location' && isPlausibleProjectAddress(core, lead.projectLocation)) completed.add('project_location');
   if (currentQuestionId === 'preferred_date_time' && clean(lead.preferredDate) && clean(lead.preferredTime)) completed.add('preferred_date_time');
   if (currentQuestionId === 'notes' && clean(lead.notes)) completed.add('notes');
-  if (currentQuestionId === 'contact_consent' && typeof lead.contactConsent === 'boolean') completed.add('contact_consent');
+  if (currentQuestionId === 'contact_consent' && lead.contactConsent === true) completed.add('contact_consent');
   return [...completed];
 }
 
-export function nextRequiredQuestion(memory, lead = {}) {
+export function nextRequiredQuestion(core, memory, lead = {}) {
   const completed = new Set(memory.completedQuestionIds || []);
   if (!completed.has('service') || !clean(lead.service)) return 'service';
   if (!completed.has('name') || !isPlausibleFullName(lead.name)) return 'name';
-  if (!completed.has('project_location') || !isPlausibleProjectAddress(lead.projectLocation)) return 'project_location';
+  if (!completed.has('project_location') || !isPlausibleProjectAddress(core, lead.projectLocation)) return 'project_location';
   if (!completed.has('preferred_date_time') || !clean(lead.preferredDate) || !clean(lead.preferredTime)) return 'preferred_date_time';
   if (!completed.has('notes')) return 'notes';
-  if (!completed.has('contact_consent') || typeof lead.contactConsent !== 'boolean') return 'contact_consent';
+  if (!completed.has('contact_consent') || lead.contactConsent !== true) return 'contact_consent';
   if (!completed.has('confirm_summary')) return 'confirm_summary';
   return 'none';
 }
@@ -329,7 +289,7 @@ export function validationQuestion(errors = []) {
   const text = errors.join(' ').toLowerCase();
   if (/first and last name/.test(text)) return 'name';
   if (/configured service/.test(text)) return 'service';
-  if (/city or town|project state|street number|street name/.test(text)) return 'project_location';
+  if (/project address|city or town|valid state|street number|street name/.test(text)) return 'project_location';
   if (/estimate date|weekday|estimate time/.test(text)) return 'preferred_date_time';
   if (/consent/.test(text)) return 'contact_consent';
   return 'clarify';
