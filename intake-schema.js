@@ -384,8 +384,13 @@ export function validateIntakeLead(rawLead = {}, {
 } = {}) {
   const fullName = normalizeName(rawLead.fullName);
   const serviceType = matchConfiguredService(rawLead.serviceType, business?.services);
+  const streetLine = clean(rawLead.streetAddress)
+    || clean(`${clean(rawLead.streetNumber)} ${clean(rawLead.streetName)}`);
   const addressInput = clean(rawLead.projectLocation)
-    || [rawLead.streetAddress, rawLead.cityOrTown, rawLead.state].map(clean).filter(Boolean).join(', ');
+    || [streetLine, rawLead.unit, rawLead.cityOrTown, clean(`${clean(rawLead.state)} ${clean(rawLead.postalCode)}`)]
+      .map(clean)
+      .filter(Boolean)
+      .join(', ');
   const address = parseProjectAddress(addressInput);
   const preferredDate = resolveEstimateDate(rawLead.preferredDateOrDay || rawLead.preferredDate, {
     now,
