@@ -464,6 +464,8 @@ app.post('/voice-api-webhook', async (req, res) => {
         stream_bidirectional_mode: 'rtp',
         stream_bidirectional_codec: 'PCMU',
         stream_bidirectional_sampling_rate: 8000,
+        stream_bidirectional_target_legs: 'self',
+        send_silence_when_idle: true,
       });
     }
 
