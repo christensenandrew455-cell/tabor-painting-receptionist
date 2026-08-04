@@ -8,6 +8,7 @@ const interpreter = readFileSync(new URL('../realtime-turn-interpreter.js', impo
 const controller = readFileSync(new URL('../voice-pipeline-controller.js', import.meta.url), 'utf8');
 const runtimeLoader = readFileSync(new URL('../runtime-loader.js', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../server-modular.js', import.meta.url), 'utf8');
+const delivery = readFileSync(new URL('../ocm-delivery.js', import.meta.url), 'utf8');
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 function speechStartedBlock(source) {
@@ -94,13 +95,13 @@ test('webhooks are deduplicated and failed answered calls are hung up', () => {
   assert.match(server, /callMetadata\.delete/);
 });
 
-test('intake delivery has a stable idempotency key and verifies success before marking saved', () => {
-  assert.match(server, /Idempotency-Key/);
-  assert.match(server, /intakeRequestId/);
-  assert.match(server, /data\.ok === false/);
-  assert.match(server, /data\.success === false/);
-  assert.match(server, /different client/);
-  assert.ok(server.indexOf('ctx.leadSaved = true') > server.indexOf("data.clientId && data.clientId !== ctx.runtimeData.clientId"));
+test('intake delivery is isolated, idempotent, and verified before the server marks it saved', () => {
+  assert.match(server, /deliverIntake/);
+  assert.match(delivery, /Idempotency-Key/);
+  assert.match(delivery, /data\.ok === false/);
+  assert.match(delivery, /data\.success === false/);
+  assert.match(delivery, /different client/);
+  assert.ok(server.indexOf('ctx.leadSaved = true') > server.indexOf('await deliverIntake'));
 });
 
 test('health and startup output reference only models that exist', () => {
