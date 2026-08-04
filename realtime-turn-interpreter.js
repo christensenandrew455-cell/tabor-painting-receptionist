@@ -83,7 +83,8 @@ export function parseRealtimeTurnInterpretation(value) {
     action: ACTION_SET.has(parsed?.action) ? parsed.action : 'clarify',
     ack: ACK_SET.has(parsed?.ack) ? parsed.ack : 'none',
     updates: {
-      name: nullableString(updates.name, 80),
+      name: nullableString(updates.name, 100),
+      callbackPhone: nullableString(updates.callbackPhone, 30),
       service: nullableString(updates.service, 80),
       projectLocation: nullableString(updates.projectLocation, 180),
       preferredDate: nullableString(updates.preferredDate, 50),
@@ -124,7 +125,7 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     'Never ask whether the caller will do the work themselves or hire professionals.',
     'The controller owns the fixed question order and exact question wording.',
     'JSON shape:',
-    '{"action":"answer","ack":"none","updates":{"name":null,"service":null,"projectLocation":null,"preferredDate":null,"preferredTime":null,"notes":null,"contactConsent":null}}',
+    '{"action":"answer","ack":"none","updates":{"name":null,"callbackPhone":null,"service":null,"projectLocation":null,"preferredDate":null,"preferredTime":null,"notes":null,"contactConsent":null}}',
     `Allowed action values: ${INTERPRETER_ACTIONS.join(', ')}.`,
     `Allowed ack values: ${INTERPRETER_ACKS.join(', ')}.`,
     'Only place information explicitly stated or corrected in the caller latest transcript inside updates.',
@@ -142,6 +143,7 @@ export function buildRealtimeTurnPrompt({ core, transcript, currentQuestionId, l
     'Map holes, touch-ups, patches, damaged paint, or paint repair to small paint repair when that configured service exists.',
     'Map decks, fences, wood, or staining to wood staining when that configured service exists.',
     'For names, remove fillers such as um, uh, well, like, or so. Return a real first and last name only when supplied.',
+    'For callbackPhone, return only a phone number explicitly supplied by the caller. Set it to null when no callback number was stated.',
     'For addresses, return only the address information. Use commas between street, optional unit, city or town, and state. A partial street address is allowed and may be combined later.',
     'For dates and times, preserve the caller date phrase or explicit date in preferredDate. The application will convert it into one tenant-local YYYY-MM-DD calendar date.',
     'Normalize spoken time numbers. Example: Monday at two means preferredDate Monday and preferredTime 2:00 PM.',
@@ -165,6 +167,10 @@ export function applyRealtimeInterpretation(core, lead = {}, interpretation = {}
   if (matchedService) next.service = matchedService;
 
   if (updates.name) next = mergeLead(next, { name: cleanName(updates.name) });
+  if (updates.callbackPhone) {
+    const callbackPhone = core.normalizePhone(updates.callbackPhone);
+    if (callbackPhone) next.callbackPhone = callbackPhone;
+  }
   if (updates.projectLocation) next = mergeLead(next, { projectLocation: updates.projectLocation });
 
   if (updates.preferredDate) {
