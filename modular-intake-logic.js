@@ -294,6 +294,7 @@ export function validationQuestion(errors = []) {
   const text = errors.join(' ').toLowerCase();
   if (/first and last name/.test(text)) return 'name';
   if (/configured service/.test(text)) return 'service';
+  if (/callback phone/.test(text)) return 'callback_phone';
   if (/project address|city or town|valid state|street number|street name/.test(text)) return 'project_location';
   if (/estimate date|weekday|estimate time/.test(text)) return 'preferred_date_time';
   if (/consent/.test(text)) return 'contact_consent';
