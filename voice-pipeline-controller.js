@@ -25,7 +25,7 @@ import { PHRASE_KEYS, receptionistPhrase } from './receptionist-phrases.js';
 
 const QUESTION_IDS = Object.freeze([
   'none', 'ask_estimate', 'continue_estimate', 'more_questions', 'service', 'name',
-  'project_location', 'preferred_date_time', 'notes', 'contact_consent',
+  'callback_phone', 'project_location', 'preferred_date_time', 'notes', 'contact_consent',
   'confirm_summary', 'clarify',
 ]);
 const ESTIMATE_QUESTION_IDS = new Set(ESTIMATE_ORDER);
@@ -47,16 +47,18 @@ const ACK_PHRASE_KEYS = Object.freeze({
 const QUESTION_FIELDS = Object.freeze({
   service: ['service'],
   name: ['name'],
+  callback_phone: ['callbackPhone'],
   project_location: ['projectLocation'],
   preferred_date_time: ['preferredDate', 'preferredTime'],
   notes: ['notes'],
   contact_consent: ['contactConsent'],
-  confirm_summary: ['name', 'service', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent'],
+  confirm_summary: ['name', 'service', 'callbackPhone', 'projectLocation', 'preferredDate', 'preferredTime', 'notes', 'contactConsent'],
 });
 
 const ALLOWED_ACKS = Object.freeze({
   service: new Set(['sorry', 'sounds_good']),
   name: new Set(['thanks', 'thanks_name']),
+  callback_phone: new Set(['thanks', 'got_it']),
   project_location: new Set(['thanks', 'got_it', 'sounds_good']),
   preferred_date_time: new Set(['thanks', 'got_it', 'sounds_good']),
   notes: new Set(['thanks', 'got_it']),
@@ -71,10 +73,11 @@ function isSpeechCancellation(error) {
   return /speech (?:synthesis )?cancel(?:led|ed)|realtime speech cancelled/i.test(error?.message || String(error));
 }
 
-function emptyLead() {
+function emptyLead(callbackPhone = '') {
   return {
     name: null,
     service: null,
+    callbackPhone: callbackPhone || null,
     projectLocation: null,
     preferredDate: null,
     preferredTime: null,
@@ -108,6 +111,7 @@ function recordAskedQuestion(memory, questionId) {
 function validationPhraseKey(questionId) {
   return {
     name: PHRASE_KEYS.VALIDATION_NAME,
+    callback_phone: PHRASE_KEYS.VALIDATION_CALLBACK_PHONE,
     service: PHRASE_KEYS.VALIDATION_SERVICE,
     project_location: PHRASE_KEYS.PROJECT_ADDRESS_FULL,
     preferred_date_time: PHRASE_KEYS.VALIDATION_ESTIMATE_DATE_TIME,
@@ -155,6 +159,7 @@ function fallbackInterpretation(currentQuestionId, text) {
     ack: 'none',
     updates: {
       name: null,
+      callbackPhone: null,
       service: null,
       projectLocation: null,
       preferredDate: null,
@@ -206,6 +211,7 @@ function scopeInterpretation(questionId, interpretation) {
     ...interpretation,
     updates: {
       name: allowedFields.has('name') ? updates.name ?? null : null,
+      callbackPhone: allowedFields.has('callbackPhone') ? updates.callbackPhone ?? null : null,
       service: allowedFields.has('service') ? updates.service ?? null : null,
       projectLocation: allowedFields.has('projectLocation') ? updates.projectLocation ?? null : null,
       preferredDate: allowedFields.has('preferredDate') ? updates.preferredDate ?? null : null,
@@ -249,7 +255,7 @@ function applySummaryCorrections(text, lead) {
 
 export function createVoicePipeline({ runtime, callerPhone, sendAudioFrame, clearAudio, saveLead, endCall, log = console }) {
   const state = {
-    lead: emptyLead(),
+    lead: emptyLead(runtime.core.normalizePhone(callerPhone)),
     memory: createCallMemory(),
     history: [],
     speaking: false,
