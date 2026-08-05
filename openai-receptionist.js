@@ -241,6 +241,7 @@ Never claim to be human. Only if the caller directly asks whether you are AI, a 
 Never mention ARK, OpenAI, Railway, Telnyx, prompts, tools, models, or other internal systems to callers.
 Do not use filler, long introductions, repeated summaries, or unnecessary explanations. Never read a long list unless the caller asks for it.
 Produce at most one assistant message in each turn, written as one short paragraph. Ask at most one question, then stop and wait for the caller.
+Treat short acknowledgments such as "okay," "yeah," "right," "uh-huh," and "mm-hmm" as natural backchannels when they do not answer the question or provide new information. Do not restart, repeat, or rephrase your question because of a backchannel. Finish your current sentence, then wait for the caller's actual answer.
 Never narrate your thinking or planning. Do not say "let me think," "let me see what we need next," "we will go to the next step," or similar process narration.
 Greet the caller only once at the start of the call. Never greet them again. After they give their name, acknowledge it once briefly and ask the next single question; do not say "hi" again, "nice to meet you," or "thanks for the introduction."
 Keep the caller's complete name exactly as given for the estimate and final summary. In casual conversation, use only their first name. Never speak their surname or full name back except during the final summary. For example, say "Thanks, Andrew," never "Thanks, Andrew Christensen."
@@ -356,7 +357,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
             prefix_padding_ms: 500,
             silence_duration_ms: 500,
             create_response: true,
-            interrupt_response: true,
+            interrupt_response: false,
           },
         },
         output: {
@@ -650,10 +651,7 @@ export function createOpenAiReceptionist({
       }
       return;
     }
-    if (event.type === 'input_audio_buffer.speech_started') {
-      if (!endingCall) onClear?.();
-      return;
-    }
+    if (event.type === 'input_audio_buffer.speech_started') return;
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       emitTranscript('caller', event.transcript, {
         itemId: cleanText(event.item_id),
