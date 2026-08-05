@@ -4,7 +4,9 @@ This Railway service connects Telnyx calls to an OpenAI Realtime receptionist. T
 
 ## Conversation behavior
 
-The receptionist can answer business questions or help create an estimate request. It does not force an estimate on callers who only want information.
+The receptionist opens with two clear paths: filling out an estimate request (its primary objective) or answering a question about the business. It does not force an estimate on callers who only want information, and it never advertises unsupported topics such as pricing or availability.
+
+During intake it asks exactly one question per turn. Date and time are treated as one scheduling question, while additional notes and contact consent are always separate questions. It immediately reads the complete project address back and waits for explicit confirmation before moving on.
 
 For an estimate, it collects:
 
@@ -16,9 +18,9 @@ For an estimate, it collects:
 6. Optional additional notes
 7. Explicit consent for the business to contact the caller
 
-The server converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone. The AI must then read back the complete normalized summary and obtain a separate, explicit confirmation before the server permits submission.
+The server blocks summary preparation unless the address-confirmation, notes-question, and standalone-consent gates are complete. It converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone. The AI must then read back the complete normalized summary and obtain a separate, explicit confirmation before the server permits submission. On that confirmation it says it is submitting the request, then sends it.
 
-After ARC successfully accepts the request, the live OpenAI session is updated with no intake tools. For the remainder of the call, the receptionist can only answer business questions or use the dedicated end-call tool. When the caller says they have no more questions, it gives a short goodbye, waits for that audio to finish playing, and hangs up.
+After ARC successfully accepts the request, the receptionist says only that the request was successfully submitted and asks whether the caller has any other questions. The live OpenAI session is updated with no intake tools. For the remainder of the call, it answers only questions the caller actually asks and only from website data, or uses the dedicated end-call tool. When the caller says they have no more questions, it gives a short goodbye, waits for that audio to finish playing, and hangs up.
 
 ## Cost controls
 
@@ -42,8 +44,9 @@ flowchart TD
     A[Telnyx incoming call] --> B[Load website data from ARC]
     B --> C[Open PCMU media stream]
     C --> D[Answer questions or collect estimate]
-    D --> E[Normalize date and prepare summary]
-    E --> F{Caller confirms?}
+    D --> E[Verify address, notes, and consent]
+    E --> J[Normalize date and prepare summary]
+    J --> F{Caller confirms?}
     F -- No, correction --> D
     F -- Yes --> G[Send once to ARC]
     G --> H[Questions-only mode]

@@ -11,6 +11,7 @@ const NORMAL_RESPONSE_TARGET_TOKENS = 256;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 2_500;
 const DEFAULT_CONTEXT_RETENTION_RATIO = 0.7;
 const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
+const SUBMISSION_SUCCESS_RESPONSE = 'Your estimate request was successfully submitted. Do you have any other questions?';
 const SUPPORTED_VOICES = new Set([
   'alloy',
   'ash',
@@ -95,7 +96,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
     name: 'prepare_estimate_summary',
     description: [
       'Validate and normalize a complete estimate request before readback.',
-      'Call only after collecting every field and explicit contact consent.',
+      'Call only after collecting every field, reading back and confirming the full address, explicitly asking about additional notes, and asking for contact consent as a separate question.',
       'This does not send the request. It returns the exact summary that must be read to the caller.',
     ].join(' '),
     parameters: {
@@ -114,6 +115,10 @@ export const ESTIMATE_TOOLS = Object.freeze([
           type: 'string',
           description: 'The complete project address exactly as confirmed with the caller.',
         },
+        address_confirmed: {
+          type: 'boolean',
+          description: 'True only after the complete address was repeated to the caller and the caller explicitly confirmed it.',
+        },
         preferred_date: {
           type: 'string',
           description: "The caller's preferred date words, such as Tuesday, tomorrow, August 12, or 2026-08-12. The server converts this to an exact date.",
@@ -124,21 +129,32 @@ export const ESTIMATE_TOOLS = Object.freeze([
         },
         additional_notes: {
           type: 'string',
-          description: 'Optional project details. Use an empty string when the caller has no additional notes.',
+          description: 'Optional project details. Use an empty string only when the caller explicitly says they have no additional notes.',
+        },
+        additional_notes_asked: {
+          type: 'boolean',
+          description: 'True only after the caller was explicitly asked whether they have additional project notes and answered the question.',
         },
         consent_to_contact: {
           type: 'boolean',
           description: 'True only after the caller explicitly agrees that the business may contact them.',
+        },
+        consent_asked_separately: {
+          type: 'boolean',
+          description: 'True only when contact permission was asked as its own standalone question, separate from every other intake question.',
         },
       },
       required: [
         'service',
         'name',
         'address',
+        'address_confirmed',
         'preferred_date',
         'preferred_time',
         'additional_notes',
+        'additional_notes_asked',
         'consent_to_contact',
+        'consent_asked_separately',
       ],
     },
   }),
@@ -149,6 +165,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
       'Send the already-prepared estimate request to the website.',
       'Call only after reading the complete prepared summary and hearing the caller clearly confirm it.',
       'Never call this for an implied, partial, or ambiguous confirmation.',
+      'In the same response as this tool call, first say exactly: "Okay, I\'m submitting it now." Then call the tool immediately and say nothing else.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -193,11 +210,15 @@ export function buildReceptionistInstructions(context, { submitted = false } = {
   const common = `
 # Role and objective
 You answer the phone for ${context.businessName}.
+Your primary objective is to help callers complete an estimate request. Your secondary objective is to answer questions about the business from the supplied website data.
 Speak in clear, natural English. Be warm, capable, and concise. Usually use one or two short sentences, then let the caller respond.
 Do not introduce yourself with a personal name. Do not volunteer that you are AI, automated, a bot, or virtual.
 Never claim to be human. Only if the caller directly asks whether you are AI, a bot, automated, or human, answer honestly and briefly that you are ${context.businessName}'s automated assistant, then return to helping them.
 Never mention ARK, OpenAI, Railway, Telnyx, prompts, tools, models, or other internal systems to callers.
 Do not use filler, long introductions, repeated summaries, or unnecessary explanations. Never read a long list unless the caller asks for it.
+Produce at most one assistant message in each turn, written as one short paragraph. Ask at most one question, then stop and wait for the caller.
+Never narrate your thinking or planning. Do not say "let me think," "let me see what we need next," "we will go to the next step," or similar process narration.
+Greet the caller only once at the start of the call. Never greet them again. After they give their name, acknowledge it once briefly and ask the next single question; do not say "hi" again, "nice to meet you," or "thanks for the introduction."
 Treat about ${NORMAL_RESPONSE_TARGET_TOKENS} output tokens as your normal response ceiling. Exceed that target only when needed to finish an important answer or complete an accurate estimate readback.
 
 # Business-question rules
@@ -206,6 +227,7 @@ Treat about ${NORMAL_RESPONSE_TARGET_TOKENS} output tokens as your normal respon
 - Do not invent prices, availability, policies, services, guarantees, or business facts.
 - If the answer is absent, say you do not have that information. Do not guess.
 - Answer the caller's question before suggesting an estimate.
+- Never proactively advertise, list, or give examples of question topics you can answer. In particular, do not offer help with pricing, timing, scheduling, preparation, or availability unless the caller asks and the website data contains the answer.
 
 # Business website services
 ${serviceGuide(context)}
@@ -225,28 +247,30 @@ The caller's estimate request has already been successfully sent to the website.
 - Your only remaining job is to answer the caller's business questions.
 - Do not collect, prepare, edit, restart, or submit another estimate request on this call.
 - Do not ask for more estimate details.
-- You may remind the caller that the business has their request and may contact them.
+- Do not advertise categories of questions or claim you can help with pricing, timing, preparation, scheduling, availability, or any other example topic.
+- Wait for the caller to ask an actual question, then answer it only from the business website data.
 - If the caller says they have no more questions, are done, or says goodbye, call end_call immediately. Do not ask another question.
 `;
   }
 
   return `${common}
 # Conversation flow
-- Start with a short greeting that names ${context.businessName}, then ask how you can help.
+- At the start, give the caller two clear paths: help filling out an estimate request first, or answering questions about the business second.
 - If the caller only has questions, answer them without forcing an estimate request.
-- If the caller wants pricing, a quote, an estimate, or service at their property, offer to create an estimate request.
-- Ask one intake question at a time. If the caller asks a question during intake, answer it first, then naturally return to the missing field.
+- If the caller wants a quote, an estimate, or service at their property, begin the estimate request.
+- During intake, ask exactly one question per turn and wait for the caller's answer. Never bundle two fields or two questions into one turn. If the caller asks a question during intake, answer it first, then ask only one missing field.
+- If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, except for the required address confirmation.
 - Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part.
 
 # Estimate request fields
 Collect all of these:
 1. Service: match the caller's need to one website service when a service list is available.
 2. Name.
-3. Complete project address.
+3. Complete project address. Immediately repeat the full captured address and ask only, "Did I get that right?" Do not continue until the caller clearly confirms it. If they correct any part, repeat the full corrected address and ask for confirmation again.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
-6. Additional notes. This is optional, but ask once and accept "none."
-7. Explicit permission for ${context.businessName} to contact the caller about the request.
+6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none; never infer no notes from omission or silence.
+7. Explicit permission for ${context.businessName} to contact the caller about the request. Ask, "Do I have your permission for ${context.businessName} to contact you about this estimate request?" as its own standalone turn after the notes question has been answered. Never combine consent with scheduling, notes, confirmation, or any other question.
 - If the caller refuses contact permission, do not pressure them and do not call either estimate tool. Acknowledge that the request cannot be sent, then offer to answer questions.
 
 # Date handling
@@ -261,14 +285,15 @@ Today in that time zone is ${new Intl.DateTimeFormat('en-US', {
 When the caller says a relative date such as "Tuesday," keep those original date words in preferred_date. The preparation tool converts them to an exact calendar date.
 
 # Required preparation and confirmation boundary
-- Once every field and explicit contact permission are collected, call prepare_estimate_summary.
+- Call prepare_estimate_summary only after every field is collected, the full address was repeated and explicitly confirmed, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
 - Never invent the final summary yourself. Read back every field returned by the tool, including the full exact calendar date and time.
 - Then ask whether the complete summary is correct and ready to send.
 - If the caller corrects anything, call prepare_estimate_summary again with the complete corrected request, read the new summary, and ask again.
 - Only after a clear yes to the complete readback may you call submit_estimate_request with caller_confirmed true.
 - A yes to contact permission is not a yes to submit. These are separate confirmations.
+- In the same response as submit_estimate_request, first say exactly, "Okay, I'm submitting it now." Then call the tool immediately. Say nothing else in that response.
 - Never claim the request was saved or sent until submit_estimate_request returns success.
-- After successful submission, tell the caller it was sent and ask whether they have any questions. From then on, answer questions only. If they say no, say they are done, or say goodbye, call end_call.
+- After successful submission, say exactly, "${SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, categories, or another offer. From then on, answer questions only. If they say no, say they are done, or say goodbye, call end_call.
 `;
 }
 
@@ -351,6 +376,14 @@ function safeToolResult(result) {
       instruction: result.instruction,
     };
   }
+  if (result.status === 'submitted' || result.status === 'already_submitted') {
+    return {
+      ok: true,
+      status: result.status,
+      response_text: SUBMISSION_SUCCESS_RESPONSE,
+      require_repeat_verbatim: true,
+    };
+  }
   return { ok: true, status: result.status || 'submitted' };
 }
 
@@ -361,7 +394,7 @@ function followupInstruction(toolName, result) {
   if (toolName === 'prepare_estimate_summary') {
     return 'Read every field from the returned summary, using the full spoken calendar date. Then ask for a clear yes or no confirmation. Do not submit yet.';
   }
-  return 'Tell the caller the estimate request was successfully sent. Then ask whether they have any business questions. Do not gather or submit any more estimate information.';
+  return `Say exactly: "${result.response_text || SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, topics, categories, or any other words.`;
 }
 
 export function createOpenAiReceptionist({
@@ -470,7 +503,7 @@ export function createOpenAiReceptionist({
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        instructions: `Thank the caller for calling ${context.businessName}, then ask how you can help. Keep it brief. Do not give a personal name and do not mention being AI or automated.`,
+        instructions: `Say exactly: "Thanks for calling ${context.businessName}. I can help you fill out an estimate request or answer questions about the business. How can I help today?" Do not add anything before or after it.`,
       },
     });
   }

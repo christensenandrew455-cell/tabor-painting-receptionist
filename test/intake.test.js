@@ -16,6 +16,19 @@ const CONTEXT = Object.freeze({
   ],
 });
 
+const VALID_DRAFT = Object.freeze({
+  service: 'interior painting',
+  name: 'Jordan Smith',
+  address: '123 Main Street, Albany, NY 12207',
+  address_confirmed: true,
+  preferred_date: 'Tuesday',
+  preferred_time: '3:30 PM',
+  additional_notes: '',
+  additional_notes_asked: true,
+  consent_to_contact: true,
+  consent_asked_separately: true,
+});
+
 test('converts a spoken weekday to an exact date in the business timezone', () => {
   const date = resolveRequestedDate('Tuesday', {
     now: NOW,
@@ -49,15 +62,33 @@ test('requires explicit contact consent before preparing a summary', () => {
   });
 
   assert.throws(() => manager.prepare({
-    service: 'interior painting',
-    name: 'Jordan Smith',
-    address: '123 Main Street, Albany, NY 12207',
-    preferred_date: 'Tuesday',
-    preferred_time: '3:30 PM',
-    additional_notes: '',
+    ...VALID_DRAFT,
     consent_to_contact: false,
   }), /explicitly consenting/);
   assert.equal(manager.phase, 'collecting');
+});
+
+test('blocks preparation until address, notes, and standalone consent gates are complete', () => {
+  const createManager = () => createIntakeManager({
+    context: CONTEXT,
+    callControlId: 'call-123',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true }),
+    now: () => NOW,
+  });
+
+  assert.throws(
+    () => createManager().prepare({ ...VALID_DRAFT, address_confirmed: false }),
+    /Repeat the complete project address/i,
+  );
+  assert.throws(
+    () => createManager().prepare({ ...VALID_DRAFT, additional_notes_asked: false }),
+    /additional project notes/i,
+  );
+  assert.throws(
+    () => createManager().prepare({ ...VALID_DRAFT, consent_asked_separately: false }),
+    /separate question/i,
+  );
 });
 
 test('prepares, confirms, and sends one normalized request to ARC', async () => {
@@ -74,13 +105,9 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   });
 
   const prepared = manager.prepare({
+    ...VALID_DRAFT,
     service: 'I need interior painting',
-    name: 'Jordan Smith',
-    address: '123 Main Street, Albany, NY 12207',
-    preferred_date: 'Tuesday',
-    preferred_time: '3:30 PM',
     additional_notes: 'The living room has vaulted ceilings.',
-    consent_to_contact: true,
   });
 
   assert.equal(prepared.ok, true);
