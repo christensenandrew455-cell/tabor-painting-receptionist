@@ -44,7 +44,11 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'), false);
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('additional_notes_asked'));
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('consent_asked_separately'));
-  assert.match(ESTIMATE_TOOLS[1].description, /Okay, I'm submitting it now/);
+  assert.match(
+    ESTIMATE_TOOLS[1].description,
+    /I'm submitting your estimate request now\./,
+  );
+  assert.doesNotMatch(ESTIMATE_TOOLS[1].description, /Okay, I'm submitting it now/);
   assert.equal(END_CALL_TOOL.parameters.additionalProperties, false);
 });
 
@@ -63,17 +67,27 @@ test('prompt separates consent from final submission confirmation', () => {
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
+  assert.match(prompt, /What service are you looking for/);
+  assert.match(prompt, /Do not name, suggest, or give examples of services in that first question/);
+  assert.match(prompt, /Only if their answer cannot match a supplied service/);
   assert.match(prompt, /ask exactly one question per turn/i);
-  assert.match(prompt, /Do not repeat it or ask for a separate address confirmation/i);
+  assert.match(prompt, /do not repeat any part of it/i);
+  assert.match(prompt, /do not say "I have your address as,"/i);
   assert.doesNotMatch(prompt, /required address confirmation/i);
   assert.match(prompt, /9:00 AM through 4:00 PM/);
+  assert.match(prompt, /give exactly one spoken correction/i);
+  assert.match(prompt, /do not announce that it is inside the window/i);
   assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any additional notes for the project/);
   assert.match(prompt, /as its own standalone turn after the notes/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
   assert.match(prompt, /Greet the caller only once/i);
+  assert.match(prompt, /use only their first name/i);
+  assert.match(prompt, /never "Thanks, Andrew Christensen/i);
   assert.match(prompt, /Never proactively advertise, list, or give examples/i);
-  assert.match(prompt, /Okay, I'm submitting it now/);
+  assert.match(prompt, /I'm submitting your estimate request now\./);
+  assert.match(prompt, /claim success before the tool returns/i);
+  assert.doesNotMatch(prompt, /Okay, I'm submitting it now/);
   assert.match(prompt, /Do not volunteer that you are AI/i);
   assert.match(prompt, /Never mention ARK, OpenAI, Railway, Telnyx/i);
   assert.doesNotMatch(prompt, /Alex/);
