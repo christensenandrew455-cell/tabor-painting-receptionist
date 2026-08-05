@@ -34,6 +34,10 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
     ['prepare_estimate_summary', 'submit_estimate_request'],
   );
   assert.equal(ESTIMATE_TOOLS[0].parameters.additionalProperties, false);
+  assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'));
+  assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('additional_notes_asked'));
+  assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('consent_asked_separately'));
+  assert.match(ESTIMATE_TOOLS[1].description, /Okay, I'm submitting it now/);
   assert.equal(END_CALL_TOOL.parameters.additionalProperties, false);
 });
 
@@ -52,6 +56,14 @@ test('prompt separates consent from final submission confirmation', () => {
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
+  assert.match(prompt, /ask exactly one question per turn/i);
+  assert.match(prompt, /Immediately repeat the full captured address/i);
+  assert.match(prompt, /Do you have any additional notes for the project/);
+  assert.match(prompt, /as its own standalone turn after the notes/i);
+  assert.match(prompt, /Never narrate your thinking or planning/i);
+  assert.match(prompt, /Greet the caller only once/i);
+  assert.match(prompt, /Never proactively advertise, list, or give examples/i);
+  assert.match(prompt, /Okay, I'm submitting it now/);
   assert.match(prompt, /Do not volunteer that you are AI/i);
   assert.match(prompt, /Never mention ARK, OpenAI, Railway, Telnyx/i);
   assert.doesNotMatch(prompt, /Alex/);
@@ -121,7 +133,12 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     assert.equal(socket.sent[0].session.tools.length, 2);
 
     socket.receive({ type: 'session.updated', session: {} });
-    assert.ok(socket.sent.some((event) => event.type === 'response.create'));
+    const greetingRequest = socket.sent.find((event) => event.type === 'response.create');
+    assert.match(
+      greetingRequest.response.instructions,
+      /Thanks for calling Tabor Painting\. I can help you fill out an estimate request or answer questions about the business\. How can I help today\?/,
+    );
+    assert.match(greetingRequest.response.instructions, /Do not add anything before or after it/);
 
     socket.receive({
       type: 'response.done',
@@ -134,10 +151,13 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
             service: 'Interior Painting',
             name: 'Jordan Smith',
             address: '123 Main Street, Albany, NY 12207',
+            address_confirmed: true,
             preferred_date: '2099-08-12',
             preferred_time: '3:30 PM',
             additional_notes: '',
+            additional_notes_asked: true,
             consent_to_contact: true,
+            consent_asked_separately: true,
           }),
         }],
       },
@@ -166,6 +186,23 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
 
     assert.equal(deliveries.length, 1);
     assert.equal(submittedSnapshot.phase, 'submitted');
+    const submitOutput = socket.sent.find(
+      (event) => event.type === 'conversation.item.create'
+        && event.item.call_id === 'submit-call',
+    );
+    const submitResult = JSON.parse(submitOutput.item.output);
+    assert.equal(
+      submitResult.response_text,
+      'Your estimate request was successfully submitted. Do you have any other questions?',
+    );
+    assert.equal(submitResult.require_repeat_verbatim, true);
+    const postSubmissionResponse = socket.sent
+      .filter((event) => event.type === 'response.create')
+      .at(-1);
+    assert.match(postSubmissionResponse.response.instructions, /Say exactly/);
+    assert.match(postSubmissionResponse.response.instructions, /Do you have any other questions\?/);
+    assert.match(postSubmissionResponse.response.instructions, /Do not add examples, topics, categories/);
+    assert.doesNotMatch(postSubmissionResponse.response.instructions, /pricing|timing|prep work/i);
     const postSubmissionUpdate = socket.sent
       .filter((event) => event.type === 'session.update')
       .at(-1);

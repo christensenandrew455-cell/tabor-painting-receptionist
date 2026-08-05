@@ -224,6 +224,15 @@ function requiredText(value, field, label, maxLength) {
 }
 
 export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
+  if (args.address_confirmed !== true) {
+    fail('Repeat the complete project address and ask the caller to confirm it before continuing.', 'address_confirmed');
+  }
+  if (args.additional_notes_asked !== true) {
+    fail('Ask the caller whether they have any additional project notes before continuing.', 'additional_notes_asked');
+  }
+  if (args.consent_asked_separately !== true) {
+    fail('Ask for contact permission as a separate question before continuing.', 'consent_asked_separately');
+  }
   if (args.consent_to_contact !== true) {
     fail('The request cannot be prepared without the caller explicitly consenting to business contact.', 'consent_to_contact');
   }
