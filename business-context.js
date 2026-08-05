@@ -1,5 +1,6 @@
 const SENSITIVE_KEY = /(authorization|credential|password|secret|token|api[_-]?key)/i;
 const CONNECTION_KEY = /^(intakeUrl|mediaWebSocketUrl|runtimeUrl|usageUrl|webSocketUrl)$/i;
+const RECEPTIONIST_CONTROL_KEY = /^(receptionist(Name)?|aiVoice|voice)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
 
 function knowledgeCharacterLimit() {
@@ -105,7 +106,11 @@ function sanitizeKnowledge(value, depth = 0) {
 
   const result = {};
   for (const [key, child] of Object.entries(value).slice(0, 150)) {
-    if (SENSITIVE_KEY.test(key) || CONNECTION_KEY.test(key)) continue;
+    if (
+      SENSITIVE_KEY.test(key)
+      || CONNECTION_KEY.test(key)
+      || RECEPTIONIST_CONTROL_KEY.test(key)
+    ) continue;
     const sanitized = sanitizeKnowledge(child, depth + 1);
     if (sanitized !== undefined) result[key] = sanitized;
   }
@@ -125,7 +130,6 @@ function publicRuntimeData(runtime, services) {
 
   const topLevelFields = [
     'businessName',
-    'receptionistName',
     'ownerName',
     'businessPhone',
     'businessEmail',
@@ -155,7 +159,6 @@ export function createBusinessContext(runtime = {}) {
     businessInfo: objectValue(runtime.businessInfo),
     website: objectValue(runtime.website || runtime.websiteInfo),
     config: objectValue(runtime.config || runtime.settings),
-    receptionist: objectValue(runtime.receptionist),
   };
   const serviceSource = valueAt(normalizedRuntime, 'profile.services')
     ?? valueAt(normalizedRuntime, 'business.services')
@@ -176,15 +179,6 @@ export function createBusinessContext(runtime = {}) {
     'businessName',
   ], 'the business');
 
-  const receptionistName = firstText(normalizedRuntime, [
-    'profile.receptionistName',
-    'business.receptionistName',
-    'businessInfo.receptionistName',
-    'receptionist.name',
-    'config.receptionistName',
-    'receptionistName',
-  ], 'Alex');
-
   const timeZone = validTimeZone(firstText(normalizedRuntime, [
     'profile.timeZone',
     'business.timeZone',
@@ -192,14 +186,6 @@ export function createBusinessContext(runtime = {}) {
     'config.timeZone',
     'timeZone',
   ])) || validTimeZone(process.env.BUSINESS_TIME_ZONE) || 'America/New_York';
-
-  const voice = firstText(normalizedRuntime, [
-    'profile.aiVoice',
-    'receptionist.voice',
-    'config.aiVoice',
-    'aiVoice',
-    'voice',
-  ], process.env.OPENAI_VOICE || 'marin');
 
   const publicData = publicRuntimeData(normalizedRuntime, services);
   let knowledgeJson = JSON.stringify(publicData, null, 2);
@@ -210,9 +196,7 @@ export function createBusinessContext(runtime = {}) {
 
   return Object.freeze({
     businessName,
-    receptionistName,
     timeZone,
-    voice,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),
     knowledgeJson,

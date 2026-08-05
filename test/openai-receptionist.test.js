@@ -5,25 +5,27 @@ import {
   buildReceptionistInstructions,
   buildSessionUpdate,
   createOpenAiReceptionist,
+  END_CALL_TOOL,
   ESTIMATE_TOOLS,
 } from '../openai-receptionist.js';
 
 const CONTEXT = Object.freeze({
   businessName: 'Tabor Painting',
-  receptionistName: 'Alex',
   timeZone: 'America/New_York',
-  voice: 'marin',
   clientId: 'client-123',
   services: [{ name: 'Interior Painting', description: 'Walls and ceilings' }],
   knowledgeJson: '{"businessHours":"Monday through Friday"}',
 });
 
-test('configures PCMU audio and the two-step estimate tools', () => {
+test('configures PCMU audio, low-cost transcripts, and the two-step estimate tools', () => {
   const event = buildSessionUpdate(CONTEXT);
   assert.equal(event.type, 'session.update');
   assert.equal(event.session.model, 'gpt-realtime-2.1-mini');
   assert.equal(event.session.audio.input.format.type, 'audio/pcmu');
   assert.equal(event.session.audio.output.format.type, 'audio/pcmu');
+  assert.equal(event.session.audio.output.voice, 'marin');
+  assert.equal(event.session.audio.input.transcription.model, 'gpt-4o-mini-transcribe');
+  assert.equal(event.session.audio.input.transcription.language, 'en');
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
   assert.equal(event.session.truncation.retention_ratio, 0.7);
@@ -32,13 +34,15 @@ test('configures PCMU audio and the two-step estimate tools', () => {
     ['prepare_estimate_summary', 'submit_estimate_request'],
   );
   assert.equal(ESTIMATE_TOOLS[0].parameters.additionalProperties, false);
+  assert.equal(END_CALL_TOOL.parameters.additionalProperties, false);
 });
 
-test('removes estimate tools after a successful submission', () => {
+test('keeps only the end-call tool after a successful submission', () => {
   const event = buildSessionUpdate(CONTEXT, { submitted: true });
-  assert.deepEqual(event.session.tools, []);
+  assert.deepEqual(event.session.tools.map((tool) => tool.name), ['end_call']);
   assert.match(event.session.instructions, /only remaining job is to answer/i);
   assert.match(event.session.instructions, /Do not collect, prepare, edit, restart, or submit/i);
+  assert.match(event.session.instructions, /call end_call immediately/i);
 });
 
 test('prompt separates consent from final submission confirmation', () => {
@@ -47,6 +51,10 @@ test('prompt separates consent from final submission confirmation', () => {
   assert.match(prompt, /Read back every field returned by the tool/);
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
+  assert.match(prompt, /What date and time would work best for the estimate/);
+  assert.match(prompt, /Do not volunteer that you are AI/i);
+  assert.match(prompt, /Never mention ARK, OpenAI, Railway, Telnyx/i);
+  assert.doesNotMatch(prompt, /Alex/);
 });
 
 class FakeWebSocket extends EventEmitter {
@@ -79,11 +87,13 @@ function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-test('runs prepare then submit and switches the live session to questions only', async () => {
+test('runs prepare, submits once, logs transcripts, says goodbye, and requests hangup', async () => {
   const previousApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
   const deliveries = [];
+  const transcripts = [];
   let submittedSnapshot = null;
+  let goodbyeCompletions = 0;
 
   try {
     const receptionist = createOpenAiReceptionist({
@@ -99,6 +109,8 @@ test('runs prepare then submit and switches the live session to questions only',
       onClear: () => {},
       onSubmitted: (snapshot) => { submittedSnapshot = snapshot; },
       onReady: () => {},
+      onTranscript: (entry) => { transcripts.push(entry); },
+      onGoodbyeComplete: () => { goodbyeCompletions += 1; },
       onError: (error) => assert.fail(error.message),
       WebSocketClass: FakeWebSocket,
     });
@@ -157,9 +169,58 @@ test('runs prepare then submit and switches the live session to questions only',
     const postSubmissionUpdate = socket.sent
       .filter((event) => event.type === 'session.update')
       .at(-1);
-    assert.deepEqual(postSubmissionUpdate.session.tools, []);
+    assert.deepEqual(postSubmissionUpdate.session.tools.map((tool) => tool.name), ['end_call']);
     assert.match(postSubmissionUpdate.session.instructions, /answer the caller's business questions/);
     assert.equal(receptionist.snapshot().submitted, true);
+
+    socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'caller-done',
+      transcript: 'No, that is all. Thank you.',
+    });
+    socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'end-tool-response',
+        output: [{
+          type: 'function_call',
+          name: 'end_call',
+          call_id: 'end-call',
+          arguments: '{}',
+        }],
+      },
+    });
+    await nextTurn();
+
+    const endOutput = socket.sent.find(
+      (event) => event.type === 'conversation.item.create'
+        && event.item.call_id === 'end-call',
+    );
+    assert.equal(JSON.parse(endOutput.item.output).status, 'ending_call');
+    const goodbyeRequest = socket.sent.filter((event) => event.type === 'response.create').at(-1);
+    assert.match(goodbyeRequest.response.instructions, /Have a good day\. Goodbye/);
+
+    socket.receive({ type: 'response.created', response: { id: 'goodbye-response' } });
+    socket.receive({
+      type: 'response.output_audio_transcript.done',
+      response_id: 'goodbye-response',
+      item_id: 'goodbye-item',
+      transcript: 'Thanks for calling Tabor Painting. Have a good day. Goodbye.',
+    });
+    socket.receive({
+      type: 'response.done',
+      response: { id: 'goodbye-response', output: [] },
+    });
+
+    assert.equal(goodbyeCompletions, 1);
+    assert.equal(receptionist.snapshot().endingCall, true);
+    assert.deepEqual(transcripts.map(({ speaker, text }) => ({ speaker, text })), [
+      { speaker: 'caller', text: 'No, that is all. Thank you.' },
+      {
+        speaker: 'receptionist',
+        text: 'Thanks for calling Tabor Painting. Have a good day. Goodbye.',
+      },
+    ]);
     receptionist.close();
   } finally {
     if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
