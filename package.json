@@ -1,13 +1,14 @@
 {
   "name": "tabor-painting-receptionist",
-  "version": "5.0.0",
-  "description": "Minimal bidirectional transport shell between Telnyx/Railway and ARC OCM.",
+  "version": "6.0.0",
+  "description": "Telnyx and OpenAI Realtime receptionist with ARC-backed business knowledge and confirmed estimate intake.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js"
+    "check": "node --check arc-runtime.js && node --check business-context.js && node --check intake.js && node --check openai-receptionist.js && node --check server.js && node --check test/arc-runtime.test.js && node --check test/business-context.test.js && node --check test/intake.test.js && node --check test/openai-receptionist.test.js",
+    "test": "node --test"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
