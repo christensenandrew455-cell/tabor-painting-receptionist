@@ -18,7 +18,7 @@ For an estimate, it collects:
 
 The server converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone. The AI must then read back the complete normalized summary and obtain a separate, explicit confirmation before the server permits submission.
 
-After ARC successfully accepts the request, the live OpenAI session is updated with no intake tools. For the remainder of the call, the receptionist can only answer business questions.
+After ARC successfully accepts the request, the live OpenAI session is updated with no intake tools. For the remainder of the call, the receptionist can only answer business questions or use the dedicated end-call tool. When the caller says they have no more questions, it gives a short goodbye, waits for that audio to finish playing, and hangs up.
 
 ## Cost controls
 
@@ -31,7 +31,9 @@ The default model is `gpt-realtime-2.1-mini`. The service also applies four inde
 
 Website knowledge sent to the model is capped at 12,000 characters. These defaults keep normal receptionist calls concise and prevent an abandoned or unusually long call from consuming unlimited model usage. Every limit can be adjusted through Railway, but raising a limit increases the possible cost per call.
 
-When Telnyx reports the call ended, Railway logs one `[Call OpenAI usage]` record containing input tokens, output tokens, response count, and a conservative cost upper bound. The bound prices every token at the model's uncached audio rate, so the final OpenAI charge should be no higher and will usually be lower.
+When Telnyx reports the call ended, Railway logs one `[Call OpenAI usage]` record containing input tokens, output tokens, response count, and a conservative Realtime-model cost upper bound. The bound prices every token at the model's uncached audio rate, so that part of the final OpenAI charge should be no higher and will usually be lower. Caller transcription uses the separate low-cost `gpt-4o-mini-transcribe` model.
+
+Railway also logs each completed caller and receptionist utterance as `[Call transcript line]`, then logs the full ordered call as `[Call transcript]` when the call ends. Caller lines are automatic speech-recognition transcripts; receptionist lines are the generated audio transcripts. These logs contain caller-provided personal information such as names and addresses, so access to Railway logs should stay restricted.
 
 ## Call flow
 
@@ -45,6 +47,7 @@ flowchart TD
     F -- No, correction --> D
     F -- Yes --> G[Send once to ARC]
     G --> H[Questions-only mode]
+    H --> I[Goodbye and hang up]
 ```
 
 ## Required Railway environment variables
@@ -62,6 +65,8 @@ Optional:
 ARC_INTAKE_URL
 OPENAI_REALTIME_MODEL          # defaults to gpt-realtime-2.1-mini
 OPENAI_VOICE                   # defaults to marin
+OPENAI_TRANSCRIPTION_MODEL     # defaults to gpt-4o-mini-transcribe
+OPENAI_TRANSCRIPTION_LANGUAGE  # defaults to en
 BUSINESS_TIME_ZONE             # fallback only; defaults to America/New_York
 OPENAI_MAX_OUTPUT_TOKENS       # defaults to 800; prompt normally targets about 256
 OPENAI_CONTEXT_TOKEN_LIMIT     # defaults to 2500
@@ -76,7 +81,8 @@ For the current ARK OCM integration, set `RECEPTIONIST_CONFIG_URL` to
 `https://ark-websites-ocm-xi.vercel.app/api/receptionist/runtime`. Leave
 `ARC_INTAKE_URL` unset: the runtime response supplies the correct private URL for the
 business matched to the called Telnyx number. ARC-provided settings take precedence
-over the optional intake URL, voice, and business timezone fallbacks.
+over the optional intake URL and business timezone fallback. Voice is controlled only
+by `OPENAI_VOICE` on Railway and otherwise defaults to `marin`.
 
 ## ARC runtime request
 
@@ -106,7 +112,6 @@ The ARC response can place public business information in `profile`, `business`,
   "clientId": "client-id",
   "profile": {
     "businessName": "Example Painting",
-    "receptionistName": "Alex",
     "timeZone": "America/New_York",
     "services": {
       "Interior Painting": "Walls, ceilings, trim, and cabinets",
@@ -119,7 +124,7 @@ The ARC response can place public business information in `profile`, `business`,
 }
 ```
 
-Tokens, secrets, credentials, and connection URLs are removed before website data is placed in the AI prompt.
+Tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
 
 ## ARC estimate payload
 

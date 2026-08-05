@@ -140,7 +140,7 @@ export function resolveRequestedDate(value, { now = new Date(), timeZone = 'Amer
   const today = calendarDate(todayParts.year, todayParts.month, todayParts.day);
   const date = parseRequestedDate(input, today);
   if (!date) {
-    fail('That date was unclear. Ask for a weekday or a calendar date.', 'preferred_date');
+    fail('That date was unclear. Ask which date they prefer.', 'preferred_date');
   }
   if (date < today) fail('The requested date must be today or later.', 'preferred_date');
 
@@ -171,7 +171,7 @@ export function normalizeRequestedTime(value) {
   if (spoken) input = `${SPOKEN_HOURS[spoken[1]]} ${spoken[2]}`;
 
   const match = input.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?$/);
-  if (!match) fail('That time was unclear. Ask for a time such as 3:30 PM.', 'preferred_time');
+  if (!match) fail('That time was unclear. Ask what time they prefer.', 'preferred_time');
 
   let hour = Number(match[1]);
   const minute = Number(match[2] || 0);

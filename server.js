@@ -12,6 +12,7 @@ const PUBLIC_URL = resolvePublicUrl();
 const MEDIA_STREAM_URL = PUBLIC_URL.replace(/^http/i, 'ws') + '/media-stream';
 const ARC_RUNTIME_URL = clean(process.env.RECEPTIONIST_CONFIG_URL || process.env.ARC_RUNTIME_URL);
 const ARC_INTAKE_URL = clean(process.env.ARC_INTAKE_URL);
+const GOODBYE_MARK_TIMEOUT_MS = 10_000;
 const MAX_CALL_DURATION_SECONDS = boundedInteger(
   process.env.MAX_CALL_DURATION_SECONDS,
   480,
@@ -206,7 +207,11 @@ async function beginCall(body, id, runtimeForward = {}) {
     status: 'loading',
     ended: false,
     costLimitTimer: null,
+    goodbyeTimer: null,
+    hangupRequested: false,
+    endReason: '',
     openAiUsage: null,
+    transcript: [],
   };
   calls.set(id, call);
 
@@ -239,24 +244,41 @@ function stopForCostLimit(call, reason) {
   call.status = reason;
   call.receptionist?.close();
   call.receptionist = null;
+  requestHangup(call, reason, 'Cost-limit hangup failed');
+}
+
+function requestHangup(call, reason, errorLabel = 'Hangup failed') {
+  if (!call || call.ended || call.hangupRequested || calls.get(call.id) !== call) return;
+  call.hangupRequested = true;
+  call.endReason = reason;
+  call.status = reason;
   void telnyxCommand(call.id, 'hangup')
-    .catch((error) => console.error('[Cost-limit hangup failed]', error.message))
+    .catch((error) => console.error(`[${errorLabel}]`, error.message))
     .finally(() => endCall(call.id, reason));
 }
 
 function endCall(id, reason = 'hangup') {
   const call = calls.get(id);
   if (!call) return;
+  const finalReason = call.endReason || reason;
   call.ended = true;
-  call.status = reason;
+  call.status = finalReason;
   if (call.costLimitTimer) clearTimeout(call.costLimitTimer);
+  if (call.goodbyeTimer) clearTimeout(call.goodbyeTimer);
   call.costLimitTimer = null;
+  call.goodbyeTimer = null;
   call.receptionist?.close();
   call.receptionist = null;
   calls.delete(id);
+  console.log('[Call transcript]', JSON.stringify({
+    reason: finalReason,
+    callControlId: call.id,
+    callerPhone: call.callerPhone,
+    entries: call.transcript,
+  }));
   if (call.openAiUsage) {
     console.log('[Call OpenAI usage]', JSON.stringify({
-      reason,
+      reason: finalReason,
       ...call.openAiUsage,
     }));
   }
@@ -276,7 +298,7 @@ app.post('/voice-api-webhook', (req, res) => {
     });
     return;
   }
-  if (type === 'call.hangup') endCall(id);
+  if (type === 'call.hangup') endCall(id, calls.get(id)?.endReason || 'hangup');
 });
 
 app.post('/arc/send', async (req, res) => {
@@ -311,9 +333,46 @@ wss.on('connection', (telnyx, request) => {
   const queryCallId = clean(url.searchParams.get('callControlId'));
   let call = calls.get(queryCallId);
   let receptionist = null;
+  let endMarkName = '';
 
   function sendTelnyx(value) {
-    if (telnyx.readyState === WebSocket.OPEN) telnyx.send(JSON.stringify(value));
+    if (telnyx.readyState !== WebSocket.OPEN) return false;
+    telnyx.send(JSON.stringify(value));
+    return true;
+  }
+
+  function recordTranscript(entry = {}) {
+    if (!call || call.ended) return;
+    const text = String(entry.text ?? '').trim();
+    if (!text) return;
+    const saved = {
+      at: new Date().toISOString(),
+      speaker: entry.speaker === 'caller' ? 'caller' : 'receptionist',
+      text,
+      ...(clean(entry.itemId) ? { itemId: clean(entry.itemId) } : {}),
+      ...(clean(entry.responseId) ? { responseId: clean(entry.responseId) } : {}),
+    };
+    call.transcript.push(saved);
+    console.log('[Call transcript line]', JSON.stringify({
+      callControlId: call.id,
+      ...saved,
+    }));
+  }
+
+  function finishAfterGoodbye() {
+    if (!call || call.ended || call.hangupRequested) return;
+    call.endReason = 'completed';
+    call.status = 'goodbye-playing';
+    endMarkName = `end-call-${Date.now()}`;
+    const markSent = sendTelnyx({ event: 'mark', mark: { name: endMarkName } });
+    if (!markSent) {
+      requestHangup(call, 'completed', 'Goodbye hangup failed');
+      return;
+    }
+    call.goodbyeTimer = setTimeout(() => {
+      requestHangup(call, 'completed', 'Goodbye fallback hangup failed');
+    }, GOODBYE_MARK_TIMEOUT_MS);
+    call.goodbyeTimer.unref?.();
   }
 
   function closeReceptionist(reason = 'media-closed') {
@@ -347,7 +406,11 @@ wss.on('connection', (telnyx, request) => {
       onAudio: (payload) => sendTelnyx({ event: 'media', media: { payload } }),
       onClear: () => sendTelnyx({ event: 'clear' }),
       onSubmitted: () => { call.status = 'submitted'; },
-      onReady: () => { call.status = 'active'; },
+      onReady: () => {
+        if (call.status === 'streaming') call.status = 'active';
+      },
+      onTranscript: recordTranscript,
+      onGoodbyeComplete: finishAfterGoodbye,
       onCostLimit: ({ reason }) => stopForCostLimit(call, reason),
       onUsage: (usage) => { call.openAiUsage = usage; },
       onError: (error) => console.error('[Receptionist error]', error.message),
@@ -376,6 +439,13 @@ wss.on('connection', (telnyx, request) => {
     }
     if (message.event === 'stop') {
       closeReceptionist('media-stopped');
+      return;
+    }
+    if (message.event === 'mark' && endMarkName && message.mark?.name === endMarkName) {
+      endMarkName = '';
+      if (call?.goodbyeTimer) clearTimeout(call.goodbyeTimer);
+      if (call) call.goodbyeTimer = null;
+      requestHangup(call, 'completed', 'Goodbye hangup failed');
       return;
     }
     if (message.event === 'error') {

@@ -20,6 +20,7 @@ test('builds business context while removing connection secrets', () => {
     profile: {
       businessName: 'Tabor Painting',
       receptionistName: 'Taylor',
+      aiVoice: 'alloy',
       timeZone: 'America/Chicago',
       services: [{ name: 'Cabinet Painting', description: 'Kitchen cabinets' }],
       apiKey: 'also-private',
@@ -28,7 +29,6 @@ test('builds business context while removing connection secrets', () => {
   });
 
   assert.equal(context.businessName, 'Tabor Painting');
-  assert.equal(context.receptionistName, 'Taylor');
   assert.equal(context.timeZone, 'America/Chicago');
   assert.equal(context.clientId, 'client-123');
   assert.deepEqual(context.services, [
@@ -38,6 +38,10 @@ test('builds business context while removing connection secrets', () => {
   assert.doesNotMatch(context.knowledgeJson, /never-show-this-token/);
   assert.doesNotMatch(context.knowledgeJson, /also-private/);
   assert.doesNotMatch(context.knowledgeJson, /private\.example\.test/);
+  assert.doesNotMatch(context.knowledgeJson, /Taylor/);
+  assert.doesNotMatch(context.knowledgeJson, /alloy/);
+  assert.equal('receptionistName' in context, false);
+  assert.equal('voice' in context, false);
 });
 
 test('accepts ARC profile data supplied as a JSON string', () => {
