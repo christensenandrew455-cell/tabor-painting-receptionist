@@ -2,6 +2,15 @@ const SENSITIVE_KEY = /(authorization|credential|password|secret|token|api[_-]?k
 const CONNECTION_KEY = /^(intakeUrl|mediaWebSocketUrl|runtimeUrl|usageUrl|webSocketUrl)$/i;
 const RECEPTIONIST_CONTROL_KEY = /^(receptionist(Name)?|aiVoice|voice)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
+const WEEKDAY_NAMES = Object.freeze([
+  'sunday',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+]);
 
 function knowledgeCharacterLimit() {
   const configured = Number(process.env.MAX_WEBSITE_KNOWLEDGE_CHARACTERS);
@@ -34,6 +43,50 @@ function firstText(root, paths, fallback = '') {
     if (value) return value;
   }
   return fallback;
+}
+
+function firstValue(root, paths) {
+  for (const path of paths) {
+    const value = valueAt(root, path);
+    if (value !== undefined && value !== null) return value;
+  }
+  return undefined;
+}
+
+function weekdayName(value) {
+  const normalized = cleanText(value).toLowerCase();
+  return WEEKDAY_NAMES.find(
+    (weekday) => normalized === weekday || normalized === weekday.slice(0, 3),
+  ) || '';
+}
+
+function normalizeEstimateWeekdays(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map(weekdayName).filter(Boolean))];
+  }
+
+  const text = cleanText(value).toLowerCase();
+  if (!text) return [];
+  if (/\b(every day|daily|seven days)\b/.test(text)) return [...WEEKDAY_NAMES];
+  if (/\bweekdays?\b/.test(text)) return WEEKDAY_NAMES.slice(1, 6);
+  if (/\bweekends?\b/.test(text)) return ['saturday', 'sunday'];
+
+  const range = text.match(/\b(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\b\s*(?:through|thru|to|-)\s*\b(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\b/);
+  if (range) {
+    const start = WEEKDAY_NAMES.indexOf(weekdayName(range[1]));
+    const end = WEEKDAY_NAMES.indexOf(weekdayName(range[2]));
+    if (start >= 0 && end >= 0) {
+      const weekdays = [];
+      for (let offset = 0; offset < 7; offset += 1) {
+        const weekday = WEEKDAY_NAMES[(start + offset) % 7];
+        weekdays.push(weekday);
+        if (weekday === WEEKDAY_NAMES[end]) break;
+      }
+      return weekdays;
+    }
+  }
+
+  return WEEKDAY_NAMES.filter((weekday) => new RegExp(`\\b${weekday}(?:s)?\\b|\\b${weekday.slice(0, 3)}\\b`).test(text));
 }
 
 function validTimeZone(value) {
@@ -187,6 +240,39 @@ export function createBusinessContext(runtime = {}) {
     'timeZone',
   ])) || validTimeZone(process.env.BUSINESS_TIME_ZONE) || 'America/New_York';
 
+  const estimateWeekdayPaths = [
+    'profile.estimateWeekdays',
+    'business.estimateWeekdays',
+    'businessInfo.estimateWeekdays',
+    'config.estimateWeekdays',
+    'estimateWeekdays',
+  ];
+  const estimateDaysPaths = [
+    'profile.estimateDays',
+    'business.estimateDays',
+    'businessInfo.estimateDays',
+    'config.estimateDays',
+    'estimateDays',
+  ];
+  const estimateWeekdays = normalizeEstimateWeekdays(
+    firstValue(normalizedRuntime, estimateWeekdayPaths)
+      ?? firstValue(normalizedRuntime, estimateDaysPaths),
+  );
+  const earliestEstimateStart = firstText(normalizedRuntime, [
+    'profile.earliestEstimateStart',
+    'business.earliestEstimateStart',
+    'businessInfo.earliestEstimateStart',
+    'config.earliestEstimateStart',
+    'earliestEstimateStart',
+  ]);
+  const latestEstimateStart = firstText(normalizedRuntime, [
+    'profile.latestEstimateStart',
+    'business.latestEstimateStart',
+    'businessInfo.latestEstimateStart',
+    'config.latestEstimateStart',
+    'latestEstimateStart',
+  ]);
+
   const publicData = publicRuntimeData(normalizedRuntime, services);
   let knowledgeJson = JSON.stringify(publicData, null, 2);
   const maximumCharacters = knowledgeCharacterLimit();
@@ -197,6 +283,9 @@ export function createBusinessContext(runtime = {}) {
   return Object.freeze({
     businessName,
     timeZone,
+    estimateWeekdays: Object.freeze(estimateWeekdays),
+    earliestEstimateStart,
+    latestEstimateStart,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),
     knowledgeJson,

@@ -6,7 +6,7 @@ This Railway service connects Telnyx calls to an OpenAI Realtime receptionist. T
 
 The receptionist opens with two clear paths: filling out an estimate request (its primary objective) or answering a question about the business. It does not force an estimate on callers who only want information, and it never advertises unsupported topics such as pricing or availability.
 
-During intake it asks exactly one question per turn. Date and time are treated as one scheduling question, while additional notes and contact consent are always separate questions. It immediately reads the complete project address back and waits for explicit confirmation before moving on.
+During intake it asks exactly one question per turn. Date and time are treated as one scheduling question, while additional notes and contact consent are always separate questions. It records the address exactly as the caller gives it without interrupting the flow for a separate address readback.
 
 For an estimate, it collects:
 
@@ -18,7 +18,9 @@ For an estimate, it collects:
 6. Optional additional notes
 7. Explicit consent for the business to contact the caller
 
-The server blocks summary preparation unless the address-confirmation, notes-question, and standalone-consent gates are complete. It converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone. The AI must then read back the complete normalized summary and obtain a separate, explicit confirmation before the server permits submission. On that confirmation it says it is submitting the request, then sends it.
+The server blocks summary preparation unless the notes-question and standalone-consent gates are complete. It converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone and rejects requests outside the estimate weekdays or start-time range supplied by ARC. The final readback includes only the caller's name, service, address, exact date and time, and notes; it does not repeat contact consent. The caller must explicitly confirm that summary before the server permits submission. On that confirmation it says it is submitting the request, then sends it.
+
+Incoming audio uses OpenAI's far-field noise reduction for callers speaking from farther away or on speakerphone. Voice activity detection keeps 500 milliseconds before speech starts so initial words are less likely to be clipped, and it responds after 500 milliseconds of silence to reduce turn latency.
 
 After ARC successfully accepts the request, the receptionist says only that the request was successfully submitted and asks whether the caller has any other questions. The live OpenAI session is updated with no intake tools. For the remainder of the call, it answers only questions the caller actually asks and only from website data, or uses the dedicated end-call tool. When the caller says they have no more questions, it gives a short goodbye, waits for that audio to finish playing, and hangs up.
 
@@ -44,7 +46,7 @@ flowchart TD
     A[Telnyx incoming call] --> B[Load website data from ARC]
     B --> C[Open PCMU media stream]
     C --> D[Answer questions or collect estimate]
-    D --> E[Verify address, notes, and consent]
+    D --> E[Collect notes and consent]
     E --> J[Normalize date and prepare summary]
     J --> F{Caller confirms?}
     F -- No, correction --> D
@@ -116,6 +118,9 @@ The ARC response can place public business information in `profile`, `business`,
   "profile": {
     "businessName": "Example Painting",
     "timeZone": "America/New_York",
+    "estimateWeekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    "earliestEstimateStart": "09:00",
+    "latestEstimateStart": "16:00",
     "services": {
       "Interior Painting": "Walls, ceilings, trim, and cabinets",
       "Exterior Painting": "Siding, trim, decks, and fences"

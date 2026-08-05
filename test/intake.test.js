@@ -10,6 +10,9 @@ const NOW = new Date('2026-08-03T16:00:00.000Z');
 const CONTEXT = Object.freeze({
   clientId: 'client-123',
   timeZone: 'America/New_York',
+  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestEstimateStart: '09:00',
+  latestEstimateStart: '16:00',
   services: [
     { name: 'Interior Painting', description: 'Walls and ceilings' },
     { name: 'Exterior Painting', description: 'Siding and trim' },
@@ -20,7 +23,6 @@ const VALID_DRAFT = Object.freeze({
   service: 'interior painting',
   name: 'Jordan Smith',
   address: '123 Main Street, Albany, NY 12207',
-  address_confirmed: true,
   preferred_date: 'Tuesday',
   preferred_time: '3:30 PM',
   additional_notes: '',
@@ -68,7 +70,7 @@ test('requires explicit contact consent before preparing a summary', () => {
   assert.equal(manager.phase, 'collecting');
 });
 
-test('blocks preparation until address, notes, and standalone consent gates are complete', () => {
+test('blocks preparation until notes and standalone consent gates are complete', () => {
   const createManager = () => createIntakeManager({
     context: CONTEXT,
     callControlId: 'call-123',
@@ -78,16 +80,34 @@ test('blocks preparation until address, notes, and standalone consent gates are 
   });
 
   assert.throws(
-    () => createManager().prepare({ ...VALID_DRAFT, address_confirmed: false }),
-    /Repeat the complete project address/i,
-  );
-  assert.throws(
     () => createManager().prepare({ ...VALID_DRAFT, additional_notes_asked: false }),
     /additional project notes/i,
   );
   assert.throws(
     () => createManager().prepare({ ...VALID_DRAFT, consent_asked_separately: false }),
     /separate question/i,
+  );
+});
+
+test('rejects estimate dates and times outside the business availability', () => {
+  const createManager = () => createIntakeManager({
+    context: CONTEXT,
+    callControlId: 'call-123',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true }),
+    now: () => NOW,
+  });
+
+  assert.throws(
+    () => createManager().prepare({ ...VALID_DRAFT, preferred_date: 'Sunday' }),
+    /outside the business's estimate days.*Monday.*Friday/i,
+  );
+  assert.throws(
+    () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '5:00 PM' }),
+    /outside the business's estimate hours.*9:00 AM through 4:00 PM/i,
+  );
+  assert.doesNotThrow(
+    () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '4:00 PM' }),
   );
 });
 
@@ -112,8 +132,19 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
 
   assert.equal(prepared.ok, true);
   assert.equal(prepared.status, 'ready_for_confirmation');
-  assert.equal(prepared.summary.requestedDate, '2026-08-04');
-  assert.equal(prepared.summary.requestedDateSpoken, 'Tuesday, August 4, 2026');
+  assert.deepEqual(Object.keys(prepared.summary), [
+    'name',
+    'service',
+    'address',
+    'preferredDateAndTime',
+    'notes',
+  ]);
+  assert.equal(
+    prepared.summary.preferredDateAndTime,
+    'Tuesday, August 4, 2026 at 3:30 PM',
+  );
+  assert.equal(prepared.summary.notes, 'The living room has vaulted ceilings.');
+  assert.equal('consentToContact' in prepared.summary, false);
   assert.equal(manager.phase, 'ready_for_confirmation');
 
   const blocked = await manager.submit({ caller_confirmed: false });

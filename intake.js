@@ -195,6 +195,80 @@ export function normalizeRequestedTime(value) {
   return `${displayHour}:${String(minute).padStart(2, '0')} ${displayMeridiem}`;
 }
 
+function timeInMinutes(value) {
+  const match = cleanText(value).match(/^(1[0-2]|[1-9]):([0-5]\d)\s+(AM|PM)$/i);
+  if (!match) return null;
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') hour += 12;
+  return hour * 60 + Number(match[2]);
+}
+
+function businessEstimateTime(value) {
+  const text = cleanText(value);
+  const twentyFourHour = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (twentyFourHour) {
+    const hour = Number(twentyFourHour[1]);
+    const minute = Number(twentyFourHour[2]);
+    const displayHour = hour % 12 || 12;
+    const meridiem = hour >= 12 ? 'PM' : 'AM';
+    return {
+      display: `${displayHour}:${String(minute).padStart(2, '0')} ${meridiem}`,
+      minutes: hour * 60 + minute,
+    };
+  }
+
+  try {
+    const display = normalizeRequestedTime(text);
+    return { display, minutes: timeInMinutes(display) };
+  } catch {
+    return null;
+  }
+}
+
+function titleCase(value) {
+  const text = cleanText(value).toLowerCase();
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : '';
+}
+
+function readableWeekdays(weekdays) {
+  const labels = weekdays.map(titleCase);
+  if (labels.length <= 1) return labels[0] || '';
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
+}
+
+export function validateEstimateAvailability(date, requestedTime, context = {}) {
+  const estimateWeekdays = Array.isArray(context.estimateWeekdays)
+    ? context.estimateWeekdays.map((day) => cleanText(day).toLowerCase()).filter(Boolean)
+    : [];
+  const requestedDate = new Date(`${date.exactDate}T12:00:00.000Z`);
+  const requestedWeekday = Object.keys(WEEKDAYS).find(
+    (weekday) => WEEKDAYS[weekday] === requestedDate.getUTCDay(),
+  );
+
+  if (estimateWeekdays.length && !estimateWeekdays.includes(requestedWeekday)) {
+    fail(
+      `${date.spokenDate} is outside the business's estimate days. Ask for ${readableWeekdays(estimateWeekdays)}.`,
+      'preferred_date',
+    );
+  }
+
+  const earliest = businessEstimateTime(context.earliestEstimateStart);
+  const latest = businessEstimateTime(context.latestEstimateStart);
+  const requestedMinutes = timeInMinutes(requestedTime);
+  const beforeOpening = earliest && requestedMinutes < earliest.minutes;
+  const afterClosing = latest && requestedMinutes > latest.minutes;
+  if (beforeOpening || afterClosing) {
+    const allowedHours = earliest && latest
+      ? `${earliest.display} through ${latest.display}`
+      : (earliest ? `${earliest.display} or later` : `${latest.display} or earlier`);
+    fail(
+      `${requestedTime} is outside the business's estimate hours. Ask for ${allowedHours}.`,
+      'preferred_time',
+    );
+  }
+}
+
 function normalizedService(value) {
   return cleanText(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
@@ -224,9 +298,6 @@ function requiredText(value, field, label, maxLength) {
 }
 
 export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
-  if (args.address_confirmed !== true) {
-    fail('Repeat the complete project address and ask the caller to confirm it before continuing.', 'address_confirmed');
-  }
   if (args.additional_notes_asked !== true) {
     fail('Ask the caller whether they have any additional project notes before continuing.', 'additional_notes_asked');
   }
@@ -241,6 +312,8 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     now,
     timeZone: context.timeZone,
   });
+  const requestedTime = normalizeRequestedTime(args.preferred_time);
+  validateEstimateAvailability(date, requestedTime, context);
   return Object.freeze({
     service: matchService(args.service, context.services),
     name: requiredText(args.name, 'name', 'their name', 120),
@@ -248,7 +321,7 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     requestedDateInput: date.input,
     requestedDate: date.exactDate,
     requestedDateSpoken: date.spokenDate,
-    requestedTime: normalizeRequestedTime(args.preferred_time),
+    requestedTime,
     additionalNotes: cleanText(args.additional_notes).slice(0, 1_000),
     consentToContact: true,
   });
@@ -256,14 +329,11 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
 
 export function estimateSummary(draft) {
   return Object.freeze({
-    service: draft.service,
     name: draft.name,
+    service: draft.service,
     address: draft.address,
-    requestedDate: draft.requestedDate,
-    requestedDateSpoken: draft.requestedDateSpoken,
-    requestedTime: draft.requestedTime,
-    additionalNotes: draft.additionalNotes || 'None',
-    consentToContact: 'Yes',
+    preferredDateAndTime: `${draft.requestedDateSpoken} at ${draft.requestedTime}`,
+    notes: draft.additionalNotes || 'None',
   });
 }
 
@@ -322,7 +392,7 @@ export function createIntakeManager({
         ok: true,
         status: 'ready_for_confirmation',
         summary: estimateSummary(draft),
-        instruction: 'Read every summary field to the caller, including the exact date, then ask for a clear yes or no confirmation.',
+        instruction: 'Read only the five returned summary fields to the caller, then ask for a clear yes or no confirmation. Do not mention contact consent.',
       };
     },
 
