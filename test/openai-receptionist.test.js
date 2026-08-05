@@ -13,6 +13,9 @@ const CONTEXT = Object.freeze({
   businessName: 'Tabor Painting',
   timeZone: 'America/New_York',
   clientId: 'client-123',
+  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestEstimateStart: '09:00',
+  latestEstimateStart: '16:00',
   services: [{ name: 'Interior Painting', description: 'Walls and ceilings' }],
   knowledgeJson: '{"businessHours":"Monday through Friday"}',
 });
@@ -26,6 +29,10 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(event.session.audio.output.voice, 'marin');
   assert.equal(event.session.audio.input.transcription.model, 'gpt-4o-mini-transcribe');
   assert.equal(event.session.audio.input.transcription.language, 'en');
+  assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
+  assert.equal(event.session.audio.input.turn_detection.threshold, 0.45);
+  assert.equal(event.session.audio.input.turn_detection.prefix_padding_ms, 500);
+  assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 500);
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
   assert.equal(event.session.truncation.retention_ratio, 0.7);
@@ -34,7 +41,7 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
     ['prepare_estimate_summary', 'submit_estimate_request'],
   );
   assert.equal(ESTIMATE_TOOLS[0].parameters.additionalProperties, false);
-  assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'));
+  assert.equal(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'), false);
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('additional_notes_asked'));
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('consent_asked_separately'));
   assert.match(ESTIMATE_TOOLS[1].description, /Okay, I'm submitting it now/);
@@ -52,12 +59,15 @@ test('keeps only the end-call tool after a successful submission', () => {
 test('prompt separates consent from final submission confirmation', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
   assert.match(prompt, /A yes to contact permission is not a yes to submit/);
-  assert.match(prompt, /Read back every field returned by the tool/);
+  assert.match(prompt, /Read back only the five fields returned by the tool/);
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
   assert.match(prompt, /ask exactly one question per turn/i);
-  assert.match(prompt, /Immediately repeat the full captured address/i);
+  assert.match(prompt, /Do not repeat it or ask for a separate address confirmation/i);
+  assert.doesNotMatch(prompt, /required address confirmation/i);
+  assert.match(prompt, /9:00 AM through 4:00 PM/);
+  assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any additional notes for the project/);
   assert.match(prompt, /as its own standalone turn after the notes/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
@@ -151,7 +161,6 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
             service: 'Interior Painting',
             name: 'Jordan Smith',
             address: '123 Main Street, Albany, NY 12207',
-            address_confirmed: true,
             preferred_date: '2099-08-12',
             preferred_time: '3:30 PM',
             additional_notes: '',
@@ -168,7 +177,16 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
       (event) => event.type === 'conversation.item.create'
         && event.item.call_id === 'prepare-call',
     );
-    assert.equal(JSON.parse(prepareOutput.item.output).status, 'ready_for_confirmation');
+    const prepareResult = JSON.parse(prepareOutput.item.output);
+    assert.equal(prepareResult.status, 'ready_for_confirmation');
+    assert.deepEqual(Object.keys(prepareResult.summary), [
+      'name',
+      'service',
+      'address',
+      'preferredDateAndTime',
+      'notes',
+    ]);
+    assert.equal('consentToContact' in prepareResult.summary, false);
     assert.equal(deliveries.length, 0);
 
     socket.receive({

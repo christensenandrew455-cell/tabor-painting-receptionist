@@ -96,7 +96,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
     name: 'prepare_estimate_summary',
     description: [
       'Validate and normalize a complete estimate request before readback.',
-      'Call only after collecting every field, reading back and confirming the full address, explicitly asking about additional notes, and asking for contact consent as a separate question.',
+      'Call only after collecting every field, explicitly asking about additional notes, and asking for contact consent as a separate question.',
       'This does not send the request. It returns the exact summary that must be read to the caller.',
     ].join(' '),
     parameters: {
@@ -113,11 +113,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
         },
         address: {
           type: 'string',
-          description: 'The complete project address exactly as confirmed with the caller.',
-        },
-        address_confirmed: {
-          type: 'boolean',
-          description: 'True only after the complete address was repeated to the caller and the caller explicitly confirmed it.',
+          description: 'The complete project address exactly as the caller gave it.',
         },
         preferred_date: {
           type: 'string',
@@ -148,7 +144,6 @@ export const ESTIMATE_TOOLS = Object.freeze([
         'service',
         'name',
         'address',
-        'address_confirmed',
         'preferred_date',
         'preferred_time',
         'additional_notes',
@@ -206,6 +201,33 @@ function serviceGuide(context) {
     .join('\n');
 }
 
+function displayEstimateTime(value) {
+  const text = cleanText(value);
+  const match = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return text;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return `${hour % 12 || 12}:${String(minute).padStart(2, '0')} ${hour >= 12 ? 'PM' : 'AM'}`;
+}
+
+function estimateAvailabilityGuide(context) {
+  const weekdays = Array.isArray(context.estimateWeekdays)
+    ? context.estimateWeekdays.map((day) => cleanText(day)).filter(Boolean)
+    : [];
+  const earliest = displayEstimateTime(context.earliestEstimateStart);
+  const latest = displayEstimateTime(context.latestEstimateStart);
+  if (weekdays.length && earliest && latest) {
+    return `Estimate requests are available only on ${weekdays.join(', ')}, from ${earliest} through ${latest}.`;
+  }
+  if (weekdays.length) {
+    return `Estimate requests are available only on ${weekdays.join(', ')}.`;
+  }
+  if (earliest && latest) {
+    return `Estimate requests are available only from ${earliest} through ${latest}.`;
+  }
+  return 'Use any estimate availability supplied in the business website data.';
+}
+
 export function buildReceptionistInstructions(context, { submitted = false } = {}) {
   const common = `
 # Role and objective
@@ -259,14 +281,14 @@ The caller's estimate request has already been successfully sent to the website.
 - If the caller only has questions, answer them without forcing an estimate request.
 - If the caller wants a quote, an estimate, or service at their property, begin the estimate request.
 - During intake, ask exactly one question per turn and wait for the caller's answer. Never bundle two fields or two questions into one turn. If the caller asks a question during intake, answer it first, then ask only one missing field.
-- If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, except for the required address confirmation.
+- If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered.
 - Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part.
 
 # Estimate request fields
 Collect all of these:
 1. Service: match the caller's need to one website service when a service list is available.
 2. Name.
-3. Complete project address. Immediately repeat the full captured address and ask only, "Did I get that right?" Do not continue until the caller clearly confirms it. If they correct any part, repeat the full corrected address and ask for confirmation again.
+3. Complete project address. Record it exactly as the caller gives it. Do not repeat it or ask for a separate address confirmation; it will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
 6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none; never infer no notes from omission or silence.
@@ -283,10 +305,12 @@ Today in that time zone is ${new Intl.DateTimeFormat('en-US', {
     day: 'numeric',
   }).format(new Date())}.
 When the caller says a relative date such as "Tuesday," keep those original date words in preferred_date. The preparation tool converts them to an exact calendar date.
+${estimateAvailabilityGuide(context)} If the caller requests a date or time outside that availability, briefly state the allowed days or hours and ask for another date or time. Never continue with an unavailable request.
 
 # Required preparation and confirmation boundary
-- Call prepare_estimate_summary only after every field is collected, the full address was repeated and explicitly confirmed, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
-- Never invent the final summary yourself. Read back every field returned by the tool, including the full exact calendar date and time.
+- Call prepare_estimate_summary only after every field is collected, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
+- Never invent the final summary yourself. Read back only the five fields returned by the tool: name, service, address, exact preferred date and time, and notes.
+- Do not mention or restate contact consent in the final summary.
 - Then ask whether the complete summary is correct and ready to send.
 - If the caller corrects anything, call prepare_estimate_summary again with the complete corrected request, read the new summary, and ask again.
 - Only after a clear yes to the complete readback may you call submit_estimate_request with caller_confirmed true.
@@ -315,6 +339,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
       audio: {
         input: {
           format: { type: 'audio/pcmu' },
+          noise_reduction: { type: 'far_field' },
           transcription: {
             model: cleanText(process.env.OPENAI_TRANSCRIPTION_MODEL)
               || DEFAULT_TRANSCRIPTION_MODEL,
@@ -322,9 +347,9 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
           },
           turn_detection: {
             type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 800,
+            threshold: 0.45,
+            prefix_padding_ms: 500,
+            silence_duration_ms: 500,
             create_response: true,
             interrupt_response: true,
           },
@@ -392,7 +417,7 @@ function followupInstruction(toolName, result) {
     return `Explain this problem briefly and ask only for what is needed to correct it: ${result.error}`;
   }
   if (toolName === 'prepare_estimate_summary') {
-    return 'Read every field from the returned summary, using the full spoken calendar date. Then ask for a clear yes or no confirmation. Do not submit yet.';
+    return 'Read only the five fields from the returned summary: name, service, address, exact preferred date and time, and notes. Do not mention contact consent. Then ask for a clear yes or no confirmation. Do not submit yet.';
   }
   return `Say exactly: "${result.response_text || SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, topics, categories, or any other words.`;
 }

@@ -22,6 +22,9 @@ test('builds business context while removing connection secrets', () => {
       receptionistName: 'Taylor',
       aiVoice: 'alloy',
       timeZone: 'America/Chicago',
+      estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+      earliestEstimateStart: '09:00',
+      latestEstimateStart: '16:00',
       services: [{ name: 'Cabinet Painting', description: 'Kitchen cabinets' }],
       apiKey: 'also-private',
       faq: [{ question: 'Do you paint cabinets?', answer: 'Yes.' }],
@@ -30,6 +33,15 @@ test('builds business context while removing connection secrets', () => {
 
   assert.equal(context.businessName, 'Tabor Painting');
   assert.equal(context.timeZone, 'America/Chicago');
+  assert.deepEqual(context.estimateWeekdays, [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+  ]);
+  assert.equal(context.earliestEstimateStart, '09:00');
+  assert.equal(context.latestEstimateStart, '16:00');
   assert.equal(context.clientId, 'client-123');
   assert.deepEqual(context.services, [
     { name: 'Cabinet Painting', description: 'Kitchen cabinets' },
@@ -42,6 +54,22 @@ test('builds business context while removing connection secrets', () => {
   assert.doesNotMatch(context.knowledgeJson, /alloy/);
   assert.equal('receptionistName' in context, false);
   assert.equal('voice' in context, false);
+});
+
+test('normalizes textual estimate-day ranges from ARC', () => {
+  const context = createBusinessContext({
+    profile: {
+      estimateDays: 'Monday through Friday',
+    },
+  });
+
+  assert.deepEqual(context.estimateWeekdays, [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+  ]);
 });
 
 test('accepts ARC profile data supplied as a JSON string', () => {
