@@ -33,6 +33,7 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(event.session.audio.input.turn_detection.threshold, 0.45);
   assert.equal(event.session.audio.input.turn_detection.prefix_padding_ms, 500);
   assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 500);
+  assert.equal(event.session.audio.input.turn_detection.interrupt_response, false);
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
   assert.equal(event.session.truncation.retention_ratio, 0.7);
@@ -71,6 +72,8 @@ test('prompt separates consent from final submission confirmation', () => {
   assert.match(prompt, /Do not name, suggest, or give examples of services in that first question/);
   assert.match(prompt, /Only if their answer cannot match a supplied service/);
   assert.match(prompt, /ask exactly one question per turn/i);
+  assert.match(prompt, /short acknowledgments such as "okay,"/i);
+  assert.match(prompt, /Do not restart, repeat, or rephrase your question/i);
   assert.match(prompt, /do not repeat any part of it/i);
   assert.match(prompt, /do not say "I have your address as,"/i);
   assert.doesNotMatch(prompt, /required address confirmation/i);
@@ -336,5 +339,38 @@ test('signals the server when the per-call response ceiling is exceeded', async 
     else process.env.OPENAI_API_KEY = previousApiKey;
     if (previousLimit === undefined) delete process.env.OPENAI_MAX_RESPONSES_PER_CALL;
     else process.env.OPENAI_MAX_RESPONSES_PER_CALL = previousLimit;
+  }
+});
+
+test('does not clear receptionist audio when the caller backchannels', async () => {
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let clearCount = 0;
+
+  try {
+    const receptionist = createOpenAiReceptionist({
+      context: CONTEXT,
+      runtime: { clientId: 'client-123' },
+      callControlId: 'call-backchannel',
+      callerPhone: '+15555550123',
+      deliver: async () => ({ ok: true }),
+      onAudio: () => {},
+      onClear: () => { clearCount += 1; },
+      onSubmitted: () => {},
+      onReady: () => {},
+      onError: (error) => assert.fail(error.message),
+      WebSocketClass: FakeWebSocket,
+    });
+    await nextTurn();
+
+    const socket = FakeWebSocket.instance;
+    socket.receive({ type: 'session.updated', session: {} });
+    socket.receive({ type: 'input_audio_buffer.speech_started' });
+
+    assert.equal(clearCount, 0);
+    receptionist.close();
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
   }
 });
