@@ -357,7 +357,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
             prefix_padding_ms: 500,
             silence_duration_ms: 500,
             create_response: true,
-            interrupt_response: false,
+            interrupt_response: true,
           },
         },
         output: {
