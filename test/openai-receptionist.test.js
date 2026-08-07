@@ -45,12 +45,14 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'), false);
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('additional_notes_asked'));
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('consent_asked_separately'));
+  assert.match(ESTIMATE_TOOLS[0].parameters.properties.service.description, /Never guess a service/i);
   assert.match(
     ESTIMATE_TOOLS[1].description,
     /I'm submitting your estimate request now\./,
   );
   assert.doesNotMatch(ESTIMATE_TOOLS[1].description, /Okay, I'm submitting it now/);
   assert.equal(END_CALL_TOOL.parameters.additionalProperties, false);
+  assert.match(END_CALL_TOOL.description, /without speaking a preamble/i);
 });
 
 test('keeps only the end-call tool after a successful submission', () => {
@@ -58,19 +60,25 @@ test('keeps only the end-call tool after a successful submission', () => {
   assert.deepEqual(event.session.tools.map((tool) => tool.name), ['end_call']);
   assert.match(event.session.instructions, /only remaining job is to answer/i);
   assert.match(event.session.instructions, /Do not collect, prepare, edit, restart, or submit/i);
-  assert.match(event.session.instructions, /call end_call immediately/i);
+  assert.match(event.session.instructions, /call end_call immediately with no spoken preamble/i);
+  assert.match(event.session.instructions, /The server will say the goodbye/i);
 });
 
-test('prompt separates consent from final submission confirmation', () => {
+test('prompt keeps estimate intake natural without guessing fields', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
   assert.match(prompt, /A yes to contact permission is not a yes to submit/);
-  assert.match(prompt, /Read back only the five fields returned by the tool/);
+  assert.match(prompt, /Use only the returned summary values/);
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
-  assert.match(prompt, /What service are you looking for/);
-  assert.match(prompt, /Do not name, suggest, or give examples of services in that first question/);
-  assert.match(prompt, /Only if their answer cannot match a supplied service/);
+  assert.match(prompt, /What are you looking to have done/);
+  assert.match(prompt, /not a form being read aloud/i);
+  assert.match(prompt, /never on consecutive turns/i);
+  assert.match(prompt, /naming an object, room, structure, or location is not enough/i);
+  assert.match(prompt, /What would you like done with the shed/);
+  assert.match(prompt, /never force a vague request into that service/i);
+  assert.match(prompt, /2 in the afternoon.*2:00 PM/i);
+  assert.match(prompt, /Never ask AM or PM when the caller has already supplied a clear daypart/i);
   assert.match(prompt, /ask exactly one question per turn/i);
   assert.match(prompt, /short acknowledgments such as "okay,"/i);
   assert.match(prompt, /Do not restart, repeat, or rephrase your question/i);
@@ -82,12 +90,15 @@ test('prompt separates consent from final submission confirmation', () => {
   assert.match(prompt, /do not announce that it is inside the window/i);
   assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any additional notes for the project/);
+  assert.match(prompt, /very next spoken response must be the standalone contact-consent question/i);
   assert.match(prompt, /as its own standalone turn after the notes/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
   assert.match(prompt, /Greet the caller only once/i);
   assert.match(prompt, /use only their first name/i);
   assert.match(prompt, /never "Thanks, Andrew Christensen/i);
   assert.match(prompt, /Never proactively advertise, list, or give examples/i);
+  assert.match(prompt, /Do not say labels such as "Name:"/i);
+  assert.match(prompt, /Does that all sound right/);
   assert.match(prompt, /I'm submitting your estimate request now\./);
   assert.match(prompt, /claim success before the tool returns/i);
   assert.doesNotMatch(prompt, /Okay, I'm submitting it now/);
@@ -163,7 +174,7 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     const greetingRequest = socket.sent.find((event) => event.type === 'response.create');
     assert.match(
       greetingRequest.response.instructions,
-      /Thanks for calling Tabor Painting\. I can help you fill out an estimate request or answer questions about the business\. How can I help today\?/,
+      /Thanks for calling Tabor Painting\. How can I help today\?/,
     );
     assert.match(greetingRequest.response.instructions, /Do not add anything before or after it/);
 
@@ -205,6 +216,10 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     ]);
     assert.equal('consentToContact' in prepareResult.summary, false);
     assert.equal(deliveries.length, 0);
+    const prepareResponse = socket.sent.filter((event) => event.type === 'response.create').at(-1);
+    assert.match(prepareResponse.response.instructions, /conversational readback/i);
+    assert.match(prepareResponse.response.instructions, /Does that all sound right/);
+    assert.match(prepareResponse.response.instructions, /Do not use field labels/i);
 
     socket.receive({
       type: 'response.done',
@@ -228,14 +243,14 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     const submitResult = JSON.parse(submitOutput.item.output);
     assert.equal(
       submitResult.response_text,
-      'Your estimate request was successfully submitted. Do you have any other questions?',
+      "You're all set. Your estimate request has been submitted. Is there anything else I can help with?",
     );
     assert.equal(submitResult.require_repeat_verbatim, true);
     const postSubmissionResponse = socket.sent
       .filter((event) => event.type === 'response.create')
       .at(-1);
     assert.match(postSubmissionResponse.response.instructions, /Say exactly/);
-    assert.match(postSubmissionResponse.response.instructions, /Do you have any other questions\?/);
+    assert.match(postSubmissionResponse.response.instructions, /Is there anything else I can help with\?/);
     assert.match(postSubmissionResponse.response.instructions, /Do not add examples, topics, categories/);
     assert.doesNotMatch(postSubmissionResponse.response.instructions, /pricing|timing|prep work/i);
     const postSubmissionUpdate = socket.sent
