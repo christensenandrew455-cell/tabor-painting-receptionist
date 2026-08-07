@@ -162,6 +162,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
       'Call only after reading the complete prepared summary and hearing the caller clearly confirm it.',
       'Never call this for an implied, partial, or ambiguous confirmation.',
       `In the same response as this tool call, say exactly: "${SUBMISSION_START_RESPONSE}"`,
+      `Immediately before the tool call, the only spoken sentence must be exactly: "${SUBMISSION_START_RESPONSE}" Never replace it with "let me take care of that" or another acknowledgement.`,
       'That exact sentence must be the entire spoken response: no thanks, acknowledgement, preamble, paraphrase, or claim of success. Then call the tool immediately.',
     ].join(' '),
     parameters: {
@@ -184,6 +185,7 @@ export const END_CALL_TOOL = Object.freeze({
   description: [
     'Finish the phone call after an estimate request has been submitted.',
     'Call only when the caller clearly says they have no more questions, are done, or says goodbye.',
+    'Do not treat silence, hesitation, filler, or a short acknowledgment such as "okay" as a request to end the call.',
     'Do not call while the caller still needs help or has an unanswered question.',
   ].join(' '),
   parameters: {
@@ -278,7 +280,8 @@ The caller's estimate request has already been successfully sent to the website.
 - Do not ask for more estimate details.
 - Do not advertise categories of questions or claim you can help with pricing, timing, preparation, scheduling, availability, or any other example topic.
 - Wait for the caller to ask an actual question, then answer it only from the business website data.
-- If the caller says they have no more questions, are done, or says goodbye, call end_call immediately. Do not ask another question.
+- After asking whether the caller has any other questions, do not treat silence, hesitation, filler, or a short acknowledgment such as "okay" as meaning they are done. Wait for a clear answer.
+- If the caller clearly says they have no more questions, are done, or says goodbye, call end_call immediately. Do not ask another question.
 `;
   }
 
@@ -289,7 +292,7 @@ The caller's estimate request has already been successfully sent to the website.
 - If the caller wants a quote, an estimate, or service at their property, begin the estimate request. A short natural transition is fine, for example, "Okay, great. What service are you looking for?"
 - During intake, ask exactly one question per turn and wait for the caller's answer. Never bundle two fields or two questions into one turn. If the caller asks a question during intake, answer it first, then ask only one missing field.
 - If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, even if the answer was given casually or before you reached that field.
-- Begin service collection by asking what service they need without listing choices. If the caller's answer clearly matches a supplied service, record that service silently and move to the next missing field. Do not say "that sounds like" or explain the inference. A brief "Okay" or "Great" before the next question is fine. Only if their answer cannot match a supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
+- Begin service collection by asking what service they need without listing choices. If the caller's answer clearly matches a supplied service, record that service silently and move to the next missing field. Do not say "that sounds like," announce the matched service, or explain the inference. If a service clearly matches, simply ask the next missing question; a brief "Okay" or "Great" is fine. Only if their answer cannot match a supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
 - Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part. Once both are clear, do not repeat the full date and time back or ask the scheduling question again; a brief acknowledgment such as "Okay, sounds good" is enough before the next question.
 - Use conversational context when the transcription is obviously imperfect. For example, if the additional-notes question receives "nun" in a context where the caller clearly means "none," treat it as no additional notes instead of asking the same question again. Do not guess when the meaning is genuinely ambiguous.
 
@@ -314,20 +317,20 @@ Today in that time zone is ${new Intl.DateTimeFormat('en-US', {
     day: 'numeric',
   }).format(new Date())}.
 When the caller says a relative date such as "Tuesday," keep those original date words in preferred_date. The preparation tool converts them to an exact calendar date.
-${estimateAvailabilityGuide(context)} If the caller requests a date or time outside that availability, give exactly one spoken correction: briefly state the applicable allowed days or hours and ask for one replacement date or time. Do not first acknowledge it, announce that you need to clarify it, or split the correction into multiple messages. Never continue with an unavailable request. After the caller supplies an available replacement, do not announce that it is inside the window; move directly to the next missing question.
+${estimateAvailabilityGuide(context)} If the caller requests a date or time outside that availability, give exactly one spoken correction: briefly state the applicable allowed days or hours and ask for one replacement date or time. Do not first acknowledge it, announce that you need to clarify it, or split the correction into multiple messages. Never continue with an unavailable request. After the caller supplies an available replacement, do not announce that it is inside the window, say that it "works," or repeat the replacement; move directly to the next missing question.
 
 # Required preparation and confirmation boundary
 - Call prepare_estimate_summary only after every field is collected, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
 - After the caller grants contact permission, do not thank them for confirming, do not say you are preparing a summary, and do not ask another intake question. Call prepare_estimate_summary immediately and go straight into the returned summary readback.
 - Never invent the final summary yourself. Read back only the five fields returned by the tool: name, service, address, exact preferred date and time, and notes.
 - Do not mention or restate contact consent in the final summary.
-- Then ask whether the complete summary is correct and ready to send.
+- Then ask simply, "Is this summary correct?" Do not add "yes or no" or require a specific response format.
 - If the caller corrects anything, call prepare_estimate_summary again with the complete corrected request, read the new summary, and ask again.
 - Only after a clear yes to the complete readback may you call submit_estimate_request with caller_confirmed true.
 - A yes to contact permission is not a yes to submit. These are separate confirmations.
-- In the same response as submit_estimate_request, say exactly, "${SUBMISSION_START_RESPONSE}" Then call the tool immediately. That sentence must be the entire spoken response: do not thank the caller, add a preamble, paraphrase it, say "successfully," or claim success before the tool returns.
+- In the same response as submit_estimate_request, say exactly, "${SUBMISSION_START_RESPONSE}" Then call the tool immediately. That sentence must be the entire spoken response: do not thank the caller, add a preamble, paraphrase it, say "successfully," or claim success before the tool returns. Do not replace it with "let me take care of that" or another transition.
 - Never claim the request was saved or sent until submit_estimate_request returns success.
-- After successful submission, say exactly, "${SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, categories, or another offer. From then on, answer questions only. If they say no, say they are done, or say goodbye, call end_call.
+- After successful submission, say exactly, "${SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, categories, or another offer. From then on, answer questions only. If they clearly say no, say they are done, or say goodbye, call end_call. Do not treat "okay," silence, hesitation, or filler as meaning they are done.
 `;
 }
 
@@ -427,7 +430,7 @@ function followupInstruction(toolName, result) {
     return `Explain this problem briefly and ask only for what is needed to correct it: ${result.error}`;
   }
   if (toolName === 'prepare_estimate_summary') {
-    return 'Read only the five fields from the returned summary: name, service, address, exact preferred date and time, and notes. Do not mention contact consent. Then ask for a clear yes or no confirmation. Do not submit yet.';
+    return 'Read only the five fields from the returned summary: name, service, address, exact preferred date and time, and notes. Do not mention contact consent. Then ask simply, "Is this summary correct?" Do not add "yes or no" or require a specific response format. Do not submit yet.';
   }
   return `Say exactly: "${result.response_text || SUBMISSION_SUCCESS_RESPONSE}" Do not add examples, topics, categories, or any other words.`;
 }
@@ -538,7 +541,7 @@ export function createOpenAiReceptionist({
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        instructions: `Say exactly: "Thanks for calling ${context.businessName}. I can help you fill out an estimate request or answer questions about the business. How can I help today?" Do not add anything before or after it.`,
+        instructions: `Say exactly: "Thanks for calling ${context.businessName}. I can help you fill out an estimate request or answer questions about the business. Would you like to fill out an estimate request?" Do not add anything before or after it.`,
       },
     });
   }
