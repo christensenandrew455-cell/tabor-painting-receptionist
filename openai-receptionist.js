@@ -355,7 +355,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
             type: 'server_vad',
             threshold: 0.45,
             prefix_padding_ms: 500,
-            silence_duration_ms: 500,
+            silence_duration_ms: 1000,
             create_response: true,
             interrupt_response: true,
           },
