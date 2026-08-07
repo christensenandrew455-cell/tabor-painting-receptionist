@@ -45,7 +45,10 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(ESTIMATE_TOOLS[0].parameters.required.includes('address_confirmed'), false);
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('additional_notes_asked'));
   assert.ok(ESTIMATE_TOOLS[0].parameters.required.includes('consent_asked_separately'));
-  assert.match(ESTIMATE_TOOLS[0].parameters.properties.service.description, /Never guess a service/i);
+  assert.match(
+    ESTIMATE_TOOLS[0].parameters.properties.service.description,
+    /painting a shed out back maps to Exterior Painting/i,
+  );
   assert.match(
     ESTIMATE_TOOLS[1].description,
     /I'm submitting your estimate request now\./,
@@ -64,19 +67,20 @@ test('keeps only the end-call tool after a successful submission', () => {
   assert.match(event.session.instructions, /The server will say the goodbye/i);
 });
 
-test('prompt keeps estimate intake natural without guessing fields', () => {
+test('prompt keeps estimate intake natural with human acknowledgments and silent service inference', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
   assert.match(prompt, /A yes to contact permission is not a yes to submit/);
   assert.match(prompt, /Use only the returned summary values/);
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
-  assert.match(prompt, /What are you looking to have done/);
+  assert.match(prompt, /What service are you looking for/);
   assert.match(prompt, /not a form being read aloud/i);
-  assert.match(prompt, /never on consecutive turns/i);
-  assert.match(prompt, /naming an object, room, structure, or location is not enough/i);
-  assert.match(prompt, /What would you like done with the shed/);
-  assert.match(prompt, /never force a vague request into that service/i);
+  assert.match(prompt, /Okay.*Great.*Got it/i);
+  assert.match(prompt, /Do not force one onto every turn/i);
+  assert.match(prompt, /let's move on.*fine when they fit naturally/i);
+  assert.match(prompt, /shed painted out back.*Exterior Painting/i);
+  assert.match(prompt, /Infer obvious matches silently/i);
   assert.match(prompt, /2 in the afternoon.*2:00 PM/i);
   assert.match(prompt, /Never ask AM or PM when the caller has already supplied a clear daypart/i);
   assert.match(prompt, /ask exactly one question per turn/i);
@@ -90,8 +94,8 @@ test('prompt keeps estimate intake natural without guessing fields', () => {
   assert.match(prompt, /do not announce that it is inside the window/i);
   assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any additional notes for the project/);
-  assert.match(prompt, /very next spoken response must be the standalone contact-consent question/i);
-  assert.match(prompt, /as its own standalone turn after the notes/i);
+  assert.match(prompt, /brief natural acknowledgment or transition.*Let's move on.*fine if it fits/i);
+  assert.match(prompt, /as its own question after the notes/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
   assert.match(prompt, /Greet the caller only once/i);
   assert.match(prompt, /use only their first name/i);
@@ -174,7 +178,7 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     const greetingRequest = socket.sent.find((event) => event.type === 'response.create');
     assert.match(
       greetingRequest.response.instructions,
-      /Thanks for calling Tabor Painting\. How can I help today\?/,
+      /Thanks for calling Tabor Painting\. I can help you fill out an estimate request or answer questions about the business\. Would you like to fill out an estimate request\?/,
     );
     assert.match(greetingRequest.response.instructions, /Do not add anything before or after it/);
 
