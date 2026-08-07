@@ -32,8 +32,8 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
   assert.equal(event.session.audio.input.turn_detection.threshold, 0.45);
   assert.equal(event.session.audio.input.turn_detection.prefix_padding_ms, 500);
-  assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 500);
-  assert.equal(event.session.audio.input.turn_detection.interrupt_response, false);
+  assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 1000);
+  assert.equal(event.session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
   assert.equal(event.session.truncation.retention_ratio, 0.7);
