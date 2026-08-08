@@ -7,7 +7,10 @@ const OLD_SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.
 const SUBMISSION_START_RESPONSE = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
 const OLD_NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business? I may be able to answer some, and if not, I'll add them to the notes.";
-const NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business you'd like me to help with or pass along?";
+const PREVIOUS_NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business you'd like me to help with or pass along?";
+const NOTES_AND_QUESTIONS_PROMPT = 'Do you have any notes or questions for the business?';
+const OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't really know that. I'll add it to the notes.";
+const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "Okay, I'll add it to the notes.";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 const MAX_REPAIR_ATTEMPTS = 3;
 
@@ -92,7 +95,10 @@ export function shouldBlockReceptionistOutput(value) {
   if (sameSpokenText(text, SUBMISSION_START_RESPONSE)) return false;
   if (!/[A-Za-z0-9]/.test(text)) return true;
   if (STANDALONE_ACKNOWLEDGMENT.test(text)) return true;
-  if (hasConditionalTransition(text) && !hasUsefulContinuationAfterTransition(text)) return true;
+  if (hasConditionalTransition(text)) {
+    const remainder = transitionRemainder(text);
+    if (!PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(remainder))) return false;
+  }
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (asksForZipCode(text)) return true;
 
@@ -115,6 +121,7 @@ export function callerTranscriptDisposition(value) {
     return 'filler';
   }
   if (/\b(?:um+|uh+|erm+|er+)\s*$/.test(valueNormalized)) return 'filler';
+  if (/\b(?:probably|maybe)\s+like$/.test(valueNormalized)) return 'filler';
   if (/^(?:a{2,}|e{2,}|o{2,})$/.test(valueNormalized)) return 'unclear';
   return 'meaningful';
 }
@@ -125,6 +132,7 @@ function classifyPendingField(value) {
   if (/\bwhat name should i use for the estimate request\b/.test(text)) return 'name';
   if (/\bwhat'?s the complete project address\b/.test(text)) return 'address';
   if (/\bwhat date and time would work best for the estimate\b/.test(text)) return 'schedule';
+  if (/\bdo you have any notes or questions for the business\b/.test(text)) return 'notes';
   if (/\bdo you have any notes for the project or any questions about the business\b/.test(text)) return 'notes';
   if (/\bdo you consent to being contacted by\b/.test(text)) return 'consent';
   if (/\bdoes that all sound right\b/.test(text)) return 'summary';
@@ -292,6 +300,8 @@ function hardenSessionUpdate(event) {
   replaceStringEverywhere(event.session, [
     [OLD_SUBMISSION_START_RESPONSE, SUBMISSION_START_RESPONSE],
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
+    [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
+    [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
   ]);
 
   if (typeof event.session?.instructions === 'string') {
@@ -300,10 +310,11 @@ function hardenSessionUpdate(event) {
 
     event.session.instructions = event.session.instructions
       .replace(oldAcknowledgmentRule, hardAcknowledgmentRule)
-      + `\nHARD OUTPUT RULE: Never end a turn with process-only narration. Any brief transition such as "one sec", "let's keep moving", "let me get the details", or a natural variation is allowed only when the same spoken response immediately continues with the actual next question or spoken action. Never stop after the transition. Still never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
-      + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
+      + `\nHARD OUTPUT RULE: Do not generate standalone process or transition narration. Before speaking, remove phrases such as "one sec", "let me get the details", "let me grab the details", "let me check", "let's keep moving", or any natural variation unless the same spoken response immediately continues into the actual next question or action. Prefer skipping the transition entirely and asking the next question directly. Never end a turn on process narration. Never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
+      + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought such as "it's probably, like...", wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
+      + `\nNOTES RULE: Ask exactly: "${NOTES_AND_QUESTIONS_PROMPT}" If the caller asks a business question that cannot be answered from the supplied business data or safe fallbacks, say exactly: "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and preserve that question in the notes.`
       + `\nFINAL SUMMARY RULE: Begin with "Okay, here's the summary." State the name, service, address, preferred date and time, and notes exactly once. If there are no notes, say "There are no additional notes." Never say "Note: None" and never repeat the summary.`
-      + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}"`;
+      + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}" That sentence and the submit_estimate_request tool call must be produced in the same response. Never say the sentence by itself, never repeat it, and never claim the request is being sent unless the submit tool call is present.`;
   }
 
   return event;
@@ -319,6 +330,8 @@ function prepareOutgoingEvent(event, pendingSummary) {
   replaceStringEverywhere(event, [
     [OLD_SUBMISSION_START_RESPONSE, SUBMISSION_START_RESPONSE],
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
+    [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
+    [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
   ]);
 
   if (
@@ -450,6 +463,7 @@ function createGuardedWebSocketClass({
           audioEvents: [],
           transcriptEvents: [],
           transcript: '',
+          transcriptDoneEvent: null,
           transcriptForwarded: false,
           approved: false,
           blocked: false,
@@ -479,6 +493,7 @@ function createGuardedWebSocketClass({
       state.blocked = true;
       state.audioEvents.length = 0;
       state.transcriptEvents.length = 0;
+      state.transcriptDoneEvent = null;
     }
 
     shouldRequireSubmissionStart(state) {
@@ -544,6 +559,7 @@ function createGuardedWebSocketClass({
         this.emitJson(transcriptDoneEvent);
         state.transcriptForwarded = true;
       }
+      state.transcriptDoneEvent = null;
 
       const pending = classifyPendingField(spoken);
       if (pending) {
@@ -640,6 +656,7 @@ function createGuardedWebSocketClass({
           state.interrupted = true;
           state.audioEvents.length = 0;
           state.transcriptEvents.length = 0;
+          state.transcriptDoneEvent = null;
         }
         this.emitJson(event);
         return;
@@ -720,6 +737,10 @@ function createGuardedWebSocketClass({
         if (itemId) state.itemIds.add(itemId);
         const transcript = cleanText(event.transcript || state.transcript);
         state.transcript = transcript;
+        if (sameSpokenText(transcript, SUBMISSION_START_RESPONSE)) {
+          state.transcriptDoneEvent = event;
+          return;
+        }
         this.approveResponse(state, transcript, event);
         return;
       }
@@ -736,12 +757,21 @@ function createGuardedWebSocketClass({
         }
 
         if (!state.transcript) state.transcript = extractResponseTranscript(event.response);
-        if (!state.approved && !state.blocked && state.transcript) {
+        const hasSubmitCall = hasFunctionCall(event.response, 'submit_estimate_request');
+        const isSubmissionStart = sameSpokenText(state.transcript, SUBMISSION_START_RESPONSE);
+
+        if (isSubmissionStart) {
+          if (!this.shouldRequireSubmissionStart(state) || !hasSubmitCall) {
+            this.markBlocked(state);
+          } else if (!state.approved) {
+            this.approveResponse(state, state.transcript, state.transcriptDoneEvent);
+          }
+        } else if (!state.approved && !state.blocked && state.transcript) {
           this.approveResponse(state, state.transcript);
         }
 
-        if (hasFunctionCall(event.response, 'submit_estimate_request')) {
-          if (!this.shouldRequireSubmissionStart(state) || !state.approved) {
+        if (hasSubmitCall) {
+          if (!this.shouldRequireSubmissionStart(state) || !state.approved || !isSubmissionStart) {
             this.markBlocked(state);
           }
         }
@@ -766,6 +796,11 @@ function createGuardedWebSocketClass({
         if (!state.approved) {
           for (const audioEvent of state.audioEvents.splice(0)) this.emitJson(audioEvent);
           for (const transcriptEvent of state.transcriptEvents.splice(0)) this.emitJson(transcriptEvent);
+          if (state.transcriptDoneEvent && !state.transcriptForwarded) {
+            this.emitJson(state.transcriptDoneEvent);
+            state.transcriptForwarded = true;
+            state.transcriptDoneEvent = null;
+          }
         }
         this.emitJson(event);
         this.responses.delete(responseId);

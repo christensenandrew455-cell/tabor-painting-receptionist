@@ -23,7 +23,7 @@ const CONTEXT = Object.freeze({
   knowledgeJson: '{"businessHours":"Monday through Friday"}',
 });
 
-const NEW_NOTES_PROMPT = "Do you have any notes for the project or any questions about the business you'd like me to help with or pass along?";
+const NEW_NOTES_PROMPT = 'Do you have any notes or questions for the business?';
 const PRE_SUBMIT = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const DID_NOT_CATCH = "I'm sorry, I didn't catch that.";
 
@@ -149,27 +149,42 @@ async function createHarness() {
   };
 }
 
-test('classifies hesitation separately from unintelligible transcription', () => {
+test('classifies hesitation and unfinished schedule thoughts separately from meaningful answers', () => {
   assert.equal(callerTranscriptDisposition('Uh...'), 'filler');
   assert.equal(callerTranscriptDisposition('Um'), 'filler');
   assert.equal(callerTranscriptDisposition('어'), 'filler');
+  assert.equal(callerTranscriptDisposition("It's probably, like..."), 'filler');
   assert.equal(callerTranscriptDisposition('aa'), 'unclear');
   assert.equal(callerTranscriptDisposition('Probably Monday at like 1.'), 'meaningful');
 });
 
-test('blocks punctuation-only and process-only receptionist output', () => {
+test('does not runtime-block process transitions but still blocks punctuation and reassurance filler', () => {
   assert.equal(shouldBlockReceptionistOutput('…'), true);
-  assert.equal(shouldBlockReceptionistOutput('Okay, let’s keep this moving.'), true);
-  assert.equal(shouldBlockReceptionistOutput('Let me grab the details.'), true);
+  assert.equal(shouldBlockReceptionistOutput('Okay, let’s keep this moving.'), false);
+  assert.equal(shouldBlockReceptionistOutput('Let me grab the details.'), false);
   assert.equal(shouldBlockReceptionistOutput('Take your time.'), true);
   assert.equal(shouldBlockReceptionistOutput('What date and time would work best for the estimate?'), false);
 });
 
-test('uses the smoother notes question after scheduling', () => {
+test('uses the simple notes question after scheduling', () => {
   assert.equal(
     repairInstructionForBlockedOutput({ answeredField: 'schedule' }),
     `Say exactly: "${NEW_NOTES_PROMPT}" Do not add anything before or after it.`,
   );
+});
+
+test('session rules use the simple notes question and short unknown-question fallback', async () => {
+  const h = await createHarness();
+  try {
+    const sessionUpdate = h.socket.sent.find((event) => event.type === 'session.update');
+    assert.ok(sessionUpdate);
+    assert.match(sessionUpdate.session.instructions, /Do you have any notes or questions for the business\?/);
+    assert.doesNotMatch(sessionUpdate.session.instructions, /you'd like me to help with or pass along/i);
+    assert.match(sessionUpdate.session.instructions, /Okay, I'll add it to the notes\./);
+    assert.doesNotMatch(sessionUpdate.session.instructions, /I'm sorry, I don't really know that/i);
+  } finally {
+    h.restore();
+  }
 });
 
 test('builds one clean summary with no duplicate fields or Note: None', () => {
@@ -314,7 +329,7 @@ test('unintelligible aa is replaced with a short did-not-catch response', async 
   }
 });
 
-test('blocked keep-it-moving narration after no notes repairs directly to consent', async () => {
+test('blocked reassurance after no notes repairs directly to consent', async () => {
   const h = await createHarness();
   try {
     assistantResponse(h.socket, {
@@ -326,13 +341,13 @@ test('blocked keep-it-moving narration after no notes repairs directly to consen
 
     caller(h.socket, "No, I don't have any.", 'caller-no-notes');
     assistantResponse(h.socket, {
-      responseId: 'bad-moving-response',
-      itemId: 'bad-moving-item',
-      audio: 'bad-moving-audio',
-      transcript: 'Okay, let’s keep this moving.',
+      responseId: 'bad-reassurance-response',
+      itemId: 'bad-reassurance-item',
+      audio: 'bad-reassurance-audio',
+      transcript: 'Take your time.',
     });
 
-    assert.equal(h.audio.includes('bad-moving-audio'), false);
+    assert.equal(h.audio.includes('bad-reassurance-audio'), false);
     const repair = h.socket.sent
       .filter((event) => event.type === 'response.create')
       .find((event) => /Do you consent to being contacted by Tabor Painting/i.test(
@@ -380,6 +395,56 @@ test('summary confirmation cannot submit until the required pre-submit sentence 
     assert.ok(repair);
     assert.match(repair.response.instructions, /submit_estimate_request with caller_confirmed true/i);
     assert.match(repair.response.instructions, /Okay, thanks for confirming\. I'm sending the estimate request in now\./);
+  } finally {
+    h.restore();
+  }
+});
+
+test('pre-submit sentence stays buffered until the same response contains the submit tool call', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'summary-response-pairing',
+      itemId: 'summary-item-pairing',
+      audio: 'summary-audio-pairing',
+      transcript: "Okay, here's the summary. Andrew Christensen is requesting Exterior Painting at 197 Lancaster Road in Berlin, Massachusetts. The preferred date and time is Monday, August 10, 2026 at 1:00 PM. There are no additional notes. Does that all sound right?",
+    });
+    caller(h.socket, 'Yes.', 'caller-summary-pairing-yes');
+
+    assistantResponse(h.socket, {
+      responseId: 'submit-without-tool',
+      itemId: 'submit-without-tool-item',
+      audio: 'submit-without-tool-audio',
+      transcript: PRE_SUBMIT,
+    });
+
+    assert.equal(h.audio.includes('submit-without-tool-audio'), false);
+    const repair = h.socket.sent
+      .filter((event) => event.type === 'response.create')
+      .find((event) => /submit_estimate_request with caller_confirmed true/i.test(
+        event.response?.instructions || '',
+      ));
+    assert.ok(repair);
+
+    assistantResponse(h.socket, {
+      responseId: 'submit-with-tool',
+      itemId: 'submit-with-tool-message',
+      audio: 'submit-with-tool-audio',
+      transcript: PRE_SUBMIT,
+      extraOutput: [{
+        id: 'submit-with-tool-call-item',
+        type: 'function_call',
+        name: 'submit_estimate_request',
+        call_id: 'submit-with-tool-call-id',
+        arguments: JSON.stringify({ caller_confirmed: true }),
+      }],
+    });
+
+    assert.equal(h.audio.includes('submit-with-tool-audio'), true);
+    assert.equal(
+      h.audio.filter((payload) => payload === 'submit-with-tool-audio').length,
+      1,
+    );
   } finally {
     h.restore();
   }
