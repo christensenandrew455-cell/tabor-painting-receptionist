@@ -229,10 +229,49 @@ function isContactConsentQuestion(value, context) {
     || spoken === normalizedSpokenText(contactConsentQuestion(context, false));
 }
 
-function looksLikeCompleteStreetAddress(value) {
+export function shouldIgnoreConfirmationTranscript(value) {
   const text = cleanText(value);
-  return /\b\d{1,6}\b/.test(text)
-    && /\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|court|ct|way|highway|hwy|route|terrace|ter|circle|cir|parkway|pkwy)\b/i.test(text);
+  if (!text || !/[A-Za-z0-9]/.test(text)) return true;
+  const normalized = text
+    .toLowerCase()
+    .replace(/[.…]+$/g, '')
+    .replace(/[^a-z0-9']+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  if (/^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|mmm+|ah+|eh+|well|like|ay)$/.test(normalized)) {
+    return true;
+  }
+  return /\b(?:um+|uh+|erm+|er+)\s*$/.test(normalized);
+}
+
+function addressEvidenceTokens(value) {
+  const rawTokens = cleanText(value).toLowerCase().match(/[a-z0-9]+/g) || [];
+  const tokens = [];
+  for (let index = 0; index < rawTokens.length; index += 1) {
+    if (/^[a-z]$/.test(rawTokens[index])) {
+      let cursor = index;
+      let letters = '';
+      while (cursor < rawTokens.length && /^[a-z]$/.test(rawTokens[cursor])) {
+        letters += rawTokens[cursor];
+        cursor += 1;
+      }
+      if (letters.length >= 2) {
+        tokens.push(letters);
+        index = cursor - 1;
+        continue;
+      }
+    }
+    tokens.push(rawTokens[index]);
+  }
+  return tokens;
+}
+
+export function isAddressGroundedInCallerEvidence(address, callerTranscripts = []) {
+  const candidateTokens = addressEvidenceTokens(address);
+  if (!candidateTokens.length) return false;
+  const evidence = new Set(addressEvidenceTokens(callerTranscripts.join(' ')));
+  const connectiveTokens = new Set(['at', 'in']);
+  return candidateTokens.every((token) => connectiveTokens.has(token) || evidence.has(token));
 }
 
 function isAffirmativeSummaryConfirmation(value) {
@@ -511,12 +550,13 @@ export function createOpenAiReceptionist({
   let goodbyeComplete = false;
   let responseCount = 0;
   let costLimitTriggered = false;
-  let callerAddressVerbatim = '';
   let awaitingSummaryConfirmation = false;
+  let summaryConfirmationGranted = false;
   let callerTranscriptCount = 0;
   let contactConsentAsked = false;
   let contactConsentGranted = false;
   let awaitingContactConsentAnswer = false;
+  const callerTranscripts = [];
   let usageSummary = {
     model,
     responsesWithUsage: 0,
@@ -574,6 +614,7 @@ export function createOpenAiReceptionist({
     emittedTranscriptKeys.add(key);
     if (speaker === 'receptionist' && /does that all sound right\?/i.test(transcript)) {
       awaitingSummaryConfirmation = true;
+      summaryConfirmationGranted = false;
     }
     if (speaker === 'receptionist' && isContactConsentQuestion(transcript, context)) {
       contactConsentAsked = true;
@@ -643,8 +684,12 @@ export function createOpenAiReceptionist({
     try {
       const args = parseArguments(item.arguments);
       if (item.name === 'prepare_estimate_summary') {
-        if (callerAddressVerbatim) args.address = callerAddressVerbatim;
+        summaryConfirmationGranted = false;
+        awaitingSummaryConfirmation = false;
         if (callerTranscriptCount > 0) {
+          if (!isAddressGroundedInCallerEvidence(args.address, callerTranscripts)) {
+            throw new Error('The proposed project address contains details the caller did not provide. Ask only for the address detail that is unclear.');
+          }
           args.consent_asked_separately = contactConsentAsked;
           args.consent_to_contact = contactConsentGranted;
           if (!contactConsentAsked) {
@@ -653,6 +698,7 @@ export function createOpenAiReceptionist({
         }
         result = intake.prepare(args);
       } else if (item.name === 'submit_estimate_request') {
+        if (callerTranscriptCount > 0) args.caller_confirmed = summaryConfirmationGranted;
         result = await intake.submit(args);
       } else if (item.name === 'end_call') {
         result = submitted
@@ -765,15 +811,16 @@ export function createOpenAiReceptionist({
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const callerTranscript = String(event.transcript ?? '').trim();
       callerTranscriptCount += 1;
-      if (awaitingContactConsentAnswer) {
+      callerTranscripts.push(callerTranscript);
+      const meaningfulConfirmationAnswer = !shouldIgnoreConfirmationTranscript(callerTranscript);
+      if (awaitingContactConsentAnswer && meaningfulConfirmationAnswer) {
         contactConsentGranted = isAffirmativeSummaryConfirmation(callerTranscript);
         awaitingContactConsentAnswer = false;
       }
-      if (awaitingSummaryConfirmation) {
-        if (!isAffirmativeSummaryConfirmation(callerTranscript)) callerAddressVerbatim = '';
+      if (awaitingSummaryConfirmation && meaningfulConfirmationAnswer) {
+        summaryConfirmationGranted = isAffirmativeSummaryConfirmation(callerTranscript);
         awaitingSummaryConfirmation = false;
       }
-      if (looksLikeCompleteStreetAddress(callerTranscript)) callerAddressVerbatim = callerTranscript;
       emitTranscript('caller', callerTranscript, {
         itemId: cleanText(event.item_id),
       });
