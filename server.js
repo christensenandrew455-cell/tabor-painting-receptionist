@@ -4,7 +4,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildArcRuntimeForward } from './arc-runtime.js';
 import { createBusinessContext } from './business-context.js';
-import { createOpenAiReceptionist } from './openai-receptionist.js';
+import { createGuardedOpenAiReceptionist as createOpenAiReceptionist } from './receptionist-output-guard.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
