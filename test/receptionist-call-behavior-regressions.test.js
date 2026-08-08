@@ -161,6 +161,7 @@ test('blocks punctuation-only and process-only receptionist output', () => {
   assert.equal(shouldBlockReceptionistOutput('…'), true);
   assert.equal(shouldBlockReceptionistOutput('Okay, let’s keep this moving.'), true);
   assert.equal(shouldBlockReceptionistOutput('Let me grab the details.'), true);
+  assert.equal(shouldBlockReceptionistOutput('Take your time.'), true);
   assert.equal(shouldBlockReceptionistOutput('What date and time would work best for the estimate?'), false);
 });
 
@@ -208,13 +209,13 @@ test('a filler turn produces no late receptionist audio and no repair speech', a
       item_id: 'filler-item',
       delta: 'should-never-play',
     });
-    caller(h.socket, 'Uh...', 'caller-filler');
     h.socket.receive({
       type: 'response.output_audio_transcript.done',
       response_id: 'filler-response',
       item_id: 'filler-item',
       transcript: '…',
     });
+    caller(h.socket, 'Uh...', 'caller-filler');
     h.socket.receive({
       type: 'response.done',
       response: {
