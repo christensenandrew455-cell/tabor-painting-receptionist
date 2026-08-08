@@ -26,7 +26,6 @@ const CONTEXT = Object.freeze({
 const NEW_NOTES_PROMPT = 'Do you have any notes or questions for the business?';
 const PRE_SUBMIT = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const DID_NOT_CATCH = "I'm sorry, I didn't catch that.";
-const UNKNOWN_QUESTION_FALLBACK = "Okay, I'll add it to the notes.";
 
 class FakeWebSocket extends EventEmitter {
   static instance = null;
