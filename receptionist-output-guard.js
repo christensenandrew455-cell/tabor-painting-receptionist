@@ -207,6 +207,8 @@ function createGuardedWebSocketClass({ context, InnerWebSocketClass }) {
       if (!this.responses.has(id)) {
         this.responses.set(id, {
           id,
+          createdEvent: null,
+          createdForwarded: false,
           audioEvents: [],
           transcriptEvents: [],
           transcript: '',
@@ -223,6 +225,12 @@ function createGuardedWebSocketClass({ context, InnerWebSocketClass }) {
       this.emit('message', Buffer.from(JSON.stringify(event)));
     }
 
+    forwardCreated(state) {
+      if (!state.createdEvent || state.createdForwarded) return;
+      this.emitJson(state.createdEvent);
+      state.createdForwarded = true;
+    }
+
     approveResponse(state, transcript, transcriptDoneEvent = null) {
       if (state.blocked) return false;
       const spoken = cleanText(transcript);
@@ -235,6 +243,7 @@ function createGuardedWebSocketClass({ context, InnerWebSocketClass }) {
 
       state.approved = true;
       state.transcript = spoken;
+      this.forwardCreated(state);
       for (const event of state.audioEvents.splice(0)) this.emitJson(event);
       for (const event of state.transcriptEvents.splice(0)) this.emitJson(event);
       if (transcriptDoneEvent && !state.transcriptForwarded) {
@@ -302,8 +311,8 @@ function createGuardedWebSocketClass({ context, InnerWebSocketClass }) {
       }
 
       if (event.type === 'response.created') {
-        this.responseState(event.response?.id);
-        this.emitJson(event);
+        const state = this.responseState(event.response?.id);
+        state.createdEvent = event;
         return;
       }
 
@@ -354,6 +363,7 @@ function createGuardedWebSocketClass({ context, InnerWebSocketClass }) {
           return;
         }
 
+        this.forwardCreated(state);
         if (!state.approved) {
           for (const audioEvent of state.audioEvents.splice(0)) this.emitJson(audioEvent);
           for (const transcriptEvent of state.transcriptEvents.splice(0)) this.emitJson(transcriptEvent);
