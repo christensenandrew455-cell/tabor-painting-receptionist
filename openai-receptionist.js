@@ -118,7 +118,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
         },
         address: {
           type: 'string',
-          description: "Copy the caller's most recent complete project address exactly from the caller's own words. Do not normalize, reinterpret, autocorrect, or substitute any street, city, state, or ZIP value.",
+          description: "Copy the caller's project address exactly from the caller's own words. Do not normalize, reinterpret, autocorrect, substitute, or require an address component the caller did not provide.",
         },
         preferred_date: {
           type: 'string',
@@ -229,10 +229,49 @@ function isContactConsentQuestion(value, context) {
     || spoken === normalizedSpokenText(contactConsentQuestion(context, false));
 }
 
-function looksLikeCompleteStreetAddress(value) {
+export function shouldIgnoreConfirmationTranscript(value) {
   const text = cleanText(value);
-  return /\b\d{1,6}\b/.test(text)
-    && /\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|court|ct|way|highway|hwy|route|terrace|ter|circle|cir|parkway|pkwy)\b/i.test(text);
+  if (!text || !/[A-Za-z0-9]/.test(text)) return true;
+  const normalized = text
+    .toLowerCase()
+    .replace(/[.…]+$/g, '')
+    .replace(/[^a-z0-9']+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  if (/^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|mmm+|ah+|eh+|well|like|ay)$/.test(normalized)) {
+    return true;
+  }
+  return /\b(?:um+|uh+|erm+|er+)\s*$/.test(normalized);
+}
+
+function addressEvidenceTokens(value) {
+  const rawTokens = cleanText(value).toLowerCase().match(/[a-z0-9]+/g) || [];
+  const tokens = [];
+  for (let index = 0; index < rawTokens.length; index += 1) {
+    if (/^[a-z]$/.test(rawTokens[index])) {
+      let cursor = index;
+      let letters = '';
+      while (cursor < rawTokens.length && /^[a-z]$/.test(rawTokens[cursor])) {
+        letters += rawTokens[cursor];
+        cursor += 1;
+      }
+      if (letters.length >= 2) {
+        tokens.push(letters);
+        index = cursor - 1;
+        continue;
+      }
+    }
+    tokens.push(rawTokens[index]);
+  }
+  return tokens;
+}
+
+export function isAddressGroundedInCallerEvidence(address, callerTranscripts = []) {
+  const candidateTokens = addressEvidenceTokens(address);
+  if (!candidateTokens.length) return false;
+  const evidence = new Set(addressEvidenceTokens(callerTranscripts.join(' ')));
+  const connectiveTokens = new Set(['at', 'in']);
+  return candidateTokens.every((token) => connectiveTokens.has(token) || evidence.has(token));
 }
 
 function isAffirmativeSummaryConfirmation(value) {
@@ -329,7 +368,7 @@ The caller's estimate request has already been successfully sent to the website.
 - During intake, first absorb every usable detail from the caller's latest turn into the current request, including corrections and any unanswered question that belongs in notes, and only then choose the single next missing field. Never speak before that check is complete. Ask exactly one question per turn and wait for the caller's answer. Never bundle two intake fields into one turn. If the caller asks a question during intake, answer it first, then ask only the one intake field that was still pending.
 - Treat a correction as an immediate replacement of the old value. Once corrected, never repeat, reuse, or refer back to the outdated value unless the caller changes it again.
 - If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, even if the answer was given casually or before you reached that field. Never announce a later step such as summary, submission, or wrap-up while an earlier required field is still missing.
-- Begin service collection with exactly, "What service were you looking for?" Do not list choices, examples, categories, or service names in the question. If the caller's answer clearly matches a supplied service, record that service silently and move to the next missing field. For example, "I need the shed painted out back" should map silently to Exterior Painting when that service is supplied. Do not say "that sounds like," announce the matched service, or explain the inference. If their answer is clearly relevant but needs one detail to distinguish the matching service, ask only the smallest clarifying question using the caller's own wording. For example, if they say the house needs a repaint, ask whether the repaint is inside or outside. Only if their stated need does not match any supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
+- Begin service collection with exactly, "What service were you looking for?" Do not list choices, examples, categories, or service names in the question. If the caller's answer clearly matches a supplied service, record that service silently and make the entire next spoken response only the next missing intake question. Do not acknowledge the classification, repeat the service, name the category, say "that sounds like," or explain the inference. For example, after "I just need a couple of rooms painted in my house," ask only, "What name should I use for the estimate request?" Likewise, "I need the shed painted out back" should map silently to Exterior Painting when that service is supplied. If their answer is clearly relevant but needs one detail to distinguish the matching service, ask only the smallest clarifying question using the caller's own wording. For example, if they say the house needs a repaint, ask whether the repaint is inside or outside. Only if their stated need does not match any supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
 - Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part. Use the caller's whole turn together: words such as "in the morning," "in the afternoon," and "in the evening" resolve AM or PM. For example, "2 in the afternoon" means 2:00 PM, and if the same turn later says "Thursday at 2," keep the already-stated PM context and record Thursday at 2:00 PM. Never ask AM or PM when the caller has already supplied a clear daypart. If the caller gives a day and a bare hour without any daypart, use the allowed estimate hours to infer AM or PM when only one interpretation can be valid. For example, with a 9:00 AM through 4:00 PM window, "Monday at 3" means 3:00 PM. If both AM and PM would be valid, ask only whether they mean AM or PM; never re-ask the whole date-and-time question. Once both are clear, do not repeat the full date and time back or ask the scheduling question again; move directly to the next missing question.
 - Use conversational context when the transcription is obviously imperfect. For example, if the notes-and-questions step receives "nun" in a context where the caller clearly means "none," treat it as no notes or questions instead of asking the same question again. Do not guess when the meaning is genuinely ambiguous.
 
@@ -337,7 +376,7 @@ The caller's estimate request has already been successfully sent to the website.
 Collect all of these:
 1. Service: match the caller's need to one website service when a service list is available. Infer obvious matches silently from the work and location instead of asking the caller to name the category.
 2. Name. Ask naturally, for example, "What name should I use for the estimate request?" The name must come only from the caller's own words; never fill it from business data or a receptionist/assistant name.
-3. Complete project address. Record it exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute a city, state, street, or ZIP based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
+3. Complete project address. Ask exactly, "What's the complete project address?" Do not expand that question with examples or a list of address components, do not ask for a ZIP separately, and do not explain why the address is needed. Record the address exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute an address value based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
 6. Project notes and business questions. This field is optional, but you must ask exactly, "${NOTES_AND_QUESTIONS_PROMPT}" as its own turn. If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly when the structured data or safe fallbacks allow it; add each unanswered question to additional_notes. If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is complete, continue directly to contact permission. If they explicitly say no or none, record empty notes unless an unanswered question was already captured earlier in the call. Do not restate their notes or questions before consent.
@@ -511,12 +550,13 @@ export function createOpenAiReceptionist({
   let goodbyeComplete = false;
   let responseCount = 0;
   let costLimitTriggered = false;
-  let callerAddressVerbatim = '';
   let awaitingSummaryConfirmation = false;
+  let summaryConfirmationGranted = false;
   let callerTranscriptCount = 0;
   let contactConsentAsked = false;
   let contactConsentGranted = false;
   let awaitingContactConsentAnswer = false;
+  const callerTranscripts = [];
   let usageSummary = {
     model,
     responsesWithUsage: 0,
@@ -574,6 +614,7 @@ export function createOpenAiReceptionist({
     emittedTranscriptKeys.add(key);
     if (speaker === 'receptionist' && /does that all sound right\?/i.test(transcript)) {
       awaitingSummaryConfirmation = true;
+      summaryConfirmationGranted = false;
     }
     if (speaker === 'receptionist' && isContactConsentQuestion(transcript, context)) {
       contactConsentAsked = true;
@@ -643,8 +684,12 @@ export function createOpenAiReceptionist({
     try {
       const args = parseArguments(item.arguments);
       if (item.name === 'prepare_estimate_summary') {
-        if (callerAddressVerbatim) args.address = callerAddressVerbatim;
+        summaryConfirmationGranted = false;
+        awaitingSummaryConfirmation = false;
         if (callerTranscriptCount > 0) {
+          if (!isAddressGroundedInCallerEvidence(args.address, callerTranscripts)) {
+            throw new Error('The proposed project address contains details the caller did not provide. Ask only for the address detail that is unclear.');
+          }
           args.consent_asked_separately = contactConsentAsked;
           args.consent_to_contact = contactConsentGranted;
           if (!contactConsentAsked) {
@@ -653,6 +698,7 @@ export function createOpenAiReceptionist({
         }
         result = intake.prepare(args);
       } else if (item.name === 'submit_estimate_request') {
+        if (callerTranscriptCount > 0) args.caller_confirmed = summaryConfirmationGranted;
         result = await intake.submit(args);
       } else if (item.name === 'end_call') {
         result = submitted
@@ -765,15 +811,16 @@ export function createOpenAiReceptionist({
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const callerTranscript = String(event.transcript ?? '').trim();
       callerTranscriptCount += 1;
-      if (awaitingContactConsentAnswer) {
+      callerTranscripts.push(callerTranscript);
+      const meaningfulConfirmationAnswer = !shouldIgnoreConfirmationTranscript(callerTranscript);
+      if (awaitingContactConsentAnswer && meaningfulConfirmationAnswer) {
         contactConsentGranted = isAffirmativeSummaryConfirmation(callerTranscript);
         awaitingContactConsentAnswer = false;
       }
-      if (awaitingSummaryConfirmation) {
-        if (!isAffirmativeSummaryConfirmation(callerTranscript)) callerAddressVerbatim = '';
+      if (awaitingSummaryConfirmation && meaningfulConfirmationAnswer) {
+        summaryConfirmationGranted = isAffirmativeSummaryConfirmation(callerTranscript);
         awaitingSummaryConfirmation = false;
       }
-      if (looksLikeCompleteStreetAddress(callerTranscript)) callerAddressVerbatim = callerTranscript;
       emitTranscript('caller', callerTranscript, {
         itemId: cleanText(event.item_id),
       });
