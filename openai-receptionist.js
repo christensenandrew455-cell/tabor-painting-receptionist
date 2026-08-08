@@ -210,6 +210,23 @@ function spokenBusinessName(value) {
   return cleanText(value).replace(/-/g, ' ').replace(/\s+/g, ' ').trim() || 'the business';
 }
 
+function contactConsentQuestion(context, hasNotes) {
+  const businessName = spokenBusinessName(context.businessName);
+  return hasNotes
+    ? `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${businessName}?`
+    : `Okay, thanks. One more question. Do you consent to being contacted by ${businessName}?`;
+}
+
+function normalizedSpokenText(value) {
+  return cleanText(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function isContactConsentQuestion(value, context) {
+  const spoken = normalizedSpokenText(value);
+  return spoken === normalizedSpokenText(contactConsentQuestion(context, true))
+    || spoken === normalizedSpokenText(contactConsentQuestion(context, false));
+}
+
 function looksLikeCompleteStreetAddress(value) {
   const text = cleanText(value);
   return /\b\d{1,6}\b/.test(text)
@@ -323,8 +340,8 @@ Collect all of these:
 3. Complete project address. Record it exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute a city, state, street, or ZIP based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
-6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none, including an obvious context-based transcription of no or none; never infer no notes from omission or silence. When the caller says no or none, record empty notes and continue to contact permission. Do not repeat or paraphrase the answer as "no notes," "none," or "no additional notes." A brief natural acknowledgment such as "Okay, thanks" is fine before the contact-permission question.
-7. Explicit permission for ${businessName} to contact the caller about the request. Ask, "Do I have your permission for ${businessName} to contact you about this estimate request?" as its own question after the notes question has been answered. Never combine consent with scheduling, notes, confirmation, or any other question.
+6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none, including an obvious context-based transcription of no or none; never infer no notes from omission or silence. When the caller gives actual notes, the entire next spoken response must be exactly, "Okay, thanks for the notes. One more question. Do you consent to being contacted by ${businessName}?" When the caller says no or none, the entire next spoken response must be exactly, "Okay, thanks. One more question. Do you consent to being contacted by ${businessName}?" Do not restate the notes, say you are confirming details, or add any process narration before the consent question.
+7. Explicit permission for ${businessName} to contact the caller about the request. The consent question must be asked in the exact standalone wording specified immediately above, and the caller must clearly answer yes before preparation. Never combine consent with scheduling, confirmation, summary, or any other question.
 - If the caller refuses contact permission, do not pressure them and do not call either estimate tool. Acknowledge that the request cannot be sent, then offer to answer questions.
 
 # Date handling
@@ -340,7 +357,8 @@ When the caller says a relative date such as "Tuesday," keep those original date
 ${estimateAvailabilityGuide(context)} If the caller requests a date or time outside that availability, give exactly one spoken correction: briefly state the applicable allowed days or hours and ask for one replacement date or time. Do not first acknowledge it, announce that you need to clarify it, or split the correction into multiple messages. Never continue with an unavailable request. After the caller supplies an available replacement, do not announce that it is inside the window, say that it "works," or repeat the replacement; move directly to the next missing question.
 
 # Required preparation and confirmation boundary
-- Call prepare_estimate_summary only after every field is collected, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
+- Call prepare_estimate_summary only after every field is collected, the additional-notes question was asked and answered, and contact permission was actually asked in the required wording and clearly granted by the caller.
+- The consent booleans in a tool call are not proof that consent happened. The runtime checks the actual spoken consent question and the caller's following answer before allowing preparation on a real call.
 - When calling prepare_estimate_summary, copy the caller's name and most recent complete address from the caller's own words. Preserve every caller-provided address component exactly and never substitute a place name from business data.
 - After the caller grants contact permission, do not thank them for confirming, do not say you are preparing a summary, and do not ask another intake question. Call prepare_estimate_summary immediately and go straight into the returned summary readback.
 - Never invent the final summary yourself. Use only the returned summary values: name, service, address, and exact preferred date and time. Include notes only when the returned notes value contains actual project information. If notes are empty or returned as "None," omit them entirely.
@@ -492,6 +510,10 @@ export function createOpenAiReceptionist({
   let costLimitTriggered = false;
   let callerAddressVerbatim = '';
   let awaitingSummaryConfirmation = false;
+  let callerTranscriptCount = 0;
+  let contactConsentAsked = false;
+  let contactConsentGranted = false;
+  let awaitingContactConsentAnswer = false;
   let usageSummary = {
     model,
     responsesWithUsage: 0,
@@ -549,6 +571,11 @@ export function createOpenAiReceptionist({
     emittedTranscriptKeys.add(key);
     if (speaker === 'receptionist' && /does that all sound right\?/i.test(transcript)) {
       awaitingSummaryConfirmation = true;
+    }
+    if (speaker === 'receptionist' && isContactConsentQuestion(transcript, context)) {
+      contactConsentAsked = true;
+      contactConsentGranted = false;
+      awaitingContactConsentAnswer = true;
     }
     onTranscript?.({ speaker, text: transcript, ...metadata });
   }
@@ -609,10 +636,18 @@ export function createOpenAiReceptionist({
 
   async function executeTool(item) {
     let result;
+    let forcedConsentQuestion = '';
     try {
       const args = parseArguments(item.arguments);
       if (item.name === 'prepare_estimate_summary') {
         if (callerAddressVerbatim) args.address = callerAddressVerbatim;
+        if (callerTranscriptCount > 0) {
+          args.consent_asked_separately = contactConsentAsked;
+          args.consent_to_contact = contactConsentGranted;
+          if (!contactConsentAsked) {
+            forcedConsentQuestion = contactConsentQuestion(context, Boolean(cleanText(args.additional_notes)));
+          }
+        }
         result = intake.prepare(args);
       } else if (item.name === 'submit_estimate_request') {
         result = await intake.submit(args);
@@ -636,6 +671,17 @@ export function createOpenAiReceptionist({
         output: JSON.stringify(safeResult),
       },
     });
+
+    if (forcedConsentQuestion) {
+      sendJson(openai, {
+        type: 'response.create',
+        response: {
+          output_modalities: ['audio'],
+          instructions: `Say exactly: "${forcedConsentQuestion}" Do not add anything before or after it.`,
+        },
+      });
+      return;
+    }
 
     if (safeResult.ok && item.name === 'submit_estimate_request') {
       submitted = true;
@@ -711,6 +757,11 @@ export function createOpenAiReceptionist({
     if (event.type === 'input_audio_buffer.speech_started') return;
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const callerTranscript = String(event.transcript ?? '').trim();
+      callerTranscriptCount += 1;
+      if (awaitingContactConsentAnswer) {
+        contactConsentGranted = isAffirmativeSummaryConfirmation(callerTranscript);
+        awaitingContactConsentAnswer = false;
+      }
       if (awaitingSummaryConfirmation) {
         if (!isAffirmativeSummaryConfirmation(callerTranscript)) callerAddressVerbatim = '';
         awaitingSummaryConfirmation = false;
