@@ -23,6 +23,11 @@ const PROCESS_NARRATION_PATTERNS = Object.freeze([
   /\bget (?:the )?estimate summary ready\b/i,
   /\bi(?:'|’)m (?:still )?(?:getting|a bit )?confused\b/i,
   /\bpackage the estimate request\b/i,
+  /\btake your time\b/i,
+  /\bwhenever you(?:'re| are) ready\b/i,
+  /\bno problem\b/i,
+  /\byou(?:'re| are) fine\b/i,
+  /\ball good\b/i,
 ]);
 
 const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got it|sounds good|thanks|thank you)[.!]*$/i;
@@ -545,7 +550,7 @@ function createGuardedWebSocketClass({
       notesResolvedNegative,
     }) {
       for (const state of this.responses.values()) {
-        if (state.approved || state.blocked || state.interrupted) continue;
+        if (state.approved || state.interrupted) continue;
         state.callerDisposition = disposition;
         state.callerTranscript = transcript;
         state.answeredField = answeredField;
