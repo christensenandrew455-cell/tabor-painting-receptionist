@@ -1,6 +1,6 @@
 const SENSITIVE_KEY = /(authorization|credential|password|secret|token|api[_-]?key)/i;
 const CONNECTION_KEY = /^(intakeUrl|mediaWebSocketUrl|runtimeUrl|usageUrl|webSocketUrl)$/i;
-const RECEPTIONIST_CONTROL_KEY = /^(receptionist(Name)?|aiVoice|voice)$/i;
+const RECEPTIONIST_CONTROL_KEY = /^(?:(?:ai[\s_-]*)?receptionist(?:[\s_-]*name)?|ai[\s_-]*voice|voice)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
 const WEEKDAY_NAMES = Object.freeze([
   'sunday',
