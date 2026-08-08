@@ -1,6 +1,8 @@
 const SENSITIVE_KEY = /(authorization|credential|password|secret|token|api[_-]?key)/i;
 const CONNECTION_KEY = /^(intakeUrl|mediaWebSocketUrl|runtimeUrl|usageUrl|webSocketUrl)$/i;
 const RECEPTIONIST_CONTROL_KEY = /^(?:(?:ai[\s_-]*)?receptionist(?:[\s_-]*name)?|ai[\s_-]*voice|voice)$/i;
+const PRIVATE_BUSINESS_DATA_KEY = /(?:phone|telephone|email)$/i;
+const OBSOLETE_BUSINESS_FACT_KEY = /^(about|extraInformation)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
 const WEEKDAY_NAMES = Object.freeze([
   'sunday',
@@ -163,6 +165,8 @@ function sanitizeKnowledge(value, depth = 0) {
       SENSITIVE_KEY.test(key)
       || CONNECTION_KEY.test(key)
       || RECEPTIONIST_CONTROL_KEY.test(key)
+      || PRIVATE_BUSINESS_DATA_KEY.test(key)
+      || OBSOLETE_BUSINESS_FACT_KEY.test(key)
     ) continue;
     const sanitized = sanitizeKnowledge(child, depth + 1);
     if (sanitized !== undefined) result[key] = sanitized;
@@ -184,8 +188,6 @@ function publicRuntimeData(runtime, services) {
   const topLevelFields = [
     'businessName',
     'ownerName',
-    'businessPhone',
-    'businessEmail',
     'businessHours',
     'hours',
     'timeZone',
@@ -195,8 +197,6 @@ function publicRuntimeData(runtime, services) {
     'latestEstimateStart',
     'businessBase',
     'serviceAreas',
-    'about',
-    'extraInformation',
   ];
   for (const field of topLevelFields) {
     if (runtime[field] !== undefined) selected[field] = runtime[field];
