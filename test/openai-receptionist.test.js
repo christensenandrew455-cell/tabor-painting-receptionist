@@ -7,6 +7,8 @@ import {
   createOpenAiReceptionist,
   END_CALL_TOOL,
   ESTIMATE_TOOLS,
+  isAddressGroundedInCallerEvidence,
+  shouldIgnoreCallerTranscript,
 } from '../openai-receptionist.js';
 
 const CONTEXT = Object.freeze({
@@ -20,7 +22,7 @@ const CONTEXT = Object.freeze({
   knowledgeJson: '{"businessHours":"Monday through Friday"}',
 });
 
-test('configures PCMU audio, low-cost transcripts, and the two-step estimate tools', () => {
+test('configures PCMU audio, patient semantic turn detection, and the two-step estimate tools', () => {
   const event = buildSessionUpdate(CONTEXT);
   assert.equal(event.type, 'session.update');
   assert.equal(event.session.model, 'gpt-realtime-2.1-mini');
@@ -30,9 +32,9 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(event.session.audio.input.transcription.model, 'gpt-4o-mini-transcribe');
   assert.equal(event.session.audio.input.transcription.language, 'en');
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
-  assert.equal(event.session.audio.input.turn_detection.threshold, 0.45);
-  assert.equal(event.session.audio.input.turn_detection.prefix_padding_ms, 500);
-  assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 1000);
+  assert.equal(event.session.audio.input.turn_detection.type, 'semantic_vad');
+  assert.equal(event.session.audio.input.turn_detection.eagerness, 'low');
+  assert.equal(event.session.audio.input.turn_detection.create_response, false);
   assert.equal(event.session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
@@ -48,6 +50,10 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.match(
     ESTIMATE_TOOLS[0].parameters.properties.service.description,
     /painting a shed out back maps to Exterior Painting/i,
+  );
+  assert.match(
+    ESTIMATE_TOOLS[0].parameters.properties.address.description,
+    /If the caller says Burlington, the city must be Burlington/i,
   );
   assert.match(
     ESTIMATE_TOOLS[0].parameters.properties.additional_notes.description,
@@ -71,7 +77,7 @@ test('post-submission instructions do not reopen the conversation', () => {
   assert.doesNotMatch(event.session.instructions, /anything else I can help with/i);
 });
 
-test('prompt keeps the lead-first estimate flow, question fallbacks, consent, and prior safeguards', () => {
+test('prompt keeps the lead-first estimate flow, question fallbacks, consent, and call-regression safeguards', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
   assert.match(prompt, /A yes to contact permission is not a yes to submit/);
   assert.match(prompt, /Use only the returned summary values/);
@@ -81,10 +87,14 @@ test('prompt keeps the lead-first estimate flow, question fallbacks, consent, an
   assert.match(prompt, /What service were you looking for/);
   assert.doesNotMatch(prompt, /Would you like to fill out an estimate request/);
   assert.match(prompt, /not a form being read aloud/i);
-  assert.match(prompt, /Okay.*Great.*Got it/i);
-  assert.match(prompt, /Do not force one onto every turn/i);
+  assert.match(prompt, /Do not fill silence with reassurance or patience language/i);
+  assert.match(prompt, /Never say "no problem," "take your time," "whenever you're ready/i);
+  assert.match(prompt, /Never output a spoken placeholder such as "\.\.\."/i);
+  assert.match(prompt, /Do not produce a standalone acknowledgement while waiting for information/i);
   assert.match(prompt, /Do not treat phrases such as "let's move on"/i);
   assert.match(prompt, /shed painted out back.*Exterior Painting/i);
+  assert.match(prompt, /whole exterior of my house needs to be painted/i);
+  assert.match(prompt, /do not say "wood or exterior,"/i);
   assert.match(prompt, /Infer obvious matches silently/i);
   assert.match(prompt, /2 in the afternoon.*2:00 PM/i);
   assert.match(prompt, /Never ask AM or PM when the caller has already supplied a clear daypart/i);
@@ -93,6 +103,9 @@ test('prompt keeps the lead-first estimate flow, question fallbacks, consent, an
   assert.match(prompt, /Do not restart, repeat, or rephrase your question/i);
   assert.match(prompt, /do not repeat any part of it/i);
   assert.match(prompt, /do not say "I have your address as,"/i);
+  assert.match(prompt, /If the caller says the city is Burlington, use Burlington/i);
+  assert.match(prompt, /never silently replace it with Lowell or another town/i);
+  assert.match(prompt, /spells a place name.*ask a short confirmation/i);
   assert.doesNotMatch(prompt, /required address confirmation/i);
   assert.match(prompt, /9:00 AM through 4:00 PM/);
   assert.match(prompt, /give exactly one spoken correction/i);
@@ -100,12 +113,16 @@ test('prompt keeps the lead-first estimate flow, question fallbacks, consent, an
   assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any notes for the project or any questions about the business/i);
   assert.match(prompt, /I may be able to answer some, and if not, I'll add them to the notes/i);
+  assert.match(prompt, /require a clear negative answer such as "no," "none," "nope," "nah," "nothing,"/i);
+  assert.match(prompt, /isolated symbol.*not "no," "none," "yes,"/i);
   assert.match(prompt, /The price depends on the estimate\./i);
   assert.match(prompt, /longest it will take is a week to accept or decline your estimate request/i);
   assert.match(prompt, /I'm sorry, I don't really know that\. I'll add it to the notes\./i);
   assert.match(prompt, /Preserve that unanswered question in additional_notes/i);
   assert.match(prompt, /Never give out, confirm, read back, or reveal the business's private phone number or email address/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
+  assert.match(prompt, /I'll grab your preferred date and time next/i);
+  assert.match(prompt, /I'll refresh the request/i);
   assert.match(prompt, /Greet the caller only once/i);
   assert.match(prompt, /use only their first name/i);
   assert.match(prompt, /Never speak their surname or full name back except during the final summary/i);
@@ -118,6 +135,43 @@ test('prompt keeps the lead-first estimate flow, question fallbacks, consent, an
   assert.match(prompt, /Do not volunteer that you are AI/i);
   assert.match(prompt, /Never mention ARK, OpenAI, Railway, Telnyx/i);
   assert.doesNotMatch(prompt, /Alex/);
+});
+
+test('filters filler and transcription artifacts but keeps real answers', () => {
+  assert.equal(shouldIgnoreCallerTranscript('어'), true);
+  assert.equal(shouldIgnoreCallerTranscript('음.'), true);
+  assert.equal(shouldIgnoreCallerTranscript('uh...'), true);
+  assert.equal(shouldIgnoreCallerTranscript('I could probably be like, uh...'), true);
+  assert.equal(shouldIgnoreCallerTranscript('No.'), false);
+  assert.equal(shouldIgnoreCallerTranscript('Nah.'), false);
+  assert.equal(shouldIgnoreCallerTranscript('Monday at 1'), false);
+  assert.equal(shouldIgnoreCallerTranscript('Burlington'), false);
+});
+
+test('address grounding allows caller corrections and rejects invented towns or numbers', () => {
+  const evidence = [
+    '197 Lancaster Road, Sterling, Massachusetts.',
+    'Hello, the address is Burlington, for one, and my name is Andrew Christensen.',
+  ];
+  assert.equal(
+    isAddressGroundedInCallerEvidence('197 Lancaster Road, Burlington, Massachusetts', evidence),
+    true,
+  );
+  assert.equal(
+    isAddressGroundedInCallerEvidence('137 Lancaster Road, Lowell, Massachusetts', evidence),
+    false,
+  );
+  assert.equal(
+    isAddressGroundedInCallerEvidence('197 Lancaster Road in Lowell, Massachusetts', evidence),
+    false,
+  );
+  assert.equal(
+    isAddressGroundedInCallerEvidence(
+      '197 Lancaster Road, Berilin, Massachusetts',
+      ['197 Lancaster Road, B-E-R-I-L-I-N.', 'Massachusetts'],
+    ),
+    true,
+  );
 });
 
 class FakeWebSocket extends EventEmitter {
@@ -149,6 +203,60 @@ class FakeWebSocket extends EventEmitter {
 function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test('does not create a receptionist response for filler or symbol-only caller turns', async () => {
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+
+  try {
+    const receptionist = createOpenAiReceptionist({
+      context: CONTEXT,
+      runtime: { clientId: 'client-123' },
+      callControlId: 'call-noise-filter',
+      callerPhone: '+15555550123',
+      deliver: async () => ({ ok: true }),
+      onAudio: () => {},
+      onClear: () => {},
+      onSubmitted: () => {},
+      onReady: () => {},
+      onError: (error) => assert.fail(error.message),
+      WebSocketClass: FakeWebSocket,
+    });
+    await nextTurn();
+
+    const socket = FakeWebSocket.instance;
+    socket.receive({ type: 'session.updated', session: {} });
+    const responseCount = () => socket.sent.filter((event) => event.type === 'response.create').length;
+    assert.equal(responseCount(), 1);
+
+    socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'noise-1',
+      transcript: '음.',
+    });
+    assert.equal(responseCount(), 1);
+
+    socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'noise-2',
+      transcript: 'I could probably be like, uh...',
+    });
+    assert.equal(responseCount(), 1);
+
+    socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'real-1',
+      transcript: 'Monday at 1',
+    });
+    assert.equal(responseCount(), 2);
+    const callerResponse = socket.sent.filter((event) => event.type === 'response.create').at(-1);
+    assert.deepEqual(callerResponse.response, { output_modalities: ['audio'] });
+    receptionist.close();
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+  }
+});
 
 test('runs prepare, submits once, then automatically says goodbye and requests hangup', async () => {
   const previousApiKey = process.env.OPENAI_API_KEY;
