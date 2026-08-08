@@ -43,7 +43,7 @@ test('allows a brief transition when the same response immediately gives the rea
   );
 });
 
-test('keeps reassurance filler blocked while process wording is handled by generation rules', () => {
-  assert.equal(shouldBlockReceptionistOutput('Let me think about the next detail.'), false);
+test('keeps unrelated process narration and reassurance filler blocked', () => {
+  assert.equal(shouldBlockReceptionistOutput('Let me think about the next detail.'), true);
   assert.equal(shouldBlockReceptionistOutput('Take your time.'), true);
 });
