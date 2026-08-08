@@ -5,6 +5,7 @@ import { createOpenAiReceptionist } from './openai-receptionist.js';
 
 const OLD_SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.";
 const SUBMISSION_START_RESPONSE = "Okay, thanks for confirming. I'm sending the estimate request in now.";
+const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
 const OLD_NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business? I may be able to answer some, and if not, I'll add them to the notes.";
 const NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business you'd like me to help with or pass along?";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
@@ -78,6 +79,13 @@ function hasUsefulContinuationAfterTransition(value) {
     || sameSpokenText(remainder, SUBMISSION_START_RESPONSE);
 }
 
+function asksForZipCode(value) {
+  const text = cleanText(value);
+  if (!/\bzip(?:\s+code)?\b/i.test(text)) return false;
+  return /\b(?:what(?:'s| is)|need|provide|give|tell|share|confirm|enter|supply)\b[\s\S]{0,80}\bzip(?:\s+code)?\b/i.test(text)
+    || /\bzip(?:\s+code)?\b[\s\S]{0,80}\?/i.test(text);
+}
+
 export function shouldBlockReceptionistOutput(value) {
   const text = cleanText(value);
   if (!text) return false;
@@ -86,10 +94,11 @@ export function shouldBlockReceptionistOutput(value) {
   if (STANDALONE_ACKNOWLEDGMENT.test(text)) return true;
   if (hasConditionalTransition(text) && !hasUsefulContinuationAfterTransition(text)) return true;
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (asksForZipCode(text)) return true;
 
   if (
     /complete project address/i.test(text)
-    && (/\bzip\b/i.test(text) || /including\s+(?:street|address|city|state)/i.test(text))
+    && /including\s+(?:street|address|city|state)/i.test(text)
   ) return true;
 
   return false;
@@ -376,6 +385,8 @@ function createGuardedWebSocketClass({
       this.pendingSummary = null;
       this.pendingResponsePolicies = [];
       this.repairAttempts = 0;
+      this.submitCallIds = new Set();
+      this.failedSubmitFollowupPending = false;
 
       this.inner.on('open', (...args) => this.emit('open', ...args));
       this.inner.on('error', (...args) => this.emit('error', ...args));
@@ -399,8 +410,28 @@ function createGuardedWebSocketClass({
       if (toolOutput?.status === 'ready_for_confirmation' && toolOutput.summary) {
         this.pendingSummary = toolOutput.summary;
       }
+      if (
+        event.type === 'conversation.item.create'
+        && event.item?.type === 'function_call_output'
+        && this.submitCallIds.has(cleanText(event.item.call_id))
+      ) {
+        this.submitCallIds.delete(cleanText(event.item.call_id));
+        if (toolOutput?.ok === false) this.failedSubmitFollowupPending = true;
+      }
+
+      const failedSubmitFollowup = event.type === 'response.create' && this.failedSubmitFollowupPending;
+      if (failedSubmitFollowup) {
+        this.failedSubmitFollowupPending = false;
+        event.response.instructions = exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE);
+      }
 
       const prepared = prepareOutgoingEvent(event, this.pendingSummary);
+      if (failedSubmitFollowup) {
+        prepared.policy = {
+          expectedTranscript: SUBMISSION_FAILURE_RESPONSE,
+          repairInstruction: exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE),
+        };
+      }
       if (prepared.policy) this.pendingResponsePolicies.push(prepared.policy);
       return this.inner.send(JSON.stringify(prepared.event));
     }
@@ -478,6 +509,14 @@ function createGuardedWebSocketClass({
         state.answeredField === 'schedule'
         && classifyPendingField(spoken) === 'notes'
         && !sameSpokenText(spoken, NOTES_AND_QUESTIONS_PROMPT)
+      ) {
+        this.markBlocked(state);
+        return false;
+      }
+
+      if (
+        sameSpokenText(spoken, SUBMISSION_START_RESPONSE)
+        && !this.shouldRequireSubmissionStart(state)
       ) {
         this.markBlocked(state);
         return false;
@@ -701,18 +740,26 @@ function createGuardedWebSocketClass({
           this.approveResponse(state, state.transcript);
         }
 
-        if (
-          this.shouldRequireSubmissionStart(state)
-          && hasFunctionCall(event.response, 'submit_estimate_request')
-          && !state.approved
-        ) {
-          this.markBlocked(state);
+        if (hasFunctionCall(event.response, 'submit_estimate_request')) {
+          if (!this.shouldRequireSubmissionStart(state) || !state.approved) {
+            this.markBlocked(state);
+          }
         }
 
         if (state.blocked) {
           this.discardResponse(event, state, { repair: true });
           this.responses.delete(responseId);
           return;
+        }
+
+        for (const item of event.response?.output || []) {
+          if (
+            item?.type === 'function_call'
+            && cleanText(item.name) === 'submit_estimate_request'
+            && cleanText(item.call_id)
+          ) {
+            this.submitCallIds.add(cleanText(item.call_id));
+          }
         }
 
         this.forwardCreated(state);
