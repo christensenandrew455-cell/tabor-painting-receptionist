@@ -44,7 +44,7 @@ export function shouldBlockReceptionistOutput(value) {
 
   if (
     /complete project address/i.test(text)
-    && (\bzip\b/i.test(text) || /including\s+(?:street|address|city|state)/i.test(text))
+    && (/\bzip\b/i.test(text) || /including\s+(?:street|address|city|state)/i.test(text))
   ) return true;
 
   return false;
@@ -53,7 +53,7 @@ export function shouldBlockReceptionistOutput(value) {
 function isMeaningfulCallerTranscript(value) {
   const text = cleanText(value);
   if (!text || !/[A-Za-z0-9]/.test(text)) return false;
-  const valueNormalized = normalized(text).replace(/[.]+$/g, '').trim();
+  const valueNormalized = normalized(text);
   if (!valueNormalized) return false;
   if (/^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|mmm+|ah+|eh+|well|like|ay)$/.test(valueNormalized)) {
     return false;
