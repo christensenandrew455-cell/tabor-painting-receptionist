@@ -23,6 +23,15 @@ const CONDITIONAL_TRANSITION_PATTERNS = Object.freeze([
 ]);
 
 const PROCESS_NARRATION_PATTERNS = Object.freeze([
+  /\blet me think\b/i,
+  /\bbest way to help\b/i,
+  /\bnext (?:step|detail)\b/i,
+  /\blet me (?:pull|update|refresh|clarify|check|double[- ]check|make sure|prepare|put together)\b/i,
+  /\bi(?:'|’)ll (?:update|refresh|check|double[- ]check|pull|prepare|put together)\b/i,
+  /\bquick recap\b/i,
+  /\bget (?:the )?estimate summary ready\b/i,
+  /\bi(?:'|’)m (?:still )?(?:getting|a bit )?confused\b/i,
+  /\bpackage the estimate request\b/i,
   /\btake your time\b/i,
   /\bwhenever you(?:'re| are) ready\b/i,
   /\bno problem\b/i,
@@ -86,6 +95,10 @@ export function shouldBlockReceptionistOutput(value) {
   if (sameSpokenText(text, SUBMISSION_START_RESPONSE)) return false;
   if (!/[A-Za-z0-9]/.test(text)) return true;
   if (STANDALONE_ACKNOWLEDGMENT.test(text)) return true;
+  if (hasConditionalTransition(text)) {
+    const remainder = transitionRemainder(text);
+    if (!PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(remainder))) return false;
+  }
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (asksForZipCode(text)) return true;
 
