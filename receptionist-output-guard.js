@@ -10,15 +10,21 @@ const NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 const MAX_REPAIR_ATTEMPTS = 3;
 
-const PROCESS_NARRATION_PATTERNS = Object.freeze([
-  /\blet me think\b/i,
-  /\bbest way to help\b/i,
+const CONDITIONAL_TRANSITION_PATTERNS = Object.freeze([
+  /\b(?:one sec(?:ond)?|just a sec(?:ond)?)\b/i,
   /\blet(?:'s| us) move on\b/i,
   /\bmove on to\b/i,
   /\bkeep (?:this|it) moving\b/i,
+  /\blet me (?:get|grab) (?:the )?(?:details|information)(?: real quick| quickly)?\b/i,
+  /\bi(?:'|’)ll (?:get|grab) (?:the )?(?:details|information)(?: real quick| quickly)?\b/i,
+]);
+
+const PROCESS_NARRATION_PATTERNS = Object.freeze([
+  /\blet me think\b/i,
+  /\bbest way to help\b/i,
   /\bnext (?:step|detail)\b/i,
-  /\blet me (?:pull|update|refresh|clarify|check|double[- ]check|make sure|grab|prepare|put together)\b/i,
-  /\bi(?:'|’)ll (?:grab|update|refresh|check|double[- ]check|pull|prepare|put together)\b/i,
+  /\blet me (?:pull|update|refresh|clarify|check|double[- ]check|make sure|prepare|put together)\b/i,
+  /\bi(?:'|’)ll (?:update|refresh|check|double[- ]check|pull|prepare|put together)\b/i,
   /\bquick recap\b/i,
   /\bget (?:the )?estimate summary ready\b/i,
   /\bi(?:'|’)m (?:still )?(?:getting|a bit )?confused\b/i,
@@ -52,12 +58,34 @@ function trimSpeechPunctuation(value) {
   return cleanText(value).replace(/[.?!]+$/g, '').trim();
 }
 
+function hasConditionalTransition(value) {
+  return CONDITIONAL_TRANSITION_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function transitionRemainder(value) {
+  let remainder = cleanText(value);
+  for (const pattern of CONDITIONAL_TRANSITION_PATTERNS) {
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    remainder = remainder.replace(new RegExp(pattern.source, flags), ' ');
+  }
+  return cleanText(remainder.replace(/^[\s,.;:!—-]+|[\s,.;:!—-]+$/g, ' '));
+}
+
+function hasUsefulContinuationAfterTransition(value) {
+  const remainder = transitionRemainder(value);
+  if (!remainder) return false;
+  return Boolean(classifyPendingField(remainder))
+    || /\?\s*$/.test(remainder)
+    || sameSpokenText(remainder, SUBMISSION_START_RESPONSE);
+}
+
 export function shouldBlockReceptionistOutput(value) {
   const text = cleanText(value);
   if (!text) return false;
   if (sameSpokenText(text, SUBMISSION_START_RESPONSE)) return false;
   if (!/[A-Za-z0-9]/.test(text)) return true;
   if (STANDALONE_ACKNOWLEDGMENT.test(text)) return true;
+  if (hasConditionalTransition(text) && !hasUsefulContinuationAfterTransition(text)) return true;
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
 
   if (
@@ -264,7 +292,7 @@ function hardenSessionUpdate(event) {
 
     event.session.instructions = event.session.instructions
       .replace(oldAcknowledgmentRule, hardAcknowledgmentRule)
-      + `\nHARD OUTPUT RULE: Process narration is prohibited. Never use process narration such as "let me think", "best way to help", "let's move on", "keep this moving", "next step", "let me update", "let me clarify", "quick recap", or anything similar. Ask the useful question or give the useful answer instead.`
+      + `\nHARD OUTPUT RULE: Never end a turn with process-only narration. Brief transitions such as "let's keep moving" or "let me get the details" are allowed only when the same spoken response immediately continues with the actual next question or spoken action. Never stop after the transition. Still never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
       + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
       + `\nFINAL SUMMARY RULE: Begin with "Okay, here's the summary." State the name, service, address, preferred date and time, and notes exactly once. If there are no notes, say "There are no additional notes." Never say "Note: None" and never repeat the summary.`
       + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}"`;
