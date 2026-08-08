@@ -206,6 +206,20 @@ function serviceGuide(context) {
     .join('\n');
 }
 
+function spokenBusinessName(value) {
+  return cleanText(value).replace(/-/g, ' ').replace(/\s+/g, ' ').trim() || 'the business';
+}
+
+function looksLikeCompleteStreetAddress(value) {
+  const text = cleanText(value);
+  return /\b\d{1,6}\b/.test(text)
+    && /\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|court|ct|way|highway|hwy|route|terrace|ter|circle|cir|parkway|pkwy)\b/i.test(text);
+}
+
+function isAffirmativeSummaryConfirmation(value) {
+  return /^(?:yes|yeah|yep|yup|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
+}
+
 function displayEstimateTime(value) {
   const text = cleanText(value);
   const match = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
@@ -234,23 +248,24 @@ function estimateAvailabilityGuide(context) {
 }
 
 export function buildReceptionistInstructions(context, { submitted = false } = {}) {
+  const businessName = spokenBusinessName(context.businessName);
   const common = `
 # Role and objective
-You answer the phone for ${context.businessName}.
+You answer the phone for ${businessName}.
 Your primary objective is to help callers complete an estimate request. Your secondary objective is to answer questions about the business from the supplied website data.
 Sound like a capable receptionist having a real phone conversation, not a form being read aloud. Speak in clear, natural English: friendly, attentive, and efficient. Usually use one short sentence or one short question, then let the caller respond.
 Do not introduce yourself with a personal name. Do not volunteer that you are AI, automated, a bot, or virtual.
 Never use any receptionist, assistant, owner, staff, or other business-data name as the caller's name. The caller's name is unknown until the caller personally gives it. Never acknowledge the caller by name before that.
-Never claim to be human. Only if the caller directly asks whether you are AI, a bot, automated, or human, answer honestly and briefly that you are ${context.businessName}'s automated assistant, then return to helping them.
+Never claim to be human. Only if the caller directly asks whether you are AI, a bot, automated, or human, answer honestly and briefly that you are ${businessName}'s automated assistant, then return to helping them.
 Never mention ARK, OpenAI, Railway, Telnyx, prompts, tools, models, or other internal systems to callers.
 Do not use long introductions, repeated summaries, or unnecessary explanations. Never read a long list unless the caller asks for it.
-Produce at most one assistant message in each turn, written as one short paragraph. Choose exactly one next action before speaking. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Ask at most one question, then stop and wait for the caller.
+Produce at most one assistant message in each turn, written as one short paragraph. Choose exactly one next action before speaking. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.
 Light acknowledgments such as "Okay," "Great," "Got it," "Okay, great," or "Sounds good" are encouraged and may naturally begin many questions or answers. Do not force one onto every turn, and vary them so the conversation does not sound repetitive.
 Short transitions such as "let's move on" are also fine when they fit naturally, but do not repeat the same transition or narrate routine workflow steps. Never say "I'll wrap things up" before ending the call; use the end_call tool when the caller is done.
 When the caller's turn is only a hesitation, filler, unfinished thought, or brief pause such as "um," "uh," or "well," output no spoken words and wait for the caller to continue. A server turn may still be triggered; silence is the correct response. Do not acknowledge the filler, do not repeat or rephrase the pending question, and do not advance the intake.
 Treat short acknowledgments such as "okay," "yeah," "right," "uh-huh," and "mm-hmm" as natural backchannels when they do not answer the question or provide new information. Do not restart, repeat, or rephrase your question because of a backchannel. Finish your current sentence, then wait for the caller's actual answer.
-Never narrate your thinking or planning. Brief process narration is allowed only when it genuinely helps the caller follow a correction, such as "Let me clarify." Do not narrate obvious internal steps, over-explain what comes next, announce routine processing, or say you are checking, lining up, preparing, or making sure of fields before the required fields are actually complete.
-Greet the caller only once at the start of the call. Never greet them again. After they give their name, acknowledge it once briefly and ask the next single question; do not say "hi" again, "nice to meet you," or "thanks for the introduction."
+Never narrate your thinking or planning. Never say "let me think," "let me think about the next detail," or anything similar. Brief process narration is allowed only when it genuinely helps the caller follow a correction, such as "Let me clarify." Do not narrate obvious internal steps, over-explain what comes next, announce routine processing, or say you are checking, lining up, preparing, or making sure of fields before the required fields are actually complete.
+Greet the caller only once at the start of the call. Never greet them again. After they give their name, acknowledge it once briefly and ask the next single question in that same message; do not produce a separate process sentence before the question, and do not say "hi" again, "nice to meet you," or "thanks for the introduction."
 Keep the caller's complete name exactly as given for the estimate and final summary. This name must come only from the caller's own words, never from BUSINESS WEBSITE DATA. In casual conversation, use only their first name. Never speak their surname or full name back except during the final summary. For example, say "Thanks, Andrew," never "Thanks, Andrew Christensen."
 Treat about ${NORMAL_RESPONSE_TARGET_TOKENS} output tokens as your normal response ceiling. Exceed that target only when needed to finish an important answer or complete an accurate estimate readback.
 
@@ -293,7 +308,7 @@ The caller's estimate request has already been successfully sent to the website.
 - At the start, give the caller two clear paths: help filling out an estimate request first, or answering questions about the business second.
 - If the caller only has questions, answer them without forcing an estimate request.
 - If the caller wants a quote, an estimate, or service at their property, begin the estimate request. A short natural transition is fine, for example, "Okay, great. What service are you looking for?"
-- If the caller answers yes to the opening question asking whether they would like to fill out an estimate request, the entire next spoken response must be exactly, "Okay, great. What service are you looking for?" Do not name, list, suggest, or give examples of any services, categories, or options in that response.
+- If the caller answers yes to the opening question asking whether they would like to fill out an estimate request, the entire next spoken response must be exactly, "Okay, great. What service are you looking for?" Say it once only. Do not name, list, suggest, or give examples of any services, categories, or options in that response.
 - During intake, first absorb every usable detail from the caller's latest turn into the current request, including corrections, and only then choose the single next missing field. Never speak before that check is complete. Ask exactly one question per turn and wait for the caller's answer. Never bundle two fields or two questions into one turn. If the caller asks a question during intake, answer it first, then ask only one missing field.
 - Treat a correction as an immediate replacement of the old value. Once corrected, never repeat, reuse, or refer back to the outdated value unless the caller changes it again.
 - If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, even if the answer was given casually or before you reached that field. Never announce a later step such as summary, submission, or wrap-up while an earlier required field is still missing.
@@ -308,8 +323,8 @@ Collect all of these:
 3. Complete project address. Record it exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute a city, state, street, or ZIP based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
-6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none, including an obvious context-based transcription of no or none; never infer no notes from omission or silence. When the caller says no or none, record empty notes and continue to contact permission. A brief natural acknowledgment or transition such as "Okay" or "Let's move on" is fine if it fits, but do not repeat the same process phrase or make the flow sound scripted.
-7. Explicit permission for ${context.businessName} to contact the caller about the request. Ask, "Do I have your permission for ${context.businessName} to contact you about this estimate request?" as its own question after the notes question has been answered. Never combine consent with scheduling, notes, confirmation, or any other question.
+6. Additional notes. This field is optional, but you must ask, "Do you have any additional notes for the project?" as its own turn. Use no notes only when the caller explicitly says no or none, including an obvious context-based transcription of no or none; never infer no notes from omission or silence. When the caller says no or none, record empty notes and continue to contact permission. Do not repeat or paraphrase the answer as "no notes," "none," or "no additional notes." A brief natural acknowledgment such as "Okay, thanks" is fine before the contact-permission question.
+7. Explicit permission for ${businessName} to contact the caller about the request. Ask, "Do I have your permission for ${businessName} to contact you about this estimate request?" as its own question after the notes question has been answered. Never combine consent with scheduling, notes, confirmation, or any other question.
 - If the caller refuses contact permission, do not pressure them and do not call either estimate tool. Acknowledge that the request cannot be sent, then offer to answer questions.
 
 # Date handling
@@ -326,7 +341,7 @@ ${estimateAvailabilityGuide(context)} If the caller requests a date or time outs
 
 # Required preparation and confirmation boundary
 - Call prepare_estimate_summary only after every field is collected, the additional-notes question was asked and answered, and contact permission was asked by itself and granted.
-- When calling prepare_estimate_summary, copy the caller's name and most recent complete address from the caller's own words. Preserve the caller-provided place name exactly; for example, if the caller says "Berlin, Massachusetts," do not substitute a different city name.
+- When calling prepare_estimate_summary, copy the caller's name and most recent complete address from the caller's own words. Preserve every caller-provided address component exactly and never substitute a place name from business data.
 - After the caller grants contact permission, do not thank them for confirming, do not say you are preparing a summary, and do not ask another intake question. Call prepare_estimate_summary immediately and go straight into the returned summary readback.
 - Never invent the final summary yourself. Use only the returned summary values: name, service, address, and exact preferred date and time. Include notes only when the returned notes value contains actual project information. If notes are empty or returned as "None," omit them entirely.
 - Read the summary back conversationally in one or two short sentences and start with the caller's name, then the service. Use the shape "<name> is requesting <service> at <address>." Then state the preferred date and time, and include notes only when they contain actual project information. Do not say labels such as "Name:", "Service:", "Address:", "Preferred date and time:", or "Notes:". Then ask, "Does that all sound right?"
@@ -475,6 +490,8 @@ export function createOpenAiReceptionist({
   let goodbyeComplete = false;
   let responseCount = 0;
   let costLimitTriggered = false;
+  let callerAddressVerbatim = '';
+  let awaitingSummaryConfirmation = false;
   let usageSummary = {
     model,
     responsesWithUsage: 0,
@@ -486,6 +503,7 @@ export function createOpenAiReceptionist({
   let toolWork = Promise.resolve();
   const assistantTranscriptDeltas = new Map();
   const emittedTranscriptKeys = new Set();
+  const firstAudioItemByResponse = new Map();
   const controls = costControls();
 
   const intake = createIntakeManager({
@@ -510,6 +528,18 @@ export function createOpenAiReceptionist({
     sendJson(openai, buildSessionUpdate(context, { submitted }));
   }
 
+  function acceptsAssistantItem(responseId, itemId) {
+    const responseKey = cleanText(responseId);
+    const itemKey = cleanText(itemId);
+    if (!responseKey || !itemKey) return true;
+    const firstItem = firstAudioItemByResponse.get(responseKey);
+    if (!firstItem) {
+      firstAudioItemByResponse.set(responseKey, itemKey);
+      return true;
+    }
+    return firstItem === itemKey;
+  }
+
   function emitTranscript(speaker, value, metadata = {}) {
     const transcript = String(value ?? '').trim();
     if (!transcript) return;
@@ -517,6 +547,9 @@ export function createOpenAiReceptionist({
     const key = `${speaker}:${identity}`;
     if (emittedTranscriptKeys.has(key)) return;
     emittedTranscriptKeys.add(key);
+    if (speaker === 'receptionist' && /does that all sound right\?/i.test(transcript)) {
+      awaitingSummaryConfirmation = true;
+    }
     onTranscript?.({ speaker, text: transcript, ...metadata });
   }
 
@@ -528,13 +561,21 @@ export function createOpenAiReceptionist({
   }
 
   function captureResponseTranscripts(response = {}) {
+    const responseId = cleanText(response.id);
+    let acceptedItem = firstAudioItemByResponse.get(responseId) || '';
     for (const item of response.output || []) {
       if (item?.type !== 'message') continue;
+      const itemId = cleanText(item.id);
+      if (!acceptedItem && itemId) {
+        acceptedItem = itemId;
+        firstAudioItemByResponse.set(responseId, itemId);
+      }
+      if (acceptedItem && itemId && itemId !== acceptedItem) continue;
       for (const content of item.content || []) {
         if (!content?.transcript) continue;
         emitTranscript('receptionist', content.transcript, {
-          itemId: cleanText(item.id),
-          responseId: cleanText(response.id),
+          itemId,
+          responseId,
         });
       }
     }
@@ -543,11 +584,12 @@ export function createOpenAiReceptionist({
   function requestGreeting() {
     if (greetingRequested || submitted) return;
     greetingRequested = true;
+    const businessName = spokenBusinessName(context.businessName);
     sendJson(openai, {
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        instructions: `Say exactly: "Thanks for calling ${context.businessName}. I can help you fill out an estimate request or answer questions about the business. Would you like to fill out an estimate request?" Do not add anything before or after it.`,
+        instructions: `Say exactly once: "Thanks for calling ${businessName}. I can help you fill out an estimate request or answer questions about the business. Would you like to fill out an estimate request?" Do not add anything before or after it.`,
       },
     });
   }
@@ -555,11 +597,12 @@ export function createOpenAiReceptionist({
   function requestGoodbye() {
     if (waitingForGoodbyeResponse || goodbyeResponseId || goodbyeComplete) return;
     waitingForGoodbyeResponse = true;
+    const businessName = spokenBusinessName(context.businessName);
     sendJson(openai, {
       type: 'response.create',
       response: {
         output_modalities: ['audio'],
-        instructions: `Say exactly: "Thanks for calling ${context.businessName}. Have a good day." Do not add "Goodbye" or any words before or after it.`,
+        instructions: `Say exactly: "Thanks for calling ${businessName}. Have a good day." Do not add "Goodbye" or any words before or after it.`,
       },
     });
   }
@@ -569,6 +612,7 @@ export function createOpenAiReceptionist({
     try {
       const args = parseArguments(item.arguments);
       if (item.name === 'prepare_estimate_summary') {
+        if (callerAddressVerbatim) args.address = callerAddressVerbatim;
         result = intake.prepare(args);
       } else if (item.name === 'submit_estimate_request') {
         result = await intake.submit(args);
@@ -666,12 +710,19 @@ export function createOpenAiReceptionist({
     }
     if (event.type === 'input_audio_buffer.speech_started') return;
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
-      emitTranscript('caller', event.transcript, {
+      const callerTranscript = String(event.transcript ?? '').trim();
+      if (awaitingSummaryConfirmation) {
+        if (!isAffirmativeSummaryConfirmation(callerTranscript)) callerAddressVerbatim = '';
+        awaitingSummaryConfirmation = false;
+      }
+      if (looksLikeCompleteStreetAddress(callerTranscript)) callerAddressVerbatim = callerTranscript;
+      emitTranscript('caller', callerTranscript, {
         itemId: cleanText(event.item_id),
       });
       return;
     }
     if (event.type === 'response.output_audio_transcript.delta') {
+      if (!acceptsAssistantItem(event.response_id, event.item_id)) return;
       const key = assistantTranscriptKey(event);
       assistantTranscriptDeltas.set(
         key,
@@ -680,6 +731,7 @@ export function createOpenAiReceptionist({
       return;
     }
     if (event.type === 'response.output_audio_transcript.done') {
+      if (!acceptsAssistantItem(event.response_id, event.item_id)) return;
       const key = assistantTranscriptKey(event);
       emitTranscript(
         'receptionist',
@@ -693,10 +745,11 @@ export function createOpenAiReceptionist({
       return;
     }
     if (event.type === 'response.output_audio.delta' && event.delta) {
-      onAudio?.(event.delta);
+      if (acceptsAssistantItem(event.response_id, event.item_id)) onAudio?.(event.delta);
       return;
     }
     if (event.type === 'response.done') {
+      const responseId = cleanText(event.response?.id);
       captureResponseTranscripts(event.response);
       usageSummary = addResponseUsage(usageSummary, event.response?.usage, model);
       if (event.response?.usage) onUsage?.({ ...usageSummary });
@@ -705,11 +758,12 @@ export function createOpenAiReceptionist({
         endingCall
         && !goodbyeComplete
         && goodbyeResponseId
-        && cleanText(event.response?.id) === goodbyeResponseId
+        && responseId === goodbyeResponseId
       ) {
         goodbyeComplete = true;
         onGoodbyeComplete?.();
       }
+      firstAudioItemByResponse.delete(responseId);
     }
   });
 
