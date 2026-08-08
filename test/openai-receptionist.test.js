@@ -94,12 +94,12 @@ test('prompt keeps estimate intake natural with human acknowledgments and silent
   assert.match(prompt, /do not announce that it is inside the window/i);
   assert.match(prompt, /Do not mention or restate contact consent/i);
   assert.match(prompt, /Do you have any additional notes for the project/);
-  assert.match(prompt, /brief natural acknowledgment or transition.*Let's move on.*fine if it fits/i);
+  assert.match(prompt, /Do not repeat or paraphrase the answer as "no notes"/i);
   assert.match(prompt, /as its own question after the notes/i);
   assert.match(prompt, /Never narrate your thinking or planning/i);
   assert.match(prompt, /Greet the caller only once/i);
   assert.match(prompt, /use only their first name/i);
-  assert.match(prompt, /never "Thanks, Andrew Christensen/i);
+  assert.match(prompt, /Never speak their surname or full name back except during the final summary/i);
   assert.match(prompt, /Never proactively advertise, list, or give examples/i);
   assert.match(prompt, /Do not say labels such as "Name:"/i);
   assert.match(prompt, /Does that all sound right/);
@@ -289,14 +289,15 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
     );
     assert.equal(JSON.parse(endOutput.item.output).status, 'ending_call');
     const goodbyeRequest = socket.sent.filter((event) => event.type === 'response.create').at(-1);
-    assert.match(goodbyeRequest.response.instructions, /Have a good day\. Goodbye/);
+    assert.match(goodbyeRequest.response.instructions, /Have a good day\./);
+    assert.doesNotMatch(goodbyeRequest.response.instructions, /Have a good day\. Goodbye/);
 
     socket.receive({ type: 'response.created', response: { id: 'goodbye-response' } });
     socket.receive({
       type: 'response.output_audio_transcript.done',
       response_id: 'goodbye-response',
       item_id: 'goodbye-item',
-      transcript: 'Thanks for calling Tabor Painting. Have a good day. Goodbye.',
+      transcript: 'Thanks for calling Tabor Painting. Have a good day.',
     });
     socket.receive({
       type: 'response.done',
@@ -309,7 +310,7 @@ test('runs prepare, submits once, logs transcripts, says goodbye, and requests h
       { speaker: 'caller', text: 'No, that is all. Thank you.' },
       {
         speaker: 'receptionist',
-        text: 'Thanks for calling Tabor Painting. Have a good day. Goodbye.',
+        text: 'Thanks for calling Tabor Painting. Have a good day.',
       },
     ]);
     receptionist.close();
