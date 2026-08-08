@@ -11,12 +11,11 @@ const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 const MAX_REPAIR_ATTEMPTS = 3;
 
 const CONDITIONAL_TRANSITION_PATTERNS = Object.freeze([
-  /\b(?:one sec(?:ond)?|just a sec(?:ond)?)\b/i,
-  /\blet(?:'s| us) move on\b/i,
+  /\b(?:one sec(?:ond)?|just a sec(?:ond)?|one moment|just a moment)\b/i,
+  /\b(?:hold on|give me (?:a )?(?:sec(?:ond)?|moment))\b/i,
+  /\blet(?:'s| us) (?:move on|keep (?:this|it) moving|keep going|continue)\b/i,
   /\bmove on to\b/i,
-  /\bkeep (?:this|it) moving\b/i,
-  /\blet me (?:get|grab) (?:the )?(?:details|information)(?: real quick| quickly)?\b/i,
-  /\bi(?:'|’)ll (?:get|grab) (?:the )?(?:details|information)(?: real quick| quickly)?\b/i,
+  /\b(?:let me|i(?:'|’)ll|we(?:'|’)ll) (?:get|grab|gather|collect|pull|bring|look|check|review|find|fetch)\b/i,
 ]);
 
 const PROCESS_NARRATION_PATTERNS = Object.freeze([
@@ -292,7 +291,7 @@ function hardenSessionUpdate(event) {
 
     event.session.instructions = event.session.instructions
       .replace(oldAcknowledgmentRule, hardAcknowledgmentRule)
-      + `\nHARD OUTPUT RULE: Never end a turn with process-only narration. Brief transitions such as "let's keep moving" or "let me get the details" are allowed only when the same spoken response immediately continues with the actual next question or spoken action. Never stop after the transition. Still never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
+      + `\nHARD OUTPUT RULE: Never end a turn with process-only narration. Any brief transition such as "one sec", "let's keep moving", "let me get the details", or a natural variation is allowed only when the same spoken response immediately continues with the actual next question or spoken action. Never stop after the transition. Still never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
       + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
       + `\nFINAL SUMMARY RULE: Begin with "Okay, here's the summary." State the name, service, address, preferred date and time, and notes exactly once. If there are no notes, say "There are no additional notes." Never say "Note: None" and never repeat the summary.`
       + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}"`;
