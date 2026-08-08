@@ -17,6 +17,7 @@ const NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any
 const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't really know that. I'll add it to the notes.";
 const PRICE_QUESTION_RESPONSE = 'The price depends on the estimate.';
 const RESPONSE_TIME_QUESTION_RESPONSE = "I don't know exactly when, but the longest it will take is a week to accept or decline your estimate request.";
+const ADDRESS_CONNECTOR_TOKENS = new Set(['at', 'in']);
 const SUPPORTED_VOICES = new Set([
   'alloy',
   'ash',
@@ -118,7 +119,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
         },
         address: {
           type: 'string',
-          description: "Copy the caller's most recent complete project address exactly from the caller's own words. Do not normalize, reinterpret, autocorrect, or substitute any street, city, state, or ZIP value.",
+          description: "Build the project address only from address values the caller actually supplied. A correction replaces only the component the caller corrected; keep other caller-supplied components unchanged. Never invent, autocorrect, or substitute a street number, street, city, state, or ZIP. If the caller says Burlington, the city must be Burlington unless the caller later changes it.",
         },
         preferred_date: {
           type: 'string',
@@ -134,7 +135,7 @@ export const ESTIMATE_TOOLS = Object.freeze([
         },
         additional_notes_asked: {
           type: 'boolean',
-          description: 'True only after the caller was explicitly asked for project notes or business questions and that notes-and-questions step was completed.',
+          description: 'True only after the caller was explicitly asked for project notes or business questions and that notes-and-questions step was completed from a clear caller answer, not from silence, filler, a transcription artifact, or an unintelligible sound.',
         },
         consent_to_contact: {
           type: 'boolean',
@@ -229,14 +230,43 @@ function isContactConsentQuestion(value, context) {
     || spoken === normalizedSpokenText(contactConsentQuestion(context, false));
 }
 
-function looksLikeCompleteStreetAddress(value) {
-  const text = cleanText(value);
-  return /\b\d{1,6}\b/.test(text)
-    && /\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd|court|ct|way|highway|hwy|route|terrace|ter|circle|cir|parkway|pkwy)\b/i.test(text);
-}
-
 function isAffirmativeSummaryConfirmation(value) {
   return /^(?:yes|yeah|yep|yup|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
+}
+
+function collapseSpelledLetterRuns(value) {
+  return String(value ?? '').replace(
+    /\b(?:[A-Za-z](?:\s*[-.]\s*)){2,}[A-Za-z]\b/g,
+    (match) => match.replace(/[^A-Za-z]/g, ''),
+  );
+}
+
+function addressEvidenceTokens(value) {
+  return collapseSpelledLetterRuns(value).toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+export function isAddressGroundedInCallerEvidence(address, callerTranscripts = []) {
+  const candidateTokens = addressEvidenceTokens(address)
+    .filter((token) => !ADDRESS_CONNECTOR_TOKENS.has(token));
+  if (!candidateTokens.length) return false;
+  const evidenceTokens = new Set(addressEvidenceTokens(callerTranscripts.join(' ')));
+  return candidateTokens.every((token) => evidenceTokens.has(token));
+}
+
+export function shouldIgnoreCallerTranscript(value) {
+  const text = cleanText(value);
+  if (!text) return true;
+  if (!/[A-Za-z0-9]/.test(text)) return true;
+  const normalized = text
+    .toLowerCase()
+    .replace(/[.…]+$/g, '')
+    .replace(/[^a-z0-9']+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  if (/^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|mmm+|ah+|eh+|well|like|ay)$/.test(normalized)) {
+    return true;
+  }
+  return /\b(?:um+|uh+|erm+|er+)\s*$/.test(normalized);
 }
 
 function displayEstimateTime(value) {
@@ -280,11 +310,12 @@ Never mention ARK, OpenAI, Railway, Telnyx, prompts, tools, models, or other int
 Never give out, confirm, read back, or reveal the business's private phone number or email address. If asked for either one, say you can help submit an estimate request so the business can follow up, then continue the intake.
 Do not use long introductions, repeated summaries, or unnecessary explanations. Never read a long list unless the caller asks for it.
 Produce at most one assistant message in each turn, written as one short paragraph. Choose exactly one next action before speaking. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.
-Light acknowledgments such as "Okay," "Great," "Got it," "Okay, great," or "Sounds good" are encouraged and may naturally begin many questions or answers. Do not force one onto every turn, and vary them so the conversation does not sound repetitive.
+Do not fill silence with reassurance or patience language. Never say "no problem," "take your time," "whenever you're ready," "you're fine," "all good," or similar reassurance while the caller is thinking. Never output a spoken placeholder such as "...". When the caller hesitates, stay silent.
+Short acknowledgments may be used only when they directly lead into the one next useful question or required response. Do not produce a standalone acknowledgement while waiting for information, and do not announce that a supplied date, time, service, or address "works" merely to reassure the caller.
 Do not treat phrases such as "let's move on" as fine when they merely describe progression through the workflow. Move directly to the next useful question or answer instead. Never say "I'll wrap things up" before ending the call.
-When the caller's turn is only a hesitation, filler, unfinished thought, or brief pause such as "um," "uh," or "well," output no spoken words and wait for the caller to continue. A server turn may still be triggered; silence is the correct response. Do not acknowledge the filler, do not repeat or rephrase the pending question, and do not advance the intake.
+When the caller's turn is only a hesitation, filler, unfinished thought, brief pause, throat sound, or transcription artifact such as "um," "uh," "well," or an isolated symbol, output no spoken words and wait for the caller to continue. Silence is the correct response. Do not acknowledge the filler, do not repeat or rephrase the pending question, and do not advance the intake.
 Treat short acknowledgments such as "okay," "yeah," "right," "uh-huh," and "mm-hmm" as natural backchannels when they do not answer the question or provide new information. Do not restart, repeat, or rephrase your question because of a backchannel. Finish your current sentence, then wait for the caller's actual answer.
-Never narrate your thinking or planning, workflow, or internal process. Except for the required exact submission sentence "I'm submitting your estimate request now.", no process narration is allowed at all. Never say "let me think," "let me think about the next detail," "next step," "let me pull that together," "let me update that," "let me clarify," or anything that describes what you are about to do internally. Just give the acknowledgment, answer, correction, or next question itself.
+Never narrate your thinking or planning, workflow, or internal process. Except for the required exact submission sentence "I'm submitting your estimate request now.", no process narration is allowed at all. Never say "let me think," "let me think about the next detail," "next step," "I'll grab your preferred date and time next," "let me pull that together," "let me update that," "I'll refresh the request," "let me clarify," or anything that describes what you are about to do internally. Just give the answer, correction question, or next intake question itself.
 Greet the caller only once at the start of the call. Never greet them again. After they give their name, acknowledge it once briefly and ask the next single question in that same message; do not produce a separate process sentence before the question, and do not say "hi" again, "nice to meet you," or "thanks for the introduction."
 Keep the caller's complete name exactly as given for the estimate and final summary. This name must come only from the caller's own words, never from BUSINESS WEBSITE DATA. In casual conversation, use only their first name. Never speak their surname or full name back except during the final summary.
 Treat about ${NORMAL_RESPONSE_TARGET_TOKENS} output tokens as your normal response ceiling. Exceed that target only when needed to finish an important answer or complete an accurate estimate readback.
@@ -327,20 +358,20 @@ The caller's estimate request has already been successfully sent to the website.
 - The server greeting immediately asks what service the caller is looking for. Do not ask whether they want an estimate request and do not offer a separate question-only path.
 - If the caller responds to the service question by saying they only have a business question, answer it using the business-question rules, then ask only, "What service were you looking for?" The goal is still to capture an estimate request.
 - During intake, first absorb every usable detail from the caller's latest turn into the current request, including corrections and any unanswered question that belongs in notes, and only then choose the single next missing field. Never speak before that check is complete. Ask exactly one question per turn and wait for the caller's answer. Never bundle two intake fields into one turn. If the caller asks a question during intake, answer it first, then ask only the one intake field that was still pending.
-- Treat a correction as an immediate replacement of the old value. Once corrected, never repeat, reuse, or refer back to the outdated value unless the caller changes it again.
+- Treat a correction as an immediate replacement of only the value the caller corrected. Keep every other caller-supplied field and address component unchanged. Once corrected, never repeat, reuse, or refer back to the outdated value unless the caller changes it again.
 - If the caller volunteers multiple fields at once, record all of them and ask only the next missing question. Do not re-ask a field they already answered, even if the answer was given casually or before you reached that field. Never announce a later step such as summary, submission, or wrap-up while an earlier required field is still missing.
-- Begin service collection with exactly, "What service were you looking for?" Do not list choices, examples, categories, or service names in the question. If the caller's answer clearly matches a supplied service, record that service silently and move to the next missing field. For example, "I need the shed painted out back" should map silently to Exterior Painting when that service is supplied. Do not say "that sounds like," announce the matched service, or explain the inference. If their answer is clearly relevant but needs one detail to distinguish the matching service, ask only the smallest clarifying question using the caller's own wording. For example, if they say the house needs a repaint, ask whether the repaint is inside or outside. Only if their stated need does not match any supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
-- Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part. Use the caller's whole turn together: words such as "in the morning," "in the afternoon," and "in the evening" resolve AM or PM. For example, "2 in the afternoon" means 2:00 PM, and if the same turn later says "Thursday at 2," keep the already-stated PM context and record Thursday at 2:00 PM. Never ask AM or PM when the caller has already supplied a clear daypart. If the caller gives a day and a bare hour without any daypart, use the allowed estimate hours to infer AM or PM when only one interpretation can be valid. For example, with a 9:00 AM through 4:00 PM window, "Monday at 3" means 3:00 PM. If both AM and PM would be valid, ask only whether they mean AM or PM; never re-ask the whole date-and-time question. Once both are clear, do not repeat the full date and time back or ask the scheduling question again; move directly to the next missing question.
-- Use conversational context when the transcription is obviously imperfect. For example, if the notes-and-questions step receives "nun" in a context where the caller clearly means "none," treat it as no notes or questions instead of asking the same question again. Do not guess when the meaning is genuinely ambiguous.
+- Begin service collection with exactly, "What service were you looking for?" Do not list choices, examples, categories, or service names in the question. If the caller's answer clearly matches a supplied service, record that service silently and move to the next missing field. After a clear answer such as "the whole exterior of my house needs to be painted," do not echo "exterior," do not say "wood or exterior," and do not explain the category; silently map it and ask the next missing intake question. For example, "I need the shed painted out back" should map silently to Exterior Painting when that service is supplied. Do not say "that sounds like," announce the matched service, or explain the inference. If their answer is clearly relevant but needs one detail to distinguish the matching service, ask only the smallest clarifying question using the caller's own wording. For example, if they say only that the house needs a repaint and do not say inside or outside, ask whether the repaint is inside or outside. Only if their stated need does not match any supplied service, briefly explain that it is not listed, name the available services once, and ask which one they need.
+- Treat the preferred date and time as one scheduling question: ask simply, "What date and time would work best for the estimate?" Do not list examples, explain formats, or make the request sound complicated. If the caller gives only a date or only a time, ask only for the missing part. Use the caller's whole turn together: words such as "in the morning," "in the afternoon," and "in the evening" resolve AM or PM. For example, "2 in the afternoon" means 2:00 PM, and if the same turn later says "Thursday at 2," keep the already-stated PM context and record Thursday at 2:00 PM. Never ask AM or PM when the caller has already supplied a clear daypart. If the caller gives a day and a bare hour without any daypart, use the allowed estimate hours to infer AM or PM when only one interpretation can be valid. For example, with a 9:00 AM through 4:00 PM window, "Monday at 3" means 3:00 PM. If both AM and PM would be valid, ask only whether they mean AM or PM; never re-ask the whole date-and-time question. Once both are clear, do not repeat the full date and time back, say that it "works," or ask the scheduling question again; move directly to the next missing question.
+- Do not turn an unintelligible transcription into an answer. An isolated symbol, unrelated script character, throat sound, or filler is not "no," "none," "yes," or any other field value. Only make an obvious speech-to-text correction when the phonetic meaning is genuinely clear; otherwise wait for a real answer.
 
 # Estimate request fields
 Collect all of these:
 1. Service: match the caller's need to one website service when a service list is available. Infer obvious matches silently from the work and location instead of asking the caller to name the category.
 2. Name. Ask naturally, for example, "What name should I use for the estimate request?" The name must come only from the caller's own words; never fill it from business data or a receptionist/assistant name.
-3. Complete project address. Record it exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute a city, state, street, or ZIP based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
+3. Complete project address. Build it only from address components the caller actually supplied. Never invent, normalize, autocorrect, or substitute a city, state, street number, street, or ZIP based on geography, spelling expectations, or business data. If the caller corrects one component, replace only that component and preserve the other caller-supplied components. If the caller says the city is Burlington, use Burlington; never silently replace it with Lowell or another town. If the caller spells a place name and the joined spelling is unclear, ask a short confirmation of that spelling instead of guessing a different city. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
-6. Project notes and business questions. This field is optional, but you must ask exactly, "${NOTES_AND_QUESTIONS_PROMPT}" as its own turn. If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly when the structured data or safe fallbacks allow it; add each unanswered question to additional_notes. If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is complete, continue directly to contact permission. If they explicitly say no or none, record empty notes unless an unanswered question was already captured earlier in the call. Do not restate their notes or questions before consent.
+6. Project notes and business questions. This field is optional, but you must ask exactly, "${NOTES_AND_QUESTIONS_PROMPT}" as its own turn. Do not complete this step from silence, hesitation, filler, a throat sound, an isolated symbol, an unrelated-script transcription artifact, or an unclear utterance. To finish with no notes/questions, require a clear negative answer such as "no," "none," "nope," "nah," "nothing," "no notes," or "no questions." If the caller says only "yes" or another affirmative without giving the note or question, ask what they would like to add and remain in this step. If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly when the structured data or safe fallbacks allow it; add each unanswered question to additional_notes. If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is clearly complete, continue directly to contact permission. Do not restate their notes or questions before consent.
 7. Explicit permission for ${businessName} to contact the caller about the request. If additional_notes contains project notes or unanswered questions, the entire consent response must be exactly, "Okay, thanks for the notes. One more question. Do you consent to being contacted by ${businessName}?" If additional_notes is empty, the entire consent response must be exactly, "Okay, thanks. One more question. Do you consent to being contacted by ${businessName}?" The caller must clearly answer yes before preparation. Never combine consent with scheduling, confirmation, summary, or another question.
 - If the caller refuses contact permission, do not pressure them and do not call either estimate tool. Briefly say the estimate request cannot be sent without permission, then end the intake without inventing another path.
 
@@ -357,15 +388,15 @@ When the caller says a relative date such as "Tuesday," keep those original date
 ${estimateAvailabilityGuide(context)} If the caller requests a date or time outside that availability, give exactly one spoken correction: briefly state the applicable allowed days or hours and ask for one replacement date or time. Do not first acknowledge it, announce that you need to clarify it, or split the correction into multiple messages. Never continue with an unavailable request. After the caller supplies an available replacement, do not announce that it is inside the window, say that it "works," or repeat the replacement; move directly to the next missing question.
 
 # Required preparation and confirmation boundary
-- Call prepare_estimate_summary only after every field is collected, the notes-and-questions step was completed, and contact permission was actually asked in the required wording and clearly granted by the caller.
+- Call prepare_estimate_summary only after every field is collected, the notes-and-questions step was completed from a clear caller answer, and contact permission was actually asked in the required wording and clearly granted by the caller.
 - The consent booleans in a tool call are not proof that consent happened. The runtime checks the actual spoken consent question and the caller's following answer before allowing preparation on a real call.
-- When calling prepare_estimate_summary, copy the caller's name and most recent complete address from the caller's own words. Preserve every caller-provided address component exactly and never substitute a place name from business data.
+- When calling prepare_estimate_summary, build the address only from address values the caller actually said during this call. The runtime rejects any street number, street, city, state, or ZIP token that is not grounded in the caller's transcripts.
 - additional_notes must contain the caller's actual project notes plus any unanswered business question captured anywhere in the call. Do not include answered business questions unless the caller asked you to note them.
 - After the caller grants contact permission, do not thank them for confirming, do not say you are preparing a summary, and do not ask another intake question. Call prepare_estimate_summary immediately and go straight into the returned summary readback.
 - Never invent the final summary yourself. Use only the returned summary values: name, service, address, and exact preferred date and time. Include notes only when the returned notes value contains actual project information or unanswered caller questions. If notes are empty or returned as "None," omit them entirely.
 - Read the summary back conversationally in one or two short sentences and start with the caller's name, then the service. Use the shape "<name> is requesting <service> at <address>." Then state the preferred date and time, and include notes only when they contain actual project information or unanswered caller questions. Do not say labels such as "Name:", "Service:", "Address:", "Preferred date and time:", or "Notes:". Then ask, "Does that all sound right?"
 - Do not mention or restate contact consent in the final summary.
-- If the caller corrects anything, immediately replace the old value, call prepare_estimate_summary again with the complete corrected request, read the new summary without repeating the outdated value, and ask again.
+- If the caller corrects anything, immediately replace only the corrected value, call prepare_estimate_summary again with the complete corrected request, read the new summary without repeating the outdated value, and ask again. Never use an address value the caller did not say.
 - Only after a clear yes to the complete readback may you call submit_estimate_request with caller_confirmed true.
 - A yes to contact permission is not a yes to submit. These are separate confirmations.
 - In the same response as submit_estimate_request, say exactly, "${SUBMISSION_START_RESPONSE}" Then call the tool immediately. That sentence must be the entire spoken response: do not thank the caller, add a preamble, paraphrase it, say "successfully," or claim success before the tool returns. Do not replace it with "let me take care of that" or another transition.
@@ -399,11 +430,9 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
             language: cleanText(process.env.OPENAI_TRANSCRIPTION_LANGUAGE) || 'en',
           },
           turn_detection: {
-            type: 'server_vad',
-            threshold: 0.45,
-            prefix_padding_ms: 500,
-            silence_duration_ms: 1000,
-            create_response: true,
+            type: 'semantic_vad',
+            eagerness: 'low',
+            create_response: false,
             interrupt_response: true,
           },
         },
@@ -467,7 +496,7 @@ function safeToolResult(result) {
 
 function followupInstruction(toolName, result) {
   if (!result.ok) {
-    return `Explain this problem briefly and ask only for what is needed to correct it: ${result.error}`;
+    return `Ask only for what is needed to correct this. Do not explain internal validation or process: ${result.error}`;
   }
   if (toolName === 'prepare_estimate_summary') {
     return 'Use only the returned summary values: name, service, address, and exact preferred date and time. Begin with the caller name and then the service, using the shape "<name> is requesting <service> at <address>." Then state the preferred date and time. Include notes only when they contain actual project information or unanswered caller questions; if notes are empty or "None", omit them entirely. Give one concise, conversational readback in one or two short sentences. Do not use field labels such as "Name:", "Service:", "Address:", "Preferred date and time:", or "Notes:". Do not mention contact consent. Then ask exactly, "Does that all sound right?" Do not submit yet.';
@@ -511,8 +540,6 @@ export function createOpenAiReceptionist({
   let goodbyeComplete = false;
   let responseCount = 0;
   let costLimitTriggered = false;
-  let callerAddressVerbatim = '';
-  let awaitingSummaryConfirmation = false;
   let callerTranscriptCount = 0;
   let contactConsentAsked = false;
   let contactConsentGranted = false;
@@ -526,6 +553,7 @@ export function createOpenAiReceptionist({
     estimatedCostUpperBoundUsd: 0,
   };
   let toolWork = Promise.resolve();
+  const callerTranscriptHistory = [];
   const assistantTranscriptDeltas = new Map();
   const emittedTranscriptKeys = new Set();
   const firstAudioItemByResponse = new Map();
@@ -572,9 +600,6 @@ export function createOpenAiReceptionist({
     const key = `${speaker}:${identity}`;
     if (emittedTranscriptKeys.has(key)) return;
     emittedTranscriptKeys.add(key);
-    if (speaker === 'receptionist' && /does that all sound right\?/i.test(transcript)) {
-      awaitingSummaryConfirmation = true;
-    }
     if (speaker === 'receptionist' && isContactConsentQuestion(transcript, context)) {
       contactConsentAsked = true;
       contactConsentGranted = false;
@@ -624,6 +649,16 @@ export function createOpenAiReceptionist({
     });
   }
 
+  function requestCallerResponse() {
+    if (closed || endingCall || submitted) return;
+    sendJson(openai, {
+      type: 'response.create',
+      response: {
+        output_modalities: ['audio'],
+      },
+    });
+  }
+
   function requestGoodbye() {
     if (waitingForGoodbyeResponse || goodbyeResponseId || goodbyeComplete) return;
     waitingForGoodbyeResponse = true;
@@ -643,13 +678,18 @@ export function createOpenAiReceptionist({
     try {
       const args = parseArguments(item.arguments);
       if (item.name === 'prepare_estimate_summary') {
-        if (callerAddressVerbatim) args.address = callerAddressVerbatim;
         if (callerTranscriptCount > 0) {
           args.consent_asked_separately = contactConsentAsked;
           args.consent_to_contact = contactConsentGranted;
           if (!contactConsentAsked) {
             forcedConsentQuestion = contactConsentQuestion(context, Boolean(cleanText(args.additional_notes)));
           }
+        }
+        if (
+          callerTranscriptHistory.length
+          && !isAddressGroundedInCallerEvidence(args.address, callerTranscriptHistory)
+        ) {
+          throw new Error('The proposed address contains a street number, street, city, state, or ZIP value the caller did not say. Ask only for the address detail that is unclear. Never substitute another town or address value.');
         }
         result = intake.prepare(args);
       } else if (item.name === 'submit_estimate_request') {
@@ -765,18 +805,16 @@ export function createOpenAiReceptionist({
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const callerTranscript = String(event.transcript ?? '').trim();
       callerTranscriptCount += 1;
+      emitTranscript('caller', callerTranscript, {
+        itemId: cleanText(event.item_id),
+      });
+      if (shouldIgnoreCallerTranscript(callerTranscript)) return;
+      callerTranscriptHistory.push(callerTranscript);
       if (awaitingContactConsentAnswer) {
         contactConsentGranted = isAffirmativeSummaryConfirmation(callerTranscript);
         awaitingContactConsentAnswer = false;
       }
-      if (awaitingSummaryConfirmation) {
-        if (!isAffirmativeSummaryConfirmation(callerTranscript)) callerAddressVerbatim = '';
-        awaitingSummaryConfirmation = false;
-      }
-      if (looksLikeCompleteStreetAddress(callerTranscript)) callerAddressVerbatim = callerTranscript;
-      emitTranscript('caller', callerTranscript, {
-        itemId: cleanText(event.item_id),
-      });
+      requestCallerResponse();
       return;
     }
     if (event.type === 'response.output_audio_transcript.delta') {
