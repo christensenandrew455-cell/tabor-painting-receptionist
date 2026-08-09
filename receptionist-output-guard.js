@@ -316,21 +316,29 @@ function configuredEstimateMinutes(value) {
 
 function scheduleTimeFromCaller(value) {
   const text = cleanText(value);
+  const hour = String.raw`(?:\d{1,2}(?::[0-5]\d)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)`;
+  const meridiem = String.raw`(?:a\.?m\.?|p\.?m\.?)`;
   if (/\bnoon\b/i.test(text)) return '12 PM';
   if (/\bmidnight\b/i.test(text)) return '12 AM';
-  const afterAt = text.match(
-    /\b(?:at|around|about)\s+(\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)?)\b/i,
-  );
+  const afterAt = text.match(new RegExp(
+    String.raw`\b(?:at|around|about)\s*(?:,\s*)?(?:(?:like|uh|um)\s*(?:,\s*)?)*(${hour}\s*${meridiem}?)\b`,
+    'i',
+  ));
   if (afterAt) return afterAt[1];
-  const explicit = text.match(/\b(\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?))\b/i);
+  const explicit = text.match(new RegExp(
+    String.raw`\b(${hour}\s*${meridiem})\b`,
+    'i',
+  ));
   if (explicit) return explicit[1];
-  const cuedBareTime = text.match(
-    /\b(?:do|for|prefer|want|make it|say)\s+(\d{1,2}(?::[0-5]\d)?)\b/i,
-  );
+  const cuedBareTime = text.match(new RegExp(
+    String.raw`\b(?:do|for|prefer|want|make it|say)\s+(${hour})\b`,
+    'i',
+  ));
   if (cuedBareTime) return cuedBareTime[1];
-  const beforeWeekday = text.match(
-    /\b(\d{1,2}(?::[0-5]\d)?)\s+(?:on\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i,
-  );
+  const beforeWeekday = text.match(new RegExp(
+    String.raw`\b(${hour})\s+(?:on\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b`,
+    'i',
+  ));
   return beforeWeekday ? beforeWeekday[1] : '';
 }
 
