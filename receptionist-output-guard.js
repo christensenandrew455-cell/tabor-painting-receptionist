@@ -23,6 +23,14 @@ const OLD_PRICE_QUESTION_RESPONSE = 'The price depends on the estimate.';
 const OLD_RESPONSE_TIME_QUESTION_RESPONSE = "I don't know exactly when, but the longest it will take is a week to accept or decline your estimate request.";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 const MAX_REPAIR_ATTEMPTS = 3;
+const COMPLETABLE_INTAKE_FIELDS = new Set([
+  'service',
+  'name',
+  'address',
+  'schedule',
+  'notes',
+  'consent',
+]);
 
 const CONDITIONAL_TRANSITION_PATTERNS = Object.freeze([
   /\b(?:one sec(?:ond)?|just a sec(?:ond)?|one moment|just a moment)\b/i,
@@ -190,6 +198,7 @@ export function callerTranscriptDisposition(value) {
 }
 
 function classifyPendingField(value) {
+  const raw = cleanText(value);
   const text = normalized(value);
   if (/\bwhat service were you looking for\b/.test(text)) return 'service';
   if (/\bwhat kind of work do you need done\b/.test(text)) return 'service';
@@ -203,6 +212,22 @@ function classifyPendingField(value) {
   if (/\bdo you have any notes for the project or any questions about the business\b/.test(text)) return 'notes';
   if (/\bdo you consent to being contacted by\b/.test(text)) return 'consent';
   if (/\bdoes that all sound right\b/.test(text)) return 'summary';
+
+  const questionLike = /\?\s*$/.test(raw)
+    || /^(?:what|which|when|who|can|could|may|do|would)\b/.test(text);
+  if (!questionLike) return '';
+  if (/\b(?:what|which) (?:kind of )?(?:work|service)\b/.test(text)) return 'service';
+  if (/\b(?:your name|caller'?s name)\b/.test(text) || /\bwho should .* estimate\b/.test(text)) {
+    return 'name';
+  }
+  if (/\b(?:project )?address\b/.test(text)) return 'address';
+  if (/\b(?:date and time|estimate (?:date|time)|what (?:date|time)|when .* estimate)\b/.test(text)) {
+    return 'schedule';
+  }
+  if (/\b(?:notes? or questions?|additional notes?|anything else to add)\b/.test(text)) {
+    return 'notes';
+  }
+  if (/\b(?:permission|consent)\b.*\bcontact/.test(text)) return 'consent';
   return '';
 }
 
@@ -597,6 +622,7 @@ function hardenSessionUpdate(event) {
       + `\nSERVICE QUESTION RULE: Ask exactly: "${SERVICE_QUESTION}" The caller is expected to describe the work in ordinary words rather than know the website service category. Silently match their description to the supplied service when it is clear. Do not repeat the category back during intake.`
       + `\nFIELD FOCUS RULE: Keep the intake on the single field you just asked for. If the caller clearly answers a different field without also answering the pending field, do not consume that answer as a substitute and do not advance. Briefly apologize that you were asking for the pending field and ask that same field again. If the caller deliberately gives several fields in one turn and includes the pending field, keep all usable details and continue to the next genuinely missing field.`
       + `\nINTAKE ORDER RULE: After a clear service answer, ask for the caller's name immediately. Then ask for the project address, then the preferred date and time, then notes or questions, then contact permission. Never skip the name and never reopen a field that the caller already answered.`
+      + `\nFIELD COMPLETION RULE: Once a required field has a usable answer and the intake advances, that field is locked and must never be asked again. Reopen a locked field only when the caller explicitly corrects it or its original answer is genuinely incomplete. The notes step may stay open while the caller is adding notes, but an explicit no, none, nothing else, that's all, or that's it closes notes permanently.`
       + `\nCALLER VALUE RULE: Outside the required final summary and server-normalized prepared summary, caller-specific values come only from the caller. Never invent, autocomplete, nickname, alter, or suggest a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge. If you casually use the caller's first name, use exactly the first-name wording the caller supplied; never substitute a nickname. In the required final summary, read back only the prepared values and ask the single overall confirmation question.`
       + `\nADDRESS RULE: Ask exactly "What's the complete project address?" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
       + `\nTIME INFERENCE RULE: When the caller gives a day and a bare hour, infer AM or PM silently if only one interpretation falls inside the supplied estimate hours. A bare hour such as 1 during a 9:00 AM through 4:00 PM estimate window is 1:00 PM. Do not ask the caller to distinguish an impossible overnight interpretation.`
@@ -702,6 +728,7 @@ function createGuardedWebSocketClass({
       this.pendingDeleteItems = new Set();
       this.deleteRequestItems = new Map();
       this.deleteRequestSequence = 0;
+      this.completedIntakeFields = new Set();
 
       this.inner.on('open', (...args) => this.emit('open', ...args));
       this.inner.on('error', (...args) => this.emit('error', ...args));
@@ -724,6 +751,7 @@ function createGuardedWebSocketClass({
       const toolOutput = parseFunctionOutput(event);
       if (toolOutput?.status === 'ready_for_confirmation' && toolOutput.summary) {
         this.pendingSummary = toolOutput.summary;
+        for (const field of COMPLETABLE_INTAKE_FIELDS) this.completedIntakeFields.add(field);
       }
       if (
         event.type === 'conversation.item.create'
@@ -821,6 +849,39 @@ function createGuardedWebSocketClass({
       return true;
     }
 
+    recordCompletedFields(state, pending, answeredDifferentField) {
+      if (answeredDifferentField) return;
+      switch (state.answeredField) {
+        case 'service':
+          if (pending && pending !== 'service') this.completedIntakeFields.add('service');
+          if (callerVolunteeredName(state.callerTranscript) && pending !== 'name') {
+            this.completedIntakeFields.add('name');
+          }
+          break;
+        case 'name':
+          if (pending === 'address') this.completedIntakeFields.add('name');
+          break;
+        case 'address':
+          if (pending === 'schedule') this.completedIntakeFields.add('address');
+          break;
+        case 'schedule':
+          if (pending === 'notes') this.completedIntakeFields.add('schedule');
+          break;
+        case 'notes':
+          if (pending === 'consent' && isClearNegative(state.callerTranscript)) {
+            this.completedIntakeFields.add('notes');
+          }
+          break;
+        case 'consent':
+          if (isClearAffirmative(state.callerTranscript)) {
+            this.completedIntakeFields.add('consent');
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
     forwardCreated(state) {
       if (!state.createdEvent || state.createdForwarded) return;
       this.emitJson(state.createdEvent);
@@ -867,6 +928,17 @@ function createGuardedWebSocketClass({
       if (!state.policy && state.callerDisposition === 'unclear') {
         this.markBlocked(state);
         return false;
+      }
+
+      if (pending && this.completedIntakeFields.has(pending)) {
+        const explicitSummaryCorrection = state.answeredField === 'summary'
+          && !isClearAffirmative(state.callerTranscript);
+        if (explicitSummaryCorrection && COMPLETABLE_INTAKE_FIELDS.has(pending)) {
+          this.completedIntakeFields.delete(pending);
+        } else {
+          this.markBlocked(state);
+          return false;
+        }
       }
 
       const answeredDifferentField = callerAnsweredDifferentField(
@@ -992,6 +1064,7 @@ function createGuardedWebSocketClass({
 
       state.approved = true;
       state.transcript = spoken;
+      this.recordCompletedFields(state, pending, answeredDifferentField);
       this.forwardCreated(state);
       for (const event of state.audioEvents.splice(0)) this.emitJson(event);
       for (const event of state.transcriptEvents.splice(0)) this.emitJson(event);
