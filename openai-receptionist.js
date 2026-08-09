@@ -377,7 +377,7 @@ The caller's estimate request has already been successfully sent to the website.
 Collect all of these:
 1. Service: match the caller's need to one website service when a service list is available. Infer obvious matches silently from the work and location instead of asking the caller to name the category.
 2. Name. Ask naturally, for example, "What name should I use for the estimate request?" The name must come only from the caller's own words; never fill it from business data or a receptionist/assistant name.
-3. Complete project address. Ask exactly, "What's the complete project address?" Do not expand that question with examples or a list of address components, do not ask for a ZIP separately, and do not explain why the address is needed. Record the address exactly as the caller gives it. Copy the caller's latest complete address verbatim for the preparation tool. Never correct or substitute an address value based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
+3. Full project address. Ask exactly, "What's the full project address?" Do not expand that question with examples or a list of address components, do not ask for a ZIP separately, and do not explain why the address is needed. Record the address exactly as the caller gives it. Copy the caller's latest full address verbatim for the preparation tool. Never correct or substitute an address value based on geography, spelling expectations, or business data. After they finish the address, do not repeat any part of it, do not say "I have your address as," and do not ask for a separate address confirmation. Move directly to the next missing question. The address will be confirmed once in the final summary.
 4. Preferred estimate date.
 5. Preferred estimate time, including AM or PM when needed.
 6. Project notes and business questions. This field is optional, but you must ask exactly, "${NOTES_AND_QUESTIONS_PROMPT}" as its own turn. If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly when the structured data or safe fallbacks allow it; add each unanswered question to additional_notes. If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is complete, continue directly to contact permission. If they explicitly say no or none, record empty notes unless an unanswered question was already captured earlier in the call. Do not restate their notes or questions before consent.
@@ -399,7 +399,7 @@ ${estimateAvailabilityGuide(context)} If the caller requests a date or time outs
 # Required preparation and confirmation boundary
 - Call prepare_estimate_summary only after every field is collected, the notes-and-questions step was completed, and contact permission was actually asked in the required wording and clearly granted by the caller.
 - The consent booleans in a tool call are not proof that consent happened. The runtime checks the actual spoken consent question and the caller's following answer before allowing preparation on a real call.
-- When calling prepare_estimate_summary, copy the caller's name and most recent complete address from the caller's own words. Preserve every caller-provided address component exactly and never substitute a place name from business data.
+- When calling prepare_estimate_summary, copy the caller's name and most recent full address from the caller's own words. Preserve every caller-provided address component exactly and never substitute a place name from business data.
 - additional_notes must contain only the caller's actual project notes plus any unanswered business question captured anywhere in the call. Do not include answered business questions unless the caller asked you to note them. Never include contact consent, requests to repeat a question, complaints about a confusing receptionist response, conversation-management remarks, or statements that no notes were provided.
 - After the caller grants contact permission, do not thank them for confirming, do not say you are preparing a summary, and do not ask another intake question. Call prepare_estimate_summary immediately and go straight into the returned summary readback.
 - Never invent the final summary yourself. Use only the returned summary values: name, service, address, and exact preferred date and time. Include notes only when the returned notes value contains actual project information or unanswered caller questions. If notes are empty or returned as "None," omit them entirely.
@@ -546,6 +546,8 @@ export function createOpenAiReceptionist({
   let greetingRequested = false;
   let waitingForSubmissionSuccessResponse = false;
   let submissionSuccessResponseId = '';
+  let waitingForSubmissionFailureResponse = false;
+  let submissionFailureResponseId = '';
   let waitingForGoodbyeResponse = false;
   let goodbyeResponseId = '';
   let goodbyeComplete = false;
@@ -727,6 +729,9 @@ export function createOpenAiReceptionist({
     }
 
     const safeResult = safeToolResult(result);
+    if (!safeResult.ok && item.name === 'submit_estimate_request') {
+      waitingForSubmissionFailureResponse = true;
+    }
     sendJson(openai, {
       type: 'conversation.item.create',
       item: {
@@ -812,6 +817,9 @@ export function createOpenAiReceptionist({
       if (waitingForSubmissionSuccessResponse) {
         waitingForSubmissionSuccessResponse = false;
         submissionSuccessResponseId = cleanText(event.response?.id);
+      } else if (waitingForSubmissionFailureResponse) {
+        waitingForSubmissionFailureResponse = false;
+        submissionFailureResponseId = cleanText(event.response?.id);
       } else if (waitingForGoodbyeResponse) {
         waitingForGoodbyeResponse = false;
         goodbyeResponseId = cleanText(event.response?.id);
@@ -885,6 +893,15 @@ export function createOpenAiReceptionist({
         && !endingCall
       ) {
         submissionSuccessResponseId = '';
+        endingCall = true;
+        requestGoodbye();
+      }
+      if (
+        submissionFailureResponseId
+        && responseId === submissionFailureResponseId
+        && !endingCall
+      ) {
+        submissionFailureResponseId = '';
         endingCall = true;
         requestGoodbye();
       }

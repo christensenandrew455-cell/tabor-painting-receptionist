@@ -154,6 +154,8 @@ test('classifies hesitation and unfinished schedule thoughts separately from mea
   assert.equal(callerTranscriptDisposition('Um'), 'filler');
   assert.equal(callerTranscriptDisposition('어'), 'filler');
   assert.equal(callerTranscriptDisposition("It's probably, like..."), 'filler');
+  assert.equal(callerTranscriptDisposition('I would like...'), 'filler');
+  assert.equal(callerTranscriptDisposition('I would like to...'), 'filler');
   assert.equal(callerTranscriptDisposition('aa'), 'unclear');
   assert.equal(callerTranscriptDisposition('Probably Monday at like 1.'), 'meaningful');
 });
@@ -163,6 +165,10 @@ test('runtime-blocks process transitions, punctuation, and reassurance filler', 
   assert.equal(shouldBlockReceptionistOutput('Okay, let’s keep this moving.'), true);
   assert.equal(shouldBlockReceptionistOutput('Let me grab the details.'), true);
   assert.equal(shouldBlockReceptionistOutput('Take your time.'), true);
+  assert.equal(
+    shouldBlockReceptionistOutput('Great, thank you for confirming. If you need help with anything else, just let me know!'),
+    true,
+  );
   assert.equal(shouldBlockReceptionistOutput('What date and time would work best for the estimate?'), false);
 });
 

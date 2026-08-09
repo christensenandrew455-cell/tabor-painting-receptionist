@@ -136,7 +136,7 @@ async function createHarness() {
 }
 
 test('blocks invented ZIP requests while keeping the normal address question valid', () => {
-  assert.equal(shouldBlockReceptionistOutput("What's the complete project address?"), false);
+  assert.equal(shouldBlockReceptionistOutput("What's the full project address?"), false);
   assert.equal(shouldBlockReceptionistOutput("What's the ZIP code for that location?"), true);
   assert.equal(shouldBlockReceptionistOutput('I just need you to confirm the ZIP code.'), true);
 });
@@ -186,7 +186,7 @@ test('contact-consent yes cannot trigger the pre-submit sentence or submit tool'
   }
 });
 
-test('a failed submit follow-up is only the requested apology sentence', async () => {
+test('a failed submit gives only the apology and then ends the call', async () => {
   const h = await createHarness();
   try {
     assistantResponse(h.socket, {
@@ -220,6 +220,22 @@ test('a failed submit follow-up is only the requested apology sentence', async (
       `Say exactly: "${SUBMIT_FAILURE}" Do not add anything before or after it.`,
     );
     assert.doesNotMatch(followup.response.instructions, /ZIP|clarification|Explain this problem/i);
+
+    assistantResponse(h.socket, {
+      responseId: 'submit-failure-response',
+      itemId: 'submit-failure-response-item',
+      transcript: SUBMIT_FAILURE,
+      audio: 'submit-failure-response-audio',
+    });
+
+    const goodbye = h.socket.sent
+      .filter((event) => event.type === 'response.create')
+      .at(-1);
+    assert.match(
+      goodbye.response.instructions,
+      /Thank you for calling Tabor Painting\. Have a good day\./,
+    );
+    assert.doesNotMatch(goodbye.response.instructions, /anything else|just let me know/i);
   } finally {
     h.restore();
   }
