@@ -155,7 +155,24 @@ export function resolveRequestedDate(value, { now = new Date(), timeZone = 'Amer
   return Object.freeze({ input: cleanText(value), exactDate, spokenDate });
 }
 
-export function normalizeRequestedTime(value) {
+function inferTimeFromEstimateHours(hour, minute, context = {}) {
+  const earliest = businessEstimateTime(context.earliestEstimateStart);
+  const latest = businessEstimateTime(context.latestEstimateStart);
+  if (!earliest && !latest) return null;
+
+  const baseHour = hour % 12;
+  const candidates = [
+    { hour: baseHour, minutes: baseHour * 60 + minute },
+    { hour: baseHour + 12, minutes: (baseHour + 12) * 60 + minute },
+  ].filter((candidate) => (
+    (!earliest || candidate.minutes >= earliest.minutes)
+    && (!latest || candidate.minutes <= latest.minutes)
+  ));
+
+  return candidates.length === 1 ? candidates[0].hour : null;
+}
+
+export function normalizeRequestedTime(value, context = {}) {
   let input = cleanText(value)
     .toLowerCase()
     .replace(/\./g, '')
@@ -177,7 +194,11 @@ export function normalizeRequestedTime(value) {
   const minute = Number(match[2] || 0);
   const meridiem = match[3];
   if (!meridiem && hour >= 1 && hour <= 12) {
-    fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
+    const inferredHour = inferTimeFromEstimateHours(hour, minute, context);
+    if (inferredHour === null) {
+      fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
+    }
+    hour = inferredHour;
   }
   if (meridiem && (hour < 1 || hour > 12)) {
     fail('That time is invalid. Ask for a valid AM or PM time.', 'preferred_time');
@@ -312,7 +333,7 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     now,
     timeZone: context.timeZone,
   });
-  const requestedTime = normalizeRequestedTime(args.preferred_time);
+  const requestedTime = normalizeRequestedTime(args.preferred_time, context);
   validateEstimateAvailability(date, requestedTime, context);
   return Object.freeze({
     service: matchService(args.service, context.services),

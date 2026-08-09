@@ -197,6 +197,95 @@ test('greeting asks for the work in ordinary caller language', async () => {
   }
 });
 
+test('a clear service answer must go directly to the name question', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'service-question-order',
+      itemId: 'service-question-order-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'service-question-order-audio',
+    });
+    caller(h.socket, 'I just kind of need a shed painted.', 'caller-shed-service');
+    assistantResponse(h.socket, {
+      responseId: 'skipped-name-transition',
+      itemId: 'skipped-name-transition-item',
+      transcript: 'Got it—painting a shed is a great project. Let me grab a couple quick details.',
+      audio: 'skipped-name-transition-audio',
+    });
+
+    assert.equal(h.audio.includes('skipped-name-transition-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "What name should I use for the estimate request?" Do not add anything before or after it.',
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('a caller who volunteers their name with the service is not asked for it again', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'service-question-volunteered-name',
+      itemId: 'service-question-volunteered-name-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'service-question-volunteered-name-audio',
+    });
+    caller(
+      h.socket,
+      'I need a shed painted, and my name is Andrew Christensen.',
+      'caller-service-and-name',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'address-after-volunteered-name',
+      itemId: 'address-after-volunteered-name-item',
+      transcript: "What's the complete project address?",
+      audio: 'address-after-volunteered-name-audio',
+    });
+
+    assert.equal(h.audio.includes('address-after-volunteered-name-audio'), true);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a missing cleanup item is treated as an already-complete guarded deletion', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'service-question-delete',
+      itemId: 'service-question-delete-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'service-question-delete-audio',
+    });
+    caller(h.socket, 'I need a shed painted.', 'caller-delete-service');
+    assistantResponse(h.socket, {
+      responseId: 'blocked-delete-response',
+      itemId: 'blocked-delete-item',
+      transcript: 'Let me grab a couple quick details.',
+      audio: 'blocked-delete-audio',
+    });
+
+    const deletion = h.socket.sent.find(
+      (event) => event.type === 'conversation.item.delete'
+        && event.item_id === 'blocked-delete-item',
+    );
+    assert.ok(deletion?.event_id);
+    h.socket.receive({
+      type: 'error',
+      error: {
+        event_id: deletion.event_id,
+        message: "Error deleting item: the item with id 'blocked-delete-item' does not exist.",
+      },
+    });
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
 test('a name-only answer cannot skip the address question', async () => {
   const h = await createHarness();
   try {
@@ -245,6 +334,116 @@ test('an answer to a different field re-asks the field that was actually pending
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
       /I'm sorry, I was asking for the project address\. What's the complete project address\?/,
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('Monday at 1 silently resolves to 1 PM and advances to notes', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'schedule-question-bare-hour',
+      itemId: 'schedule-question-bare-hour-item',
+      transcript: 'What date and time would work best for the estimate?',
+      audio: 'schedule-question-bare-hour-audio',
+    });
+    caller(h.socket, 'Probably, like, Monday at 1.', 'caller-bare-hour');
+    assistantResponse(h.socket, {
+      responseId: 'unnecessary-meridiem-question',
+      itemId: 'unnecessary-meridiem-question-item',
+      transcript: 'Do you mean Monday at 1 PM for the estimate?',
+      audio: 'unnecessary-meridiem-question-audio',
+    });
+
+    assert.equal(h.audio.includes('unnecessary-meridiem-question-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('answered intake fields stay locked while later steps continue', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'locked-service-question',
+      itemId: 'locked-service-question-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'locked-service-question-audio',
+    });
+    caller(h.socket, 'I need a shed painted.', 'locked-caller-service');
+    assistantResponse(h.socket, {
+      responseId: 'locked-name-question',
+      itemId: 'locked-name-question-item',
+      transcript: 'What name should I use for the estimate request?',
+      audio: 'locked-name-question-audio',
+    });
+    caller(h.socket, 'Andrew Christensen.', 'locked-caller-name');
+    assistantResponse(h.socket, {
+      responseId: 'locked-address-question',
+      itemId: 'locked-address-question-item',
+      transcript: "What's the complete project address?",
+      audio: 'locked-address-question-audio',
+    });
+    caller(
+      h.socket,
+      '197 Lancaster Road, Berlin, Massachusetts.',
+      'locked-caller-address',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'locked-schedule-question',
+      itemId: 'locked-schedule-question-item',
+      transcript: 'What date and time would work best for the estimate?',
+      audio: 'locked-schedule-question-audio',
+    });
+    caller(h.socket, 'Monday at 1.', 'locked-caller-schedule');
+    assistantResponse(h.socket, {
+      responseId: 'locked-notes-question',
+      itemId: 'locked-notes-question-item',
+      transcript: NOTES_PROMPT,
+      audio: 'locked-notes-question-audio',
+    });
+    caller(h.socket, 'The shed has some rotten wood.', 'locked-caller-note');
+
+    assistantResponse(h.socket, {
+      responseId: 'repeated-completed-service',
+      itemId: 'repeated-completed-service-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'repeated-completed-service-audio',
+    });
+    assert.equal(h.audio.includes('repeated-completed-service-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${MORE_NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+
+    assistantResponse(h.socket, {
+      responseId: 'locked-more-notes-repair',
+      itemId: 'locked-more-notes-repair-item',
+      transcript: MORE_NOTES_PROMPT,
+      audio: 'locked-more-notes-repair-audio',
+    });
+    caller(
+      h.socket,
+      "No, I don't have any more notes or questions.",
+      'locked-caller-notes-done',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'repeated-completed-address',
+      itemId: 'repeated-completed-address-item',
+      transcript: "What's the complete project address?",
+      audio: 'repeated-completed-address-audio',
+    });
+
+    assert.equal(h.audio.includes('repeated-completed-address-audio'), false);
+    assert.match(
+      latestResponseCreate(h.socket).response.instructions,
+      /Okay, thanks for the notes\. One more question\. Do you consent to being contacted by Tabor Painting\?/,
     );
   } finally {
     h.restore();
@@ -411,6 +610,40 @@ test('notes do not advance to consent until the caller explicitly says they are 
   }
 });
 
+test('a project note with a conversational question tag stays a note', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-conversational-tag',
+      itemId: 'notes-question-conversational-tag-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-conversational-tag-audio',
+    });
+    caller(h.socket, 'Um...', 'caller-note-filler');
+    caller(h.socket, 'Probably...', 'caller-note-start');
+    caller(h.socket, 'The shed is kind of rotted out a bit.', 'caller-note-rot');
+    caller(
+      h.socket,
+      "I think a layer of paint will do good, but I don't want them to damage it any further, you know what I'm talking about?",
+      'caller-note-tag',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'misclassified-note-question',
+      itemId: 'misclassified-note-question-item',
+      transcript: `${UNKNOWN} ${MORE_NOTES_PROMPT}`,
+      audio: 'misclassified-note-question-audio',
+    });
+
+    assert.equal(h.audio.includes('misclassified-note-question-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${MORE_NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+  } finally {
+    h.restore();
+  }
+});
+
 test('notes completion requires the exact consent wording recognized by submission state', async () => {
   const h = await createHarness();
   try {
@@ -465,6 +698,99 @@ test('consent yes cannot be followed by ZIP, unit, suite, apartment, or address 
     assert.equal(h.audio.includes('bad-unit-question-audio'), false);
     assert.match(latestResponseCreate(h.socket).response.instructions, /Call prepare_estimate_summary now/i);
     assert.doesNotMatch(latestResponseCreate(h.socket).response.instructions, /ask.*unit|ask.*zip/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('consent yes cannot repeat notes or reopen any completed intake field', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'consent-question-no-reopen',
+      itemId: 'consent-question-no-reopen-item',
+      transcript: 'Okay, thanks for the notes. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'consent-question-no-reopen-audio',
+    });
+    caller(h.socket, 'Yes.', 'caller-consent-no-reopen');
+    assistantResponse(h.socket, {
+      responseId: 'repeated-note-and-name',
+      itemId: 'repeated-note-and-name-item',
+      transcript: 'Got it, thank you. I also saved that note about the damaged shed. What name should I use for the estimate request?',
+      audio: 'repeated-note-and-name-audio',
+    });
+
+    assert.equal(h.audio.includes('repeated-note-and-name-audio'), false);
+    assert.match(latestResponseCreate(h.socket).response.instructions, /Call prepare_estimate_summary now/i);
+    assert.doesNotMatch(latestResponseCreate(h.socket).response.instructions, /saved that note/i);
+    assert.doesNotMatch(latestResponseCreate(h.socket).response.instructions, /What name should I use/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('an explicit final-summary correction may reopen only the corrected field', async () => {
+  const h = await createHarness();
+  try {
+    caller(
+      h.socket,
+      '197 Lancaster Road, Berlin, Massachusetts.',
+      'correction-address-evidence',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'correction-consent-question',
+      itemId: 'correction-consent-question-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'correction-consent-question-audio',
+    });
+    caller(h.socket, 'Yes.', 'correction-caller-consent');
+    assistantResponse(h.socket, {
+      responseId: 'correction-prepare-response',
+      itemId: 'correction-prepare-response-item',
+      extraOutput: [{
+        id: 'correction-prepare-call-item',
+        type: 'function_call',
+        name: 'prepare_estimate_summary',
+        call_id: 'correction-prepare-call-id',
+        arguments: JSON.stringify({
+          service: 'Exterior Painting',
+          name: 'Andrew Christensen',
+          address: '197 Lancaster Road, Berlin, Massachusetts.',
+          preferred_date: 'Monday',
+          preferred_time: '1',
+          additional_notes: '',
+          additional_notes_asked: true,
+          consent_to_contact: true,
+          consent_asked_separately: true,
+        }),
+      }],
+    });
+    await nextTurn();
+
+    const summaryRequest = responseCreates(h.socket).find((event) =>
+      /Okay, here's the summary/i.test(event.response?.instructions || ''),
+    );
+    assert.ok(summaryRequest);
+    const summarySpeechMatch = summaryRequest.response.instructions.match(
+      /Say exactly: ("(?:[^"\\]|\\.)*")/,
+    );
+    assert.ok(summarySpeechMatch);
+    const summarySpeech = JSON.parse(summarySpeechMatch[1]);
+    assistantResponse(h.socket, {
+      responseId: 'correction-summary-readback',
+      itemId: 'correction-summary-readback-item',
+      transcript: summarySpeech,
+      audio: 'correction-summary-readback-audio',
+    });
+    caller(h.socket, 'No, the project address is wrong.', 'correction-caller-summary-no');
+    assistantResponse(h.socket, {
+      responseId: 'correction-reopen-address',
+      itemId: 'correction-reopen-address-item',
+      transcript: "What's the complete project address?",
+      audio: 'correction-reopen-address-audio',
+    });
+
+    assert.equal(h.audio.includes('correction-reopen-address-audio'), true);
   } finally {
     h.restore();
   }
