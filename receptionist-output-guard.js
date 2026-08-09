@@ -49,6 +49,7 @@ const PROCESS_NARRATION_PATTERNS = Object.freeze([
 const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got it|sounds good|thanks|thank you)[.!]*$/i;
 const STREET_ADDRESS_PATTERN = /\b\d{1,6}\s+[a-z0-9.' -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/i;
 const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const STARTS_SCHEDULE_PATTERN = /^\s*(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
 
 const CALLER_VALUE_EXAMPLE_REPLACEMENTS = Object.freeze([
   [
@@ -135,7 +136,7 @@ function isDisallowedAddressClarification(value) {
   if (asksForZipCode(text)) return true;
   if (/\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)) return true;
   return /\b(?:address|city|town|state)\b/i.test(text)
-    && /\b(?:spell|spelled|spelling|did you mean|is that|is this|confirm|correct|exactly)\b/i.test(text);
+    && /\b(?:spell|spelled|spelling|did you mean|is that|is this|is it|confirm|correct|exactly)\b/i.test(text);
 }
 
 export function shouldBlockReceptionistOutput(value) {
@@ -231,14 +232,24 @@ function looksLikeScheduleAnswer(value) {
   return SCHEDULE_PATTERN.test(cleanText(value));
 }
 
+function startsLikeStreetAddress(value) {
+  const text = cleanText(value);
+  const match = text.match(STREET_ADDRESS_PATTERN);
+  return Boolean(match && match.index === 0);
+}
+
+function startsLikeScheduleAnswer(value) {
+  return STARTS_SCHEDULE_PATTERN.test(cleanText(value));
+}
+
 function callerAnsweredDifferentField(field, value) {
   if (!field) return false;
   const address = looksLikeStreetAddress(value);
   const schedule = looksLikeScheduleAnswer(value);
-  if (field === 'name') return address || schedule;
+  if (field === 'name') return startsLikeStreetAddress(value) || startsLikeScheduleAnswer(value);
   if (field === 'address') return schedule && !address;
   if (field === 'schedule') return address && !schedule;
-  if (field === 'service') return address || schedule;
+  if (field === 'service') return startsLikeStreetAddress(value) || startsLikeScheduleAnswer(value);
   return false;
 }
 
@@ -679,6 +690,14 @@ function createGuardedWebSocketClass({
         return false;
       }
 
+      if (
+        state.answeredField === 'address'
+        && /\b(?:did you mean|is that|is this|is it)\b/i.test(spoken)
+      ) {
+        this.markBlocked(state);
+        return false;
+      }
+
       if (state.answeredField === 'notes' && !isClearNegative(state.callerTranscript)) {
         if (pending !== 'notes') {
           this.markBlocked(state);
@@ -896,6 +915,8 @@ function createGuardedWebSocketClass({
             answeredField = this.lastAnsweredField;
           }
         }
+
+        if (disposition === 'meaningful') this.latestCallerTranscript = effectiveTranscript;
 
         this.updateActiveResponseCallerContext({
           disposition,
