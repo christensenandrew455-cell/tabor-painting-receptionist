@@ -414,6 +414,123 @@ test('a clear service answer must go directly to the name question', async () =>
   }
 });
 
+test('a reaction cannot complete service and a later room-painting description still asks for name', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'service-question-before-reaction',
+      itemId: 'service-question-before-reaction-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'service-question-before-reaction-audio',
+    });
+
+    const beforeReaction = responseCreates(h.socket).length;
+    caller(h.socket, 'Oh.', 'caller-service-reaction');
+    assert.equal(responseCreates(h.socket).length, beforeReaction);
+
+    caller(
+      h.socket,
+      "I've given me, I've seen a couple of rooms.",
+      'caller-room-service-after-reaction',
+    );
+    const nameQuestion = latestResponseCreate(h.socket);
+    assert.equal(
+      nameQuestion.response.instructions,
+      'Say exactly: "Okay, what name should I use for the estimate request?" Do not add anything before or after it.',
+    );
+    assert.doesNotMatch(nameQuestion.response.instructions, /project address/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a work description cannot be stored as the caller name', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'name-question-before-work-description',
+      itemId: 'name-question-before-work-description-item',
+      transcript: 'What name should I use for the estimate request?',
+      audio: 'name-question-before-work-description-audio',
+    });
+    caller(
+      h.socket,
+      "I've given me, I've seen a couple of rooms.",
+      'caller-work-description-not-name',
+    );
+
+    const repeatedNameQuestion = latestResponseCreate(h.socket);
+    assert.equal(
+      repeatedNameQuestion.response.instructions,
+      'Say exactly: "What name should I use for the estimate request?" Do not add anything before or after it.',
+    );
+    assert.doesNotMatch(repeatedNameQuestion.response.instructions, /project address/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a grounded business question keeps the current intake field pending', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'name-question-before-grounded-business-question',
+      itemId: 'name-question-before-grounded-business-question-item',
+      transcript: 'What name should I use for the estimate request?',
+    });
+    caller(h.socket, 'What are your business hours?', 'grounded-question-before-name');
+
+    const plan = latestResponseCreate(h.socket);
+    assert.match(plan.response.instructions, /business information supplied for this call/i);
+    assert.match(plan.response.instructions, /What name should I use for the estimate request\?/);
+    assert.doesNotMatch(plan.response.instructions, /project address/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('an unknown trade question uses the fallback and keeps the current field pending', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'name-question-before-unknown-business-question',
+      itemId: 'name-question-before-unknown-business-question-item',
+      transcript: 'What name should I use for the estimate request?',
+    });
+    caller(
+      h.socket,
+      'How long does a roof replacement take?',
+      'unknown-trade-question-before-name',
+    );
+
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "I\'m sorry, I don\'t know that. I\'ll add that question to the notes. What name should I use for the estimate request?" Do not add anything before or after it.',
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('first-person service wording is not mistaken for a volunteered name', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'service-question-before-first-person-work',
+      itemId: 'service-question-before-first-person-work-item',
+      transcript: SERVICE_QUESTION,
+      audio: 'service-question-before-first-person-work-audio',
+    });
+    caller(h.socket, 'I am painting two rooms.', 'caller-first-person-service');
+
+    const nameQuestion = latestResponseCreate(h.socket);
+    assert.match(nameQuestion.response.instructions, /what name should I use/i);
+    assert.doesNotMatch(nameQuestion.response.instructions, /project address/i);
+  } finally {
+    h.restore();
+  }
+});
+
 test('a caller who volunteers their name with the service is not asked for it again', async () => {
   const h = await createHarness();
   try {

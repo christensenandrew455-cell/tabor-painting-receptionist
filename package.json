@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check arc-runtime.js && node --check business-context.js && node --check intake.js && node --check openai-receptionist.js && node --check server.js && node --check test/arc-runtime.test.js && node --check test/business-context.test.js && node --check test/intake.test.js && node --check test/openai-receptionist.test.js",
+    "check": "for file in *.js test/*.js; do node --check \"$file\" || exit 1; done",
     "test": "node --test"
   },
   "dependencies": {
