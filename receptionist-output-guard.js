@@ -51,6 +51,12 @@ const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got 
 const STREET_ADDRESS_PATTERN = /\b\d{1,6}\s+[a-z0-9.' -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/i;
 const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
 const STARTS_SCHEDULE_PATTERN = /^\s*(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const QUESTION_TOPIC_STOP_WORDS = new Set([
+  'about', 'also', 'been', 'business', 'could', 'does', 'doing', 'guys', 'have', 'like',
+  'long', 'normally', 'paint', 'painting', 'please', 'project', 'really', 'service', 'shed',
+  'should', 'take', 'that', 'their', 'there', 'they', 'this', 'what', 'when', 'where', 'which',
+  'would', 'work', 'your', 'you', 'with', 'from', 'just', 'know', 'much', 'thing', 'things',
+]);
 
 const CALLER_VALUE_EXAMPLE_REPLACEMENTS = Object.freeze([
   [
@@ -213,13 +219,61 @@ function looksLikeBusinessQuestion(value) {
     || /^(?:what|when|where|why|how|do|does|can|could|is|are|will|would)\b/i.test(text);
 }
 
-function isSupportedBusinessQuestion(value) {
-  const text = normalized(value);
-  if (!text) return false;
-  if (/\b(?:what|which) services?\b/.test(text) || /\bservices? (?:do|does) .* offer\b/.test(text)) return true;
-  if (/\bservice areas?\b/.test(text) || /\b(?:do|does) .* serve\b/.test(text) || /\bwhere .* (?:work|serve)\b/.test(text)) return true;
-  if (/\b(?:business )?hours?\b/.test(text) || /\b(?:when|what time) .* (?:open|close)\b/.test(text)) return true;
-  return /\bestimate (?:days?|hours?|times?|availability)\b/.test(text) || /\bwhen .* estimate\b/.test(text);
+function gatheredBusinessDataText(context = {}) {
+  const services = Array.isArray(context.services)
+    ? context.services.map((service) => `${cleanText(service?.name)} ${cleanText(service?.description)}`).join(' ')
+    : '';
+  const weekdays = Array.isArray(context.estimateWeekdays) ? context.estimateWeekdays.join(' ') : '';
+  return normalized([
+    context.knowledgeJson,
+    services,
+    weekdays,
+    context.earliestEstimateStart,
+    context.latestEstimateStart,
+  ].filter(Boolean).join(' '));
+}
+
+function businessDataSupportsQuestion(value, context = {}) {
+  const question = normalized(value);
+  if (!question) return false;
+  const businessData = gatheredBusinessDataText(context);
+
+  if (/\b(?:what|which) services?\b/.test(question) || /\bservices? (?:do|does) .* offer\b/.test(question)) {
+    return Array.isArray(context.services) && context.services.length > 0;
+  }
+  if (/\bservice areas?\b/.test(question) || /\b(?:do|does) .* serve\b/.test(question) || /\bwhere .* (?:work|serve)\b/.test(question)) {
+    return /\b(?:serviceareas?|service area|areas served|locations?|serve)\b/.test(businessData);
+  }
+  if (/\b(?:business )?hours?\b/.test(question) || /\b(?:when|what time) .* (?:open|close)\b/.test(question)) {
+    return /\b(?:businesshours?|hours|open|close)\b/.test(businessData);
+  }
+  if (/\bestimate (?:days?|hours?|times?|availability)\b/.test(question) || /\bwhen .* estimate\b/.test(question)) {
+    return Boolean(
+      (Array.isArray(context.estimateWeekdays) && context.estimateWeekdays.length)
+      || cleanText(context.earliestEstimateStart)
+      || cleanText(context.latestEstimateStart)
+      || /\bestimate\b/.test(businessData)
+    );
+  }
+  if (/\b(?:price|pricing|cost|how much|price range|rate|fee)\b/.test(question)) {
+    return /\b(?:price|pricing|cost|rate|rates|fee|fees|dollar|usd)\b/.test(businessData);
+  }
+  if (/\bhow long\b/.test(question) || /\b(?:take|takes)\b.*\b(?:job|project|work|paint|painting)\b/.test(question)) {
+    return /\b(?:duration|timeline|turnaround|timeframe|jobduration|projectduration|takes)\b/.test(businessData)
+      || /\b(?:day|days|hour|hours|week|weeks)\s+(?:to|for)\b/.test(businessData);
+  }
+  if (/\b(?:get back|hear back|response time|respond|accept|decline)\b/.test(question)) {
+    return /\b(?:get back|hear back|response time|responsetime|respond|accept|decline|turnaround)\b/.test(businessData);
+  }
+  if (/\b(?:warranty|guarantee)\b/.test(question)) {
+    return /\b(?:warranty|guarantee)\b/.test(businessData);
+  }
+
+  const businessTokens = new Set(businessData.split(' ').filter(Boolean));
+  const topicTokens = question.split(' ').filter(
+    (token) => token.length >= 4 && !QUESTION_TOPIC_STOP_WORDS.has(token),
+  );
+  return topicTokens.some((token) => businessTokens.has(token));
 }
 
 function looksLikeStreetAddress(value) {
@@ -288,6 +342,7 @@ function repairPlanForBlockedOutput({
   callerTranscript = '',
   callerDisposition = 'meaningful',
   businessName = 'the business',
+  businessContext = {},
   notesResolvedNegative = false,
   notesHadContent = false,
 } = {}) {
@@ -342,7 +397,7 @@ function repairPlanForBlockedOutput({
         };
       }
       if (looksLikeBusinessQuestion(callerTranscript)) {
-        if (!isSupportedBusinessQuestion(callerTranscript)) {
+        if (!businessDataSupportsQuestion(callerTranscript, businessContext)) {
           const text = `${UNKNOWN_BUSINESS_QUESTION_RESPONSE} ${MORE_NOTES_AND_QUESTIONS_PROMPT}`;
           return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
         }
@@ -707,7 +762,7 @@ function createGuardedWebSocketClass({
         }
         if (
           looksLikeBusinessQuestion(state.callerTranscript)
-          && !isSupportedBusinessQuestion(state.callerTranscript)
+          && !businessDataSupportsQuestion(state.callerTranscript, context)
           && !normalized(spoken).startsWith(normalized(UNKNOWN_BUSINESS_QUESTION_RESPONSE))
         ) {
           this.markBlocked(state);
@@ -836,6 +891,7 @@ function createGuardedWebSocketClass({
         callerTranscript: state.callerTranscript,
         callerDisposition: state.callerDisposition,
         businessName,
+        businessContext: context,
         notesResolvedNegative: state.notesResolvedNegative,
         notesHadContent: state.notesHadContent,
       });
@@ -898,7 +954,9 @@ function createGuardedWebSocketClass({
               this.notesResolvedNegative = false;
               this.notesCallerBuffer.push(callerTranscript);
               effectiveTranscript = cleanText(this.notesCallerBuffer.join(' '));
-              if (!isClearAffirmative(callerTranscript) || looksLikeBusinessQuestion(effectiveTranscript)) {
+              if (looksLikeBusinessQuestion(effectiveTranscript)) {
+                if (!businessDataSupportsQuestion(effectiveTranscript, context)) this.notesHadContent = true;
+              } else if (!isClearAffirmative(callerTranscript)) {
                 this.notesHadContent = true;
               }
             }
