@@ -3,14 +3,23 @@ import { WebSocket } from 'ws';
 import { cleanText } from './business-context.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
 
+const OLD_SERVICE_QUESTION = 'What service were you looking for?';
+const SERVICE_QUESTION = 'What kind of work do you need done?';
 const OLD_SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.";
 const SUBMISSION_START_RESPONSE = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
+const OLD_GOODBYE_PREFIX = 'Thanks for calling';
+const GOODBYE_PREFIX = 'Thank you for calling';
 const OLD_NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business? I may be able to answer some, and if not, I'll add them to the notes.";
 const PREVIOUS_NOTES_AND_QUESTIONS_PROMPT = "Do you have any notes for the project or any questions about the business you'd like me to help with or pass along?";
 const NOTES_AND_QUESTIONS_PROMPT = 'Do you have any notes or questions for the business?';
+const MORE_NOTES_AND_QUESTIONS_PROMPT = 'Do you have any other notes or questions for the business?';
+const NOTES_DETAILS_PROMPT = 'What notes or questions do you have for the business?';
 const OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't really know that. I'll add it to the notes.";
-const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "Okay, I'll add it to the notes.";
+const PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "Okay, I'll add it to the notes.";
+const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that. I'll add that question to the notes.";
+const OLD_PRICE_QUESTION_RESPONSE = 'The price depends on the estimate.';
+const OLD_RESPONSE_TIME_QUESTION_RESPONSE = "I don't know exactly when, but the longest it will take is a week to accept or decline your estimate request.";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 const MAX_REPAIR_ATTEMPTS = 3;
 
@@ -40,6 +49,54 @@ const PROCESS_NARRATION_PATTERNS = Object.freeze([
 ]);
 
 const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got it|sounds good|thanks|thank you)[.!]*$/i;
+const STREET_ADDRESS_PATTERN = /\b\d{1,6}\s+[a-z0-9.' -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/i;
+const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const STARTS_SCHEDULE_PATTERN = /^\s*(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const QUESTION_TOPIC_STOP_WORDS = new Set([
+  'about', 'also', 'been', 'business', 'could', 'does', 'doing', 'guys', 'have', 'like',
+  'long', 'normally', 'paint', 'painting', 'please', 'project', 'really', 'service', 'shed',
+  'should', 'take', 'that', 'their', 'there', 'they', 'this', 'what', 'when', 'where', 'which',
+  'would', 'work', 'your', 'you', 'with', 'from', 'just', 'know', 'much', 'thing', 'things',
+]);
+
+const CALLER_VALUE_EXAMPLE_REPLACEMENTS = Object.freeze([
+  [
+    'Infer obvious matches silently from the requested work and location; for example, painting a shed out back maps to Exterior Painting when that service exists.',
+    'Infer obvious matches silently from the requested work and location without inventing or suggesting caller-specific details.',
+  ],
+  [
+    "The caller's preferred date words, such as Tuesday, tomorrow, August 12, or 2026-08-12. The server converts this to an exact date.",
+    "The caller's preferred date words exactly as stated. The server converts relative or calendar wording to an exact date.",
+  ],
+  [
+    'The preferred time including AM or PM, such as 3:30 PM.',
+    "The caller's preferred time including AM or PM when needed.",
+  ],
+  [
+    'For example, after "I just need a couple of rooms painted in my house," ask only, "What name should I use for the estimate request?" Likewise, "I need the shed painted out back" should map silently to Exterior Painting when that service is supplied. ',
+    '',
+  ],
+  [
+    'For example, if they say the house needs a repaint, ask whether the repaint is inside or outside. ',
+    '',
+  ],
+  [
+    'For example, "2 in the afternoon" means 2:00 PM, and if the same turn later says "Thursday at 2," keep the already-stated PM context and record Thursday at 2:00 PM. ',
+    '',
+  ],
+  [
+    'For example, with a 9:00 AM through 4:00 PM window, "Monday at 3" means 3:00 PM. ',
+    '',
+  ],
+  [
+    'For example, if the notes-and-questions step receives "nun" in a context where the caller clearly means "none," treat it as no notes or questions instead of asking the same question again. ',
+    '',
+  ],
+  [
+    'When the caller says a relative date such as "Tuesday," keep those original date words in preferred_date.',
+    "When the caller gives a relative date, keep the caller's original date words in preferred_date.",
+  ],
+]);
 
 function normalized(value) {
   return cleanText(value)
@@ -74,19 +131,24 @@ function transitionRemainder(value) {
   return cleanText(remainder.replace(/^[\s,.;:!—-]+|[\s,.;:!—-]+$/g, ' '));
 }
 
-function hasUsefulContinuationAfterTransition(value) {
-  const remainder = transitionRemainder(value);
-  if (!remainder) return false;
-  return Boolean(classifyPendingField(remainder))
-    || /\?\s*$/.test(remainder)
-    || sameSpokenText(remainder, SUBMISSION_START_RESPONSE);
-}
-
 function asksForZipCode(value) {
   const text = cleanText(value);
   if (!/\bzip(?:\s+code)?\b/i.test(text)) return false;
   return /\b(?:what(?:'s| is)|need|provide|give|tell|share|confirm|enter|supply)\b[\s\S]{0,80}\bzip(?:\s+code)?\b/i.test(text)
     || /\bzip(?:\s+code)?\b[\s\S]{0,80}\?/i.test(text);
+}
+
+function isDisallowedAddressClarification(value) {
+  const text = cleanText(value);
+  if (!text) return false;
+  if (asksForZipCode(text)) return true;
+  if (/\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)) {
+    return /\b(?:address|project address)\b/i.test(text)
+      || /\b(?:need|provide|give|tell|share|confirm|what(?:'s| is)|is there|do you have|any)\b[\s\S]{0,80}\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)
+      || /\b(?:apartment|apt\.?|suite|unit)\b[\s\S]{0,80}\b(?:number|for (?:the|your) address)\b/i.test(text);
+  }
+  return /\b(?:address|city|town|state)\b/i.test(text)
+    && /\b(?:spell|spelled|spelling|did you mean|is that|is this|is it|confirm|correct|exactly)\b/i.test(text);
 }
 
 export function shouldBlockReceptionistOutput(value) {
@@ -100,7 +162,7 @@ export function shouldBlockReceptionistOutput(value) {
     if (!PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(remainder))) return false;
   }
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  if (asksForZipCode(text)) return true;
+  if (isDisallowedAddressClarification(text)) return true;
 
   if (
     /complete project address/i.test(text)
@@ -129,10 +191,14 @@ export function callerTranscriptDisposition(value) {
 function classifyPendingField(value) {
   const text = normalized(value);
   if (/\bwhat service were you looking for\b/.test(text)) return 'service';
-  if (/\bwhat name should i use for the estimate request\b/.test(text)) return 'name';
+  if (/\bwhat kind of work do you need done\b/.test(text)) return 'service';
+  if (/\bwhat name should i (?:use|put) (?:for|on) the estimate request\b/.test(text)) return 'name';
   if (/\bwhat'?s the complete project address\b/.test(text)) return 'address';
+  if (/\bi was asking for (?:the )?(?:project )?address\b/.test(text)) return 'address';
   if (/\bwhat date and time would work best for the estimate\b/.test(text)) return 'schedule';
-  if (/\bdo you have any notes or questions for the business\b/.test(text)) return 'notes';
+  if (/\bi was asking for (?:the )?estimate date and time\b/.test(text)) return 'schedule';
+  if (/\bdo you have any (?:other )?notes or questions for the business\b/.test(text)) return 'notes';
+  if (/\bwhat notes or questions do you have for the business\b/.test(text)) return 'notes';
   if (/\bdo you have any notes for the project or any questions about the business\b/.test(text)) return 'notes';
   if (/\bdo you consent to being contacted by\b/.test(text)) return 'consent';
   if (/\bdoes that all sound right\b/.test(text)) return 'summary';
@@ -143,18 +209,127 @@ function isClearNegative(value) {
   const text = normalized(value);
   return /^(?:no|nope|nah|none|nothing)\b/.test(text)
     || /\b(?:do not|don't|dont) have any\b/.test(text)
-    || /\bno (?:notes|questions)\b/.test(text)
-    || /\bnothing (?:else|to add)\b/.test(text);
+    || /\bno (?:more )?(?:notes|questions)\b/.test(text)
+    || /\bnothing (?:else|to add)\b/.test(text)
+    || /^(?:that'?s all|that'?s it|i'?m good|no more)$/i.test(text);
 }
 
 function isClearAffirmative(value) {
-  return /^(?:yes|yeah|yep|yup|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
+  return /^(?:yes|yeah|yep|yup|ja|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
 }
 
 function looksLikeBusinessQuestion(value) {
   const text = cleanText(value);
   return /\?$/.test(text)
     || /^(?:what|when|where|why|how|do|does|can|could|is|are|will|would)\b/i.test(text);
+}
+
+function gatheredBusinessDataText(context = {}) {
+  const services = Array.isArray(context.services)
+    ? context.services.map((service) => `${cleanText(service?.name)} ${cleanText(service?.description)}`).join(' ')
+    : '';
+  const weekdays = Array.isArray(context.estimateWeekdays) ? context.estimateWeekdays.join(' ') : '';
+  return normalized([
+    context.knowledgeJson,
+    services,
+    weekdays,
+    context.earliestEstimateStart,
+    context.latestEstimateStart,
+  ].filter(Boolean).join(' '));
+}
+
+function businessDataSupportsQuestion(value, context = {}) {
+  const question = normalized(value);
+  if (!question) return false;
+  const businessData = gatheredBusinessDataText(context);
+
+  if (/\b(?:what|which) services?\b/.test(question) || /\bservices? (?:do|does) .* offer\b/.test(question)) {
+    return Array.isArray(context.services) && context.services.length > 0;
+  }
+  if (/\bservice areas?\b/.test(question) || /\b(?:do|does) .* serve\b/.test(question) || /\bwhere .* (?:work|serve)\b/.test(question)) {
+    return /\b(?:serviceareas?|service area|areas served|locations?|serve)\b/.test(businessData);
+  }
+  if (/\b(?:business )?hours?\b/.test(question) || /\b(?:when|what time) .* (?:open|close)\b/.test(question)) {
+    return /\b(?:businesshours?|hours|open|close)\b/.test(businessData);
+  }
+  if (/\bestimate (?:days?|hours?|times?|availability)\b/.test(question) || /\bwhen .* estimate\b/.test(question)) {
+    return Boolean(
+      (Array.isArray(context.estimateWeekdays) && context.estimateWeekdays.length)
+      || cleanText(context.earliestEstimateStart)
+      || cleanText(context.latestEstimateStart)
+      || /\bestimate\b/.test(businessData)
+    );
+  }
+  if (/\b(?:price|pricing|cost|how much|price range|rate|fee)\b/.test(question)) {
+    return /\b(?:price|pricing|cost|rate|rates|fee|fees|dollar|usd)\b/.test(businessData);
+  }
+  if (/\bhow long\b/.test(question) || /\b(?:take|takes)\b.*\b(?:job|project|work|paint|painting)\b/.test(question)) {
+    return /\b(?:duration|timeline|turnaround|timeframe|jobduration|projectduration|takes)\b/.test(businessData)
+      || /\b(?:day|days|hour|hours|week|weeks)\s+(?:to|for)\b/.test(businessData);
+  }
+  if (/\b(?:get back|hear back|response time|respond|accept|decline)\b/.test(question)) {
+    return /\b(?:get back|hear back|response time|responsetime|respond|accept|decline|turnaround)\b/.test(businessData);
+  }
+  if (/\b(?:warranty|guarantee)\b/.test(question)) {
+    return /\b(?:warranty|guarantee)\b/.test(businessData);
+  }
+
+  const businessTokens = new Set(businessData.split(' ').filter(Boolean));
+  const topicTokens = question.split(' ').filter(
+    (token) => token.length >= 4 && !QUESTION_TOPIC_STOP_WORDS.has(token),
+  );
+  return topicTokens.some((token) => businessTokens.has(token));
+}
+
+function looksLikeStreetAddress(value) {
+  return STREET_ADDRESS_PATTERN.test(cleanText(value));
+}
+
+function looksLikeScheduleAnswer(value) {
+  return SCHEDULE_PATTERN.test(cleanText(value));
+}
+
+function startsLikeStreetAddress(value) {
+  const text = cleanText(value);
+  const match = text.match(STREET_ADDRESS_PATTERN);
+  return Boolean(match && match.index === 0);
+}
+
+function startsLikeScheduleAnswer(value) {
+  return STARTS_SCHEDULE_PATTERN.test(cleanText(value));
+}
+
+function callerAnsweredDifferentField(field, value) {
+  if (!field) return false;
+  const address = looksLikeStreetAddress(value);
+  const schedule = looksLikeScheduleAnswer(value);
+  if (field === 'name') return startsLikeStreetAddress(value) || startsLikeScheduleAnswer(value);
+  if (field === 'address') return schedule && !address;
+  if (field === 'schedule') return address && !schedule;
+  if (field === 'service') return startsLikeStreetAddress(value) || startsLikeScheduleAnswer(value);
+  return false;
+}
+
+function recoveryQuestionForField(field) {
+  switch (field) {
+    case 'service':
+      return `I'm sorry, I was asking what kind of work you need done. ${SERVICE_QUESTION}`;
+    case 'name':
+      return "I'm sorry, I was asking for your name. What name should I use for the estimate request?";
+    case 'address':
+      return "I'm sorry, I was asking for the project address. What's the complete project address?";
+    case 'schedule':
+      return "I'm sorry, I was asking for the estimate date and time. What date and time would work best for the estimate?";
+    default:
+      return '';
+  }
+}
+
+function contactConsentQuestionForBusiness(businessName, hasNotes) {
+  const business = spokenBusinessName(businessName);
+  return hasNotes
+    ? `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${business}?`
+    : `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
 }
 
 function exactSpeechInstruction(text, extra = '') {
@@ -179,7 +354,9 @@ function repairPlanForBlockedOutput({
   callerTranscript = '',
   callerDisposition = 'meaningful',
   businessName = 'the business',
+  businessContext = {},
   notesResolvedNegative = false,
+  notesHadContent = false,
 } = {}) {
   if (callerDisposition === 'filler') return { instructions: '', expectedTranscript: '' };
   if (callerDisposition === 'unclear') {
@@ -189,7 +366,16 @@ function repairPlanForBlockedOutput({
     };
   }
 
-  const business = spokenBusinessName(businessName);
+  const recovery = callerAnsweredDifferentField(answeredField, callerTranscript)
+    ? recoveryQuestionForField(answeredField)
+    : '';
+  if (recovery) {
+    return {
+      instructions: exactSpeechInstruction(recovery),
+      expectedTranscript: recovery,
+    };
+  }
+
   switch (answeredField) {
     case 'service': {
       const text = 'What name should I use for the estimate request?';
@@ -208,23 +394,36 @@ function repairPlanForBlockedOutput({
         instructions: exactSpeechInstruction(NOTES_AND_QUESTIONS_PROMPT),
         expectedTranscript: NOTES_AND_QUESTIONS_PROMPT,
       };
-    case 'notes':
+    case 'notes': {
       if (notesResolvedNegative || isClearNegative(callerTranscript)) {
-        const text = `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
+        const text = contactConsentQuestionForBusiness(businessName, notesHadContent);
         return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
       }
-      if (!looksLikeBusinessQuestion(callerTranscript)) {
-        const text = `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${business}?`;
-        return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
+      if (isClearAffirmative(callerTranscript) && !looksLikeBusinessQuestion(callerTranscript)) {
+        return {
+          instructions: exactSpeechInstruction(NOTES_DETAILS_PROMPT),
+          expectedTranscript: NOTES_DETAILS_PROMPT,
+        };
+      }
+      if (looksLikeBusinessQuestion(callerTranscript)) {
+        if (!businessDataSupportsQuestion(callerTranscript, businessContext)) {
+          const text = `${UNKNOWN_BUSINESS_QUESTION_RESPONSE} ${MORE_NOTES_AND_QUESTIONS_PROMPT}`;
+          return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
+        }
+        return {
+          instructions: `Answer only the caller's business question using only the supplied business data for this call. Do not add an answered question to the notes. Never answer from general knowledge, common industry knowledge, hardcoded fallback claims, or assumptions about painting. Then ask exactly: ${JSON.stringify(MORE_NOTES_AND_QUESTIONS_PROMPT)} Do not ask another intake question and do not discuss how the caller's own project maps to a service.`,
+          expectedTranscript: '',
+        };
       }
       return {
-        instructions: 'Answer only the caller\'s business question from the supplied business data, then ask only the single intake question that is still pending. Do not acknowledge, narrate, explain your process, or announce a next step.',
-        expectedTranscript: '',
+        instructions: exactSpeechInstruction(MORE_NOTES_AND_QUESTIONS_PROMPT),
+        expectedTranscript: MORE_NOTES_AND_QUESTIONS_PROMPT,
       };
+    }
     case 'consent':
       if (isClearAffirmative(callerTranscript)) {
         return {
-          instructions: 'Call prepare_estimate_summary now using only details the caller already provided. Do not speak any preamble, acknowledgement, process narration, or transition before the tool call.',
+          instructions: 'Call prepare_estimate_summary now using only details the caller already provided. Do not speak any preamble, acknowledgement, process narration, transition, address confirmation, ZIP question, apartment question, suite question, or unit question before the tool call.',
           expectedTranscript: '',
         };
       }
@@ -298,21 +497,52 @@ function replaceStringEverywhere(value, replacements) {
 
 function hardenSessionUpdate(event) {
   replaceStringEverywhere(event.session, [
+    [OLD_SERVICE_QUESTION, SERVICE_QUESTION],
     [OLD_SUBMISSION_START_RESPONSE, SUBMISSION_START_RESPONSE],
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
+    [PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
+    ...CALLER_VALUE_EXAMPLE_REPLACEMENTS,
   ]);
 
   if (typeof event.session?.instructions === 'string') {
     const oldAcknowledgmentRule = 'Light acknowledgments such as "Okay," "Great," "Got it," "Okay, great," or "Sounds good" are encouraged and may naturally begin many questions or answers. Do not force one onto every turn, and vary them so the conversation does not sound repetitive.';
     const hardAcknowledgmentRule = 'Natural acknowledgements are fine only when they are attached to a useful answer or question. Never send a standalone filler acknowledgement during intake.';
+    const oldSingleActionRule = 'Produce at most one assistant message in each turn, written as one short paragraph. Choose exactly one next action before speaking. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.';
+    const coherentResponseRule = 'Produce at most one assistant message in each turn, written as one short paragraph. Keep that response focused on the caller\'s current step. When the caller asks a business question, the same response may contain the brief grounded answer followed by the one appropriate follow-up question. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.';
+    const oldBusinessScopeRule = '- Answer only from the structured business information supplied below: services, service areas, normal business hours, estimate days, and estimate hours.';
+    const businessScopeRule = '- Answer business questions only from the business information supplied for this call, including the supplied services and relevant facts present in BUSINESS WEBSITE DATA. If the answer is not present there, do not infer it from general knowledge.';
+    const oldPriceRule = `- If the caller asks about price, cost, a price range, or how much the job will be, answer exactly: "${OLD_PRICE_QUESTION_RESPONSE}"`;
+    const oldResponseTimeRule = `- If the caller asks how long it will take the business to get back to them, respond to their request, accept it, decline it, or otherwise decide the estimate request, answer exactly: "${OLD_RESPONSE_TIME_QUESTION_RESPONSE}"`;
+    const transformedUnsupportedRule = `- If the caller asks a business question that cannot be answered from the structured information and is not one of the two fallbacks above, say exactly: "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" Preserve that unanswered question in additional_notes so the business receives it.`;
+    const unsupportedRule = `- If the supplied business information does not contain the answer, do not answer from general knowledge. During the notes-and-questions step, say "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and then ask "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Preserve that unanswered question in additional_notes. Before the notes-and-questions step, say "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and then return to the one intake field that was still pending.`;
+    const oldAnsweredRule = '- If a question is answered from structured information or one of the safe fallbacks, do not add the answered question to notes unless the caller asks you to.';
+    const answeredRule = '- If a question is answered from the supplied business information, do not add that answered question to notes unless the caller explicitly asks you to.';
+    const oldNotesQuestionHandlingRule = 'If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly when the structured data or safe fallbacks allow it; add each unanswered question to additional_notes.';
+    const notesQuestionHandlingRule = 'If the caller gives project notes, preserve them. If they ask one or more business questions, answer each briefly only when the supplied business information contains the answer; add each unanswered question to additional_notes.';
+    const oldNotesCompletionRule = 'If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is complete, continue directly to contact permission.';
+    const explicitNotesCompletionRule = 'After every project note or business question, remain in this step. Continue to contact permission only after the caller explicitly says they have no more notes or questions.';
 
     event.session.instructions = event.session.instructions
       .replace(oldAcknowledgmentRule, hardAcknowledgmentRule)
+      .replace(oldSingleActionRule, coherentResponseRule)
+      .replace(oldBusinessScopeRule, businessScopeRule)
+      .replace(oldPriceRule, '')
+      .replace(oldResponseTimeRule, '')
+      .replace(transformedUnsupportedRule, unsupportedRule)
+      .replace(oldAnsweredRule, answeredRule)
+      .replace(oldNotesQuestionHandlingRule, notesQuestionHandlingRule)
+      .replace(oldNotesCompletionRule, explicitNotesCompletionRule)
+      + `\nSERVICE QUESTION RULE: Ask exactly: "${SERVICE_QUESTION}" The caller is expected to describe the work in ordinary words rather than know the website service category. Silently match their description to the supplied service when it is clear. Do not repeat the category back during intake.`
+      + `\nFIELD FOCUS RULE: Keep the intake on the single field you just asked for. If the caller clearly answers a different field without also answering the pending field, do not consume that answer as a substitute and do not advance. Briefly apologize that you were asking for the pending field and ask that same field again. If the caller deliberately gives several fields in one turn and includes the pending field, keep all usable details and continue to the next genuinely missing field.`
+      + `\nCALLER VALUE RULE: Outside the required final summary and server-normalized prepared summary, caller-specific values come only from the caller. Never invent, autocomplete, nickname, alter, or suggest a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge. If you casually use the caller's first name, use exactly the first-name wording the caller supplied; never substitute a nickname. In the required final summary, read back only the prepared values and ask the single overall confirmation question.`
+      + `\nADDRESS RULE: Ask exactly "What's the complete project address?" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
+      + `\nBUSINESS KNOWLEDGE RULE: Business facts may come only from the business data supplied for this call. If that data contains the answer, answer briefly and do not add the answered question to notes. If that data does not contain the answer, do not use general knowledge, common painting knowledge, hardcoded fallback claims, assumptions, or typical industry practice. In particular, never invent job duration, drying time, prep time, pricing details, response-time promises, guarantees, policies, or availability.`
+      + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. After a project note, ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question that the supplied business data can answer, answer it briefly, do not add it to notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question the supplied data cannot answer, say the sentence exactly as "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" preserve that question in the notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded one note or question.`
       + `\nHARD OUTPUT RULE: Do not generate standalone process or transition narration. Before speaking, remove phrases such as "one sec", "let me get the details", "let me grab the details", "let me check", "let's keep moving", or any natural variation unless the same spoken response immediately continues into the actual next question or action. Prefer skipping the transition entirely and asking the next question directly. Never end a turn on process narration. Never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
-      + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought such as "it's probably, like...", wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
-      + `\nNOTES RULE: Ask exactly: "${NOTES_AND_QUESTIONS_PROMPT}" If the caller asks a business question that cannot be answered from the supplied business data or safe fallbacks, say exactly: "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and preserve that question in the notes.`
+      + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought, wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
+      + `\nDELIVERY RULE: Speak with smooth, natural conversational pacing and intonation. Keep sentences short and easy to follow. Do not sound clipped, staccato, overly formal, or like you are reading field labels.`
       + `\nFINAL SUMMARY RULE: Begin with "Okay, here's the summary." State the name, service, address, preferred date and time, and notes exactly once. If there are no notes, say "There are no additional notes." Never say "Note: None" and never repeat the summary.`
       + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}" That sentence and the submit_estimate_request tool call must be produced in the same response. Never say the sentence by itself, never repeat it, and never claim the request is being sent unless the submit tool call is present.`;
   }
@@ -328,10 +558,13 @@ function prepareOutgoingEvent(event, pendingSummary) {
   }
 
   replaceStringEverywhere(event, [
+    [OLD_SERVICE_QUESTION, SERVICE_QUESTION],
     [OLD_SUBMISSION_START_RESPONSE, SUBMISSION_START_RESPONSE],
+    [OLD_GOODBYE_PREFIX, GOODBYE_PREFIX],
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
+    [PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
   ]);
 
   if (
@@ -395,10 +628,13 @@ function createGuardedWebSocketClass({
       this.latestCallerTranscript = '';
       this.latestCallerDisposition = 'none';
       this.notesResolvedNegative = false;
+      this.notesHadContent = false;
+      this.notesCallerBuffer = [];
       this.pendingSummary = null;
       this.pendingResponsePolicies = [];
       this.repairAttempts = 0;
       this.submitCallIds = new Set();
+      this.submissionStarted = false;
       this.failedSubmitFollowupPending = false;
 
       this.inner.on('open', (...args) => this.emit('open', ...args));
@@ -473,6 +709,7 @@ function createGuardedWebSocketClass({
           callerTranscript: this.latestCallerTranscript,
           answeredField: this.lastAnsweredField,
           notesResolvedNegative: this.notesResolvedNegative,
+          notesHadContent: this.notesHadContent,
           policy: null,
         });
       }
@@ -497,13 +734,15 @@ function createGuardedWebSocketClass({
     }
 
     shouldRequireSubmissionStart(state) {
-      return state.answeredField === 'summary'
+      return !this.submissionStarted
+        && state.answeredField === 'summary'
         && isClearAffirmative(state.callerTranscript);
     }
 
     approveResponse(state, transcript, transcriptDoneEvent = null) {
       if (state.blocked || state.interrupted) return false;
       const spoken = cleanText(transcript);
+      const pending = classifyPendingField(spoken);
 
       if (state.policy?.expectedTranscript && !sameSpokenText(spoken, state.policy.expectedTranscript)) {
         this.markBlocked(state);
@@ -520,10 +759,69 @@ function createGuardedWebSocketClass({
         return false;
       }
 
+      if (callerAnsweredDifferentField(state.answeredField, state.callerTranscript)) {
+        if (pending !== state.answeredField) {
+          this.markBlocked(state);
+          return false;
+        }
+      }
+
+      if (
+        state.answeredField === 'name'
+        && !looksLikeStreetAddress(state.callerTranscript)
+        && pending !== 'address'
+      ) {
+        this.markBlocked(state);
+        return false;
+      }
+
+      if (
+        state.answeredField === 'address'
+        && /\b(?:did you mean|is that|is this|is it)\b/i.test(spoken)
+      ) {
+        this.markBlocked(state);
+        return false;
+      }
+
+      if (state.answeredField === 'notes' && !isClearNegative(state.callerTranscript)) {
+        if (pending !== 'notes') {
+          this.markBlocked(state);
+          return false;
+        }
+        if (
+          looksLikeBusinessQuestion(state.callerTranscript)
+          && !businessDataSupportsQuestion(state.callerTranscript, context)
+          && !normalized(spoken).startsWith(normalized(UNKNOWN_BUSINESS_QUESTION_RESPONSE))
+        ) {
+          this.markBlocked(state);
+          return false;
+        }
+      }
+
+      if (
+        state.answeredField === 'notes'
+        && isClearNegative(state.callerTranscript)
+      ) {
+        const expectedConsent = contactConsentQuestionForBusiness(businessName, state.notesHadContent);
+        if (!sameSpokenText(spoken, expectedConsent)) {
+          this.markBlocked(state);
+          return false;
+        }
+      }
+
       if (
         state.answeredField === 'schedule'
-        && classifyPendingField(spoken) === 'notes'
+        && pending === 'notes'
         && !sameSpokenText(spoken, NOTES_AND_QUESTIONS_PROMPT)
+      ) {
+        this.markBlocked(state);
+        return false;
+      }
+
+      if (
+        state.answeredField === 'consent'
+        && isClearAffirmative(state.callerTranscript)
+        && isDisallowedAddressClarification(spoken)
       ) {
         this.markBlocked(state);
         return false;
@@ -561,11 +859,14 @@ function createGuardedWebSocketClass({
       }
       state.transcriptDoneEvent = null;
 
-      const pending = classifyPendingField(spoken);
       if (pending) {
         this.pendingIntakeField = pending;
-        if (pending === 'consent') this.notesResolvedNegative = false;
+        if (pending === 'consent') {
+          this.notesResolvedNegative = false;
+          this.notesCallerBuffer = [];
+        }
       }
+      if (state.answeredField === 'notes') this.notesCallerBuffer = [];
       this.repairAttempts = 0;
       return true;
     }
@@ -620,7 +921,9 @@ function createGuardedWebSocketClass({
         callerTranscript: state.callerTranscript,
         callerDisposition: state.callerDisposition,
         businessName,
+        businessContext: context,
         notesResolvedNegative: state.notesResolvedNegative,
+        notesHadContent: state.notesHadContent,
       });
       this.sendRepair(plan);
     }
@@ -630,6 +933,7 @@ function createGuardedWebSocketClass({
       transcript,
       answeredField,
       notesResolvedNegative,
+      notesHadContent,
     }) {
       for (const state of this.responses.values()) {
         if (state.approved || state.interrupted) continue;
@@ -637,6 +941,7 @@ function createGuardedWebSocketClass({
         state.callerTranscript = transcript;
         state.answeredField = answeredField;
         state.notesResolvedNegative = notesResolvedNegative;
+        state.notesHadContent = notesHadContent;
       }
     }
 
@@ -669,7 +974,24 @@ function createGuardedWebSocketClass({
         this.latestCallerDisposition = disposition;
 
         let answeredField = this.pendingIntakeField;
+        let effectiveTranscript = callerTranscript;
         if (disposition === 'meaningful' && this.pendingIntakeField) {
+          if (this.pendingIntakeField === 'notes') {
+            if (isClearNegative(callerTranscript)) {
+              this.notesResolvedNegative = true;
+              this.notesCallerBuffer = [];
+            } else {
+              this.notesResolvedNegative = false;
+              this.notesCallerBuffer.push(callerTranscript);
+              effectiveTranscript = cleanText(this.notesCallerBuffer.join(' '));
+              if (looksLikeBusinessQuestion(effectiveTranscript)) {
+                if (!businessDataSupportsQuestion(effectiveTranscript, context)) this.notesHadContent = true;
+              } else if (!isClearAffirmative(callerTranscript)) {
+                this.notesHadContent = true;
+              }
+            }
+          }
+
           if (
             this.pendingIntakeField === 'notes'
             && this.notesResolvedNegative
@@ -679,22 +1001,21 @@ function createGuardedWebSocketClass({
             answeredField = 'notes';
           } else {
             this.lastAnsweredField = this.pendingIntakeField;
-            this.lastAnsweredTranscript = callerTranscript;
+            this.lastAnsweredTranscript = effectiveTranscript;
             answeredField = this.lastAnsweredField;
           }
-
-          if (this.pendingIntakeField === 'notes' && isClearNegative(callerTranscript)) {
-            this.notesResolvedNegative = true;
-          }
         }
+
+        if (disposition === 'meaningful') this.latestCallerTranscript = effectiveTranscript;
 
         this.updateActiveResponseCallerContext({
           disposition,
           transcript: disposition === 'meaningful'
-            ? (this.lastAnsweredTranscript || callerTranscript)
+            ? (effectiveTranscript || this.lastAnsweredTranscript || callerTranscript)
             : callerTranscript,
           answeredField,
           notesResolvedNegative: this.notesResolvedNegative,
+          notesHadContent: this.notesHadContent,
         });
 
         this.emitJson(event);
@@ -790,6 +1111,13 @@ function createGuardedWebSocketClass({
           ) {
             this.submitCallIds.add(cleanText(item.call_id));
           }
+        }
+
+        if (hasSubmitCall && isSubmissionStart && state.approved) {
+          this.submissionStarted = true;
+          this.pendingIntakeField = '';
+          this.lastAnsweredField = '';
+          this.lastAnsweredTranscript = '';
         }
 
         this.forwardCreated(state);
