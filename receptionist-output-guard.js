@@ -143,8 +143,9 @@ function isDisallowedAddressClarification(value) {
   if (!text) return false;
   if (asksForZipCode(text)) return true;
   if (/\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)) {
-    return /\?/.test(text)
-      || /\b(?:need|provide|give|tell|share|confirm|what(?:'s| is)|is there|do you have|any)\b/i.test(text);
+    return /\b(?:address|project address)\b/i.test(text)
+      || /\b(?:need|provide|give|tell|share|confirm|what(?:'s| is)|is there|do you have|any)\b[\s\S]{0,80}\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)
+      || /\b(?:apartment|apt\.?|suite|unit)\b[\s\S]{0,80}\b(?:number|for (?:the|your) address)\b/i.test(text);
   }
   return /\b(?:address|city|town|state)\b/i.test(text)
     && /\b(?:spell|spelled|spelling|did you mean|is that|is this|is it|confirm|correct|exactly)\b/i.test(text);
@@ -324,6 +325,13 @@ function recoveryQuestionForField(field) {
   }
 }
 
+function contactConsentQuestionForBusiness(businessName, hasNotes) {
+  const business = spokenBusinessName(businessName);
+  return hasNotes
+    ? `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${business}?`
+    : `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
+}
+
 function exactSpeechInstruction(text, extra = '') {
   return `Say exactly: ${JSON.stringify(text)} Do not add anything before or after it.${extra ? ` ${extra}` : ''}`;
 }
@@ -368,7 +376,6 @@ function repairPlanForBlockedOutput({
     };
   }
 
-  const business = spokenBusinessName(businessName);
   switch (answeredField) {
     case 'service': {
       const text = 'What name should I use for the estimate request?';
@@ -389,9 +396,7 @@ function repairPlanForBlockedOutput({
       };
     case 'notes': {
       if (notesResolvedNegative || isClearNegative(callerTranscript)) {
-        const text = notesHadContent
-          ? `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${business}?`
-          : `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
+        const text = contactConsentQuestionForBusiness(businessName, notesHadContent);
         return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
       }
       if (isClearAffirmative(callerTranscript) && !looksLikeBusinessQuestion(callerTranscript)) {
@@ -560,8 +565,6 @@ function prepareOutgoingEvent(event, pendingSummary) {
     [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
     [PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
-    [OLD_PRICE_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
-    [OLD_RESPONSE_TIME_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
   ]);
 
   if (
@@ -798,10 +801,12 @@ function createGuardedWebSocketClass({
       if (
         state.answeredField === 'notes'
         && isClearNegative(state.callerTranscript)
-        && pending !== 'consent'
       ) {
-        this.markBlocked(state);
-        return false;
+        const expectedConsent = contactConsentQuestionForBusiness(businessName, state.notesHadContent);
+        if (!sameSpokenText(spoken, expectedConsent)) {
+          this.markBlocked(state);
+          return false;
+        }
       }
 
       if (
