@@ -79,6 +79,8 @@ test('prompt keeps the lead-first estimate flow, question fallbacks, consent, an
   assert.match(prompt, /relative date such as "Tuesday,"/);
   assert.match(prompt, /256 output tokens as your normal response ceiling/);
   assert.match(prompt, /What date and time would work best for the estimate/);
+  assert.match(prompt, /What's the full project address\?/);
+  assert.doesNotMatch(prompt, /What's the complete project address\?/);
   assert.match(prompt, /What service were you looking for/);
   assert.doesNotMatch(prompt, /Would you like to fill out an estimate request/);
   assert.match(prompt, /not a form being read aloud/i);

@@ -6,6 +6,7 @@ import { createOpenAiReceptionist, ESTIMATE_TOOLS } from './openai-receptionist.
 
 const OLD_SERVICE_QUESTION = 'What service were you looking for?';
 const SERVICE_QUESTION = 'What kind of work do you need done?';
+const PROJECT_ADDRESS_QUESTION = "What's the full project address?";
 const OLD_SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.";
 const SUBMISSION_START_RESPONSE = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
@@ -60,6 +61,8 @@ const PROCESS_NARRATION_PATTERNS = Object.freeze([
   /\byou(?:'re| are) fine\b/i,
   /\ball good\b/i,
 ]);
+
+const OPEN_ENDED_HELP_OFFER_PATTERN = /\b(?:if you need (?:help with )?anything else|anything else (?:i|we) can help (?:you )?with|just let me know)\b/i;
 
 const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got it|sounds good|thanks|thank you)[.!]*$/i;
 const STREET_ADDRESS_PATTERN = /\b\d{1,6}\s+[a-z0-9.' -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/i;
@@ -185,10 +188,11 @@ export function shouldBlockReceptionistOutput(value) {
     if (!PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(remainder))) return false;
   }
   if (PROCESS_NARRATION_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (OPEN_ENDED_HELP_OFFER_PATTERN.test(text)) return true;
   if (isDisallowedAddressClarification(text)) return true;
 
   if (
-    /complete project address/i.test(text)
+    /(?:full|complete) project address/i.test(text)
     && /including\s+(?:street|address|city|state)/i.test(text)
   ) return true;
 
@@ -208,6 +212,9 @@ export function callerTranscriptDisposition(value) {
   if (/^(?:a|an|the|my|our|i|we|it'?s|that'?s)$/.test(valueNormalized)) return 'filler';
   if (/\b(?:um+|uh+|erm+|er+)\s*$/.test(valueNormalized)) return 'filler';
   if (/\b(?:probably|maybe)\s+like$/.test(valueNormalized)) return 'filler';
+  if (/^(?:i would|i'd|we would|we'd) (?:like|prefer|want)(?: to)?$/.test(valueNormalized)) {
+    return 'filler';
+  }
   if (/^(?:a{2,}|e{2,}|o{2,})$/.test(valueNormalized)) return 'unclear';
   return 'meaningful';
 }
@@ -218,7 +225,7 @@ function classifyPendingField(value) {
   if (/\bwhat service were you looking for\b/.test(text)) return 'service';
   if (/\bwhat kind of work do you need done\b/.test(text)) return 'service';
   if (/\bwhat name should i (?:use|put) (?:for|on) the estimate request\b/.test(text)) return 'name';
-  if (/\bwhat'?s the complete project address\b/.test(text)) return 'address';
+  if (/\bwhat'?s the (?:full|complete) project address\b/.test(text)) return 'address';
   if (/\bi was asking for (?:the )?(?:project )?address\b/.test(text)) return 'address';
   if (/\bwhat date and time would work best for the estimate\b/.test(text)) return 'schedule';
   if (/\bi was asking for (?:the )?estimate date and time\b/.test(text)) return 'schedule';
@@ -470,7 +477,7 @@ function recoveryQuestionForField(field) {
     case 'name':
       return "I'm sorry, I was asking for your name. What name should I use for the estimate request?";
     case 'address':
-      return "I'm sorry, I was asking for the project address. What's the complete project address?";
+      return `I'm sorry, I was asking for the project address. ${PROJECT_ADDRESS_QUESTION}`;
     case 'schedule':
       return "I'm sorry, I was asking for the estimate date and time. What date and time would work best for the estimate?";
     default:
@@ -487,6 +494,14 @@ function contactConsentQuestionForBusiness(businessName, hasNotes) {
 
 function exactSpeechInstruction(text, extra = '') {
   return `Say exactly: ${JSON.stringify(text)} Do not add anything before or after it.${extra ? ` ${extra}` : ''}`;
+}
+
+function summaryPreparationPlan() {
+  return {
+    instructions: 'Call prepare_estimate_summary now using only details the caller already provided. Do not speak any preamble, acknowledgement, process narration, transition, address confirmation, ZIP question, apartment question, suite question, or unit question before the tool call.',
+    expectedTranscript: '',
+    toolName: 'prepare_estimate_summary',
+  };
 }
 
 export function buildPreparedSummarySpeech(summary = {}) {
@@ -534,15 +549,15 @@ function buildNextResponsePlan({
     case 'service': {
       const text = callerVolunteeredName(callerTranscript)
         ? conversational
-          ? "Okay, what's the complete project address?"
-          : "What's the complete project address?"
+          ? `Okay, ${PROJECT_ADDRESS_QUESTION.toLowerCase()}`
+          : PROJECT_ADDRESS_QUESTION
         : conversational
           ? 'Okay, what name should I use for the estimate request?'
           : 'What name should I use for the estimate request?';
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'name': {
-      const text = `${conversational ? 'Thanks. ' : ''}What's the complete project address?`;
+      const text = `${conversational ? 'Thanks. ' : ''}${PROJECT_ADDRESS_QUESTION}`;
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'address': {
@@ -550,7 +565,7 @@ function buildNextResponsePlan({
         ? `${conversational ? 'Got it. ' : ''}What date and time would work best for the estimate?`
         : looksLikeStreetAddress(callerTranscript)
           ? 'What city or town and state is the project in?'
-          : "What's the complete project address?";
+          : PROJECT_ADDRESS_QUESTION;
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'schedule': {
@@ -597,11 +612,7 @@ function buildNextResponsePlan({
     }
     case 'consent':
       if (isClearAffirmative(callerTranscript)) {
-        return {
-          instructions: 'Call prepare_estimate_summary now using only details the caller already provided. Do not speak any preamble, acknowledgement, process narration, transition, address confirmation, ZIP question, apartment question, suite question, or unit question before the tool call.',
-          expectedTranscript: '',
-          toolName: 'prepare_estimate_summary',
-        };
+        return summaryPreparationPlan();
       }
       return {
         instructions: 'Respond only to the caller\'s contact-consent answer. Do not narrate your process or announce a next step.',
@@ -717,12 +728,12 @@ function hardenSessionUpdate(event) {
       + `\nFIELD COMPLETION RULE: Once a required field has a usable answer and the intake advances, that field is locked and must never be asked again. Reopen a locked field only when the caller explicitly corrects it or its original answer is genuinely incomplete. The notes step may stay open while the caller is adding notes, but an explicit no, none, nothing else, that's all, or that's it closes notes permanently.`
       + `\nIMMEDIATE NEXT QUESTION RULE: After accepting an intake answer, the same spoken response must contain the one actual next required question. A short natural acknowledgement may come first, but never stop after the acknowledgement, announce that a question is coming, or describe moving things along. Never say you have a quick question without immediately asking that question in the same response.`
       + `\nCALLER VALUE RULE: Outside the required final summary and server-normalized prepared summary, caller-specific values come only from the caller. Never invent, autocomplete, nickname, alter, or suggest a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge. If you casually use the caller's first name, use exactly the first-name wording the caller supplied; never substitute a nickname. In the required final summary, read back only the prepared values and ask the single overall confirmation question.`
-      + `\nADDRESS RULE: Ask exactly "What's the complete project address?" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
+      + `\nADDRESS RULE: Ask exactly "${PROJECT_ADDRESS_QUESTION}" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
       + `\nTIME INFERENCE RULE: When the caller gives a day and a bare hour, infer AM or PM silently if only one interpretation falls inside the supplied estimate hours. A bare hour such as 1 during a 9:00 AM through 4:00 PM estimate window is 1:00 PM. Do not ask the caller to distinguish an impossible overnight interpretation.`
       + `\nBUSINESS KNOWLEDGE RULE: Business facts may come only from the business data supplied for this call. If that data contains the answer, answer briefly and do not add the answered question to notes. If that data does not contain the answer, do not use general knowledge, common painting knowledge, hardcoded fallback claims, assumptions, or typical industry practice. In particular, never invent job duration, drying time, prep time, pricing details, response-time promises, guarantees, policies, or availability.`
       + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. A project statement does not become a business question merely because it ends with a conversational tag such as "you know what I mean?", "you know what I'm talking about?", "right?", or "does that make sense?" Treat that whole turn as a note. After a project note, ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question that the supplied business data can answer, answer it briefly, do not add it to notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question the supplied data cannot answer, say the sentence exactly as "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" preserve that question in the notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded one note or question.`
       + `\nCALL RECOVERY RULE: If the caller asks "What's the question?", says they do not follow, asks what you are talking about, says hello to check whether you are there, or otherwise reacts to a stalled or unclear receptionist response, that is conversation repair. It is never a business question and never a project note. Ask the still-pending intake question directly, without an apology paragraph or process explanation.`
-      + `\nCONSENT BOUNDARY RULE: After the caller says yes to contact permission, do not speak, repeat their notes, thank them again, or ask for any intake field. Call prepare_estimate_summary immediately with every detail already collected. The next spoken response must be the server-prepared final summary.`
+      + `\nCONSENT BOUNDARY RULE: After the caller says yes to contact permission, that consent stays resolved. Do not speak, repeat their notes, thank them again, ask for any intake field, or offer more help. Call prepare_estimate_summary immediately with every detail already collected. If the caller repeats yes or says hello before the summary is ready, do not reopen consent or choose a different response; continue preparing or reading the server-prepared final summary. The next spoken response must be that summary.`
       + `\nHARD OUTPUT RULE: Do not generate standalone process or transition narration. Before speaking, remove phrases such as "one sec", "let me get the details", "let me grab the details", "let me check", "let's keep moving", "let me ask one quick question to move things along", or any natural variation unless the same spoken response immediately continues into the actual next question or action. Prefer skipping the transition entirely and asking the next question directly. Never end a turn on process narration. Never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
       + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought, wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
       + `\nDELIVERY RULE: Speak with smooth, natural conversational pacing and intonation. Keep sentences short and easy to follow. Do not sound clipped, staccato, overly formal, or like you are reading field labels.`
@@ -817,6 +828,9 @@ function createGuardedWebSocketClass({
       this.addressCallerBuffer = [];
       this.pendingSummary = null;
       this.summaryCorrectionField = '';
+      this.summaryPreparationRequired = false;
+      this.summaryPreparationInFlight = false;
+      this.prepareCallIds = new Set();
       this.pendingResponsePolicies = [];
       this.responsePoliciesById = new Map();
       this.responsePlanSequence = 0;
@@ -860,31 +874,55 @@ function createGuardedWebSocketClass({
       if (
         event.type !== 'response.create'
         || cleanText(event.response?.instructions)
-        || this.latestCallerDisposition === 'none'
       ) return { event, policy: null, suppressed: false };
 
-      const answeredField = this.lastAnsweredField || this.pendingIntakeField || 'service';
-      const summaryCorrectionComplete = answeredField === this.summaryCorrectionField
-        && this.latestCallerDisposition === 'meaningful'
-        && this.summaryCorrectionAnswerIsComplete(answeredField, this.latestCallerTranscript);
-      const plan = summaryCorrectionComplete
-        ? {
-          instructions: 'Call prepare_estimate_summary now using the corrected detail and every other previously confirmed detail. Do not repeat another intake question and do not speak before the tool call.',
-          expectedTranscript: '',
-          toolName: 'prepare_estimate_summary',
+      let answeredField = this.lastAnsweredField || this.pendingIntakeField || 'service';
+      let plan;
+      if (
+        this.pendingSummary
+        && !this.summaryCorrectionField
+        && this.pendingIntakeField !== 'summary'
+      ) {
+        const speech = buildPreparedSummarySpeech(this.pendingSummary);
+        plan = {
+          instructions: exactSpeechInstruction(speech),
+          expectedTranscript: speech,
+        };
+      } else if (this.summaryPreparationRequired) {
+        if (this.summaryPreparationInFlight) {
+          return { event, policy: null, suppressed: true };
         }
-        : buildNextResponsePlan({
-          answeredField,
-          callerTranscript: this.latestCallerTranscript,
-          callerDisposition: this.latestCallerDisposition,
-          businessName,
-          businessContext: context,
-          notesResolvedNegative: this.notesResolvedNegative,
-          notesHadContent: this.notesHadContent,
-          conversational: true,
-        });
+        answeredField = 'consent';
+        plan = summaryPreparationPlan();
+      } else {
+        if (this.latestCallerDisposition === 'none') {
+          return { event, policy: null, suppressed: false };
+        }
+        const summaryCorrectionComplete = answeredField === this.summaryCorrectionField
+          && this.latestCallerDisposition === 'meaningful'
+          && this.summaryCorrectionAnswerIsComplete(answeredField, this.latestCallerTranscript);
+        plan = summaryCorrectionComplete
+          ? {
+            instructions: 'Call prepare_estimate_summary now using the corrected detail and every other previously confirmed detail. Do not repeat another intake question and do not speak before the tool call.',
+            expectedTranscript: '',
+            toolName: 'prepare_estimate_summary',
+          }
+          : buildNextResponsePlan({
+            answeredField,
+            callerTranscript: this.latestCallerTranscript,
+            callerDisposition: this.latestCallerDisposition,
+            businessName,
+            businessContext: context,
+            notesResolvedNegative: this.notesResolvedNegative,
+            notesHadContent: this.notesHadContent,
+            conversational: true,
+          });
+      }
 
       if (!plan.instructions) return { event, policy: null, suppressed: true };
+      if (plan.toolName === 'prepare_estimate_summary') {
+        this.summaryPreparationRequired = true;
+      }
 
       event.response ||= {};
       event.response.instructions = plan.instructions;
@@ -926,9 +964,17 @@ function createGuardedWebSocketClass({
       }
 
       const toolOutput = parseFunctionOutput(event);
+      const functionOutputCallId = cleanText(event.item?.call_id);
+      if (functionOutputCallId && this.prepareCallIds.has(functionOutputCallId)) {
+        this.prepareCallIds.delete(functionOutputCallId);
+        this.summaryPreparationRequired = false;
+        this.summaryPreparationInFlight = false;
+      }
       if (toolOutput?.status === 'ready_for_confirmation' && toolOutput.summary) {
         this.pendingSummary = toolOutput.summary;
         this.summaryCorrectionField = '';
+        this.summaryPreparationRequired = false;
+        this.summaryPreparationInFlight = false;
         this.addressCallerBuffer = [];
         for (const field of COMPLETABLE_INTAKE_FIELDS) this.completedIntakeFields.add(field);
       }
@@ -1125,9 +1171,11 @@ function createGuardedWebSocketClass({
     }
 
     shouldRequireSummaryPreparation(state) {
-      return state.answeredField === 'consent'
+      return this.summaryPreparationRequired || (
+        state.answeredField === 'consent'
         && isClearAffirmative(state.callerTranscript)
-        && !state.policy?.expectedTranscript;
+        && !state.policy?.expectedTranscript
+      );
     }
 
     approveResponse(state, transcript, transcriptDoneEvent = null) {
@@ -1381,6 +1429,24 @@ function createGuardedWebSocketClass({
         return;
       }
 
+      if (this.summaryPreparationRequired) {
+        if (!this.summaryPreparationInFlight) this.sendRepair(summaryPreparationPlan());
+        return;
+      }
+
+      if (
+        this.pendingSummary
+        && !this.summaryCorrectionField
+        && this.pendingIntakeField !== 'summary'
+      ) {
+        const speech = buildPreparedSummarySpeech(this.pendingSummary);
+        this.sendRepair({
+          instructions: exactSpeechInstruction(speech),
+          expectedTranscript: speech,
+        });
+        return;
+      }
+
       const plan = buildNextResponsePlan({
         answeredField: state.answeredField,
         callerTranscript: state.callerTranscript,
@@ -1450,6 +1516,16 @@ function createGuardedWebSocketClass({
 
         let answeredField = this.pendingIntakeField;
         let effectiveTranscript = callerTranscript;
+        if (
+          disposition === 'meaningful'
+          && this.pendingIntakeField === 'consent'
+          && isClearAffirmative(callerTranscript)
+        ) {
+          if (!this.summaryPreparationRequired) this.summaryPreparationInFlight = false;
+          this.summaryPreparationRequired = true;
+          this.completedIntakeFields.add('consent');
+          this.repairAttempts = 0;
+        }
         if (disposition === 'meaningful' && this.pendingIntakeField) {
           if (
             this.pendingIntakeField === 'address'
@@ -1622,6 +1698,14 @@ function createGuardedWebSocketClass({
         }
 
         for (const item of event.response?.output || []) {
+          if (
+            item?.type === 'function_call'
+            && cleanText(item.name) === 'prepare_estimate_summary'
+            && cleanText(item.call_id)
+          ) {
+            this.prepareCallIds.add(cleanText(item.call_id));
+            if (this.summaryPreparationRequired) this.summaryPreparationInFlight = true;
+          }
           if (
             item?.type === 'function_call'
             && cleanText(item.name) === 'submit_estimate_request'

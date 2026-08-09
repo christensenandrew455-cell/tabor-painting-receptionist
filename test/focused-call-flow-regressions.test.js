@@ -267,7 +267,7 @@ test('caller turns are constrained before generation and exact planned audio str
     const plannedAddressQuestion = latestResponseCreate(h.socket);
     assert.equal(
       plannedAddressQuestion.response.instructions,
-      'Say exactly: "Thanks. What\'s the complete project address?" Do not add anything before or after it.',
+      'Say exactly: "Thanks. What\'s the full project address?" Do not add anything before or after it.',
     );
     assert.deepEqual(plannedAddressQuestion.response.tools, []);
     assert.equal(plannedAddressQuestion.response.tool_choice, 'none');
@@ -275,7 +275,7 @@ test('caller turns are constrained before generation and exact planned audio str
     assistantResponse(h.socket, {
       responseId: 'planned-address-question',
       itemId: 'planned-address-question-item',
-      transcript: "Thanks. What's the complete project address?",
+      transcript: "Thanks. What's the full project address?",
       metadata: plannedAddressQuestion.response.metadata,
     });
     caller(
@@ -336,7 +336,7 @@ test('unfinished address fragments stay silent instead of advancing the intake',
     assistantResponse(h.socket, {
       responseId: 'address-question-for-fragment',
       itemId: 'address-question-for-fragment-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
     });
     const beforeFragment = responseCreates(h.socket).length;
     caller(h.socket, 'The', 'unfinished-address-fragment');
@@ -430,12 +430,12 @@ test('a caller who volunteers their name with the service is not asked for it ag
     );
     assert.equal(
       latestResponseCreate(h.socket).response.instructions,
-      'Say exactly: "Okay, what\'s the complete project address?" Do not add anything before or after it.',
+      'Say exactly: "Okay, what\'s the full project address?" Do not add anything before or after it.',
     );
     assistantResponse(h.socket, {
       responseId: 'address-after-volunteered-name',
       itemId: 'address-after-volunteered-name-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'address-after-volunteered-name-audio',
     });
 
@@ -500,7 +500,7 @@ test('a name-only answer cannot skip the address question', async () => {
     assert.equal(h.audio.includes('wrong-next-field-audio'), false);
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
-      /What's the complete project address\?/,
+      /What's the full project address\?/,
     );
   } finally {
     h.restore();
@@ -520,7 +520,7 @@ test('a natural acknowledgement stays attached to the immediate next question', 
     assistantResponse(h.socket, {
       responseId: 'conversational-address-question',
       itemId: 'conversational-address-question-item',
-      transcript: "Okay, Andrew, sounds great. What's the complete project address?",
+      transcript: "Okay, Andrew, sounds great. What's the full project address?",
       audio: 'conversational-address-question-audio',
     });
 
@@ -543,14 +543,14 @@ test('a corrupted name acknowledgement is discarded before the address question'
     assistantResponse(h.socket, {
       responseId: 'corrupted-name-acknowledgement',
       itemId: 'corrupted-name-acknowledgement-item',
-      transcript: "Inter, I’ve got your name. What’s the complete project address?",
+      transcript: "Inter, I’ve got your name. What’s the full project address?",
       audio: 'corrupted-name-acknowledgement-audio',
     });
 
     assert.equal(h.audio.includes('corrupted-name-acknowledgement-audio'), false);
     assert.equal(
       latestResponseCreate(h.socket).response.instructions,
-      'Say exactly: "What\'s the complete project address?" Do not add anything before or after it.',
+      'Say exactly: "What\'s the full project address?" Do not add anything before or after it.',
     );
   } finally {
     h.restore();
@@ -563,7 +563,7 @@ test('a complete address cannot end on an announcement that timing comes next', 
     assistantResponse(h.socket, {
       responseId: 'address-question-before-dead-end',
       itemId: 'address-question-before-dead-end-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'address-question-before-dead-end-audio',
     });
     caller(
@@ -594,7 +594,7 @@ test('an answer to a different field re-asks the field that was actually pending
     assistantResponse(h.socket, {
       responseId: 'address-question',
       itemId: 'address-question-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'address-question-audio',
     });
     caller(h.socket, 'Monday at 1.', 'caller-wrong-field');
@@ -608,7 +608,7 @@ test('an answer to a different field re-asks the field that was actually pending
     assert.equal(h.audio.includes('bad-advance-audio'), false);
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
-      /I'm sorry, I was asking for the project address\. What's the complete project address\?/,
+      /I'm sorry, I was asking for the project address\. What's the full project address\?/,
     );
   } finally {
     h.restore();
@@ -665,6 +665,90 @@ for (const [label, transcript] of [
     }
   });
 }
+
+test('unfinished scheduling waits and repeated speech after consent cannot replace the summary', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'live-schedule-question',
+      itemId: 'live-schedule-question-item',
+      transcript: 'What date and time would work best for the estimate?',
+      audio: 'live-schedule-question-audio',
+    });
+
+    const responsesBeforeUnfinishedThought = responseCreates(h.socket).length;
+    caller(h.socket, 'I would like...', 'live-unfinished-schedule-answer');
+    assert.equal(responseCreates(h.socket).length, responsesBeforeUnfinishedThought);
+
+    caller(h.socket, 'Friday at 2?', 'live-complete-schedule-answer');
+    const notesPlan = latestResponseCreate(h.socket);
+    assert.match(notesPlan.response.instructions, /Do you have any notes or questions for the business\?/);
+
+    assistantResponse(h.socket, {
+      responseId: 'live-notes-question',
+      itemId: 'live-notes-question-item',
+      transcript: `Okay, sounds good. ${NOTES_PROMPT}`,
+      audio: 'live-notes-question-audio',
+      metadata: notesPlan.response.metadata,
+    });
+    caller(h.socket, "That's it.", 'live-no-notes-answer');
+    const consentPlan = latestResponseCreate(h.socket);
+    assert.match(consentPlan.response.instructions, /Do you consent to being contacted by Tabor Painting\?/);
+
+    assistantResponse(h.socket, {
+      responseId: 'live-consent-question',
+      itemId: 'live-consent-question-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'live-consent-question-audio',
+      metadata: consentPlan.response.metadata,
+    });
+    caller(h.socket, 'Yes.', 'live-first-consent-yes');
+    const firstSummaryPlan = latestResponseCreate(h.socket);
+    assert.deepEqual(firstSummaryPlan.response.tools.map((tool) => tool.name), [
+      'prepare_estimate_summary',
+    ]);
+
+    h.socket.receive({
+      type: 'response.created',
+      response: { id: 'interrupted-first-summary-tool', metadata: firstSummaryPlan.response.metadata },
+    });
+    h.socket.receive({ type: 'input_audio_buffer.speech_started' });
+    caller(h.socket, 'Yes.', 'live-second-consent-yes');
+    const secondSummaryPlan = latestResponseCreate(h.socket);
+    assert.deepEqual(secondSummaryPlan.response.tools.map((tool) => tool.name), [
+      'prepare_estimate_summary',
+    ]);
+
+    h.socket.receive({
+      type: 'response.created',
+      response: { id: 'interrupted-second-summary-tool', metadata: secondSummaryPlan.response.metadata },
+    });
+    h.socket.receive({ type: 'input_audio_buffer.speech_started' });
+    caller(h.socket, 'Hello?', 'live-summary-wait-check');
+    const thirdSummaryPlan = latestResponseCreate(h.socket);
+    assert.deepEqual(thirdSummaryPlan.response.tools.map((tool) => tool.name), [
+      'prepare_estimate_summary',
+    ]);
+    assert.match(thirdSummaryPlan.response.instructions, /Call prepare_estimate_summary now/i);
+
+    assistantResponse(h.socket, {
+      responseId: 'forbidden-generic-closing',
+      itemId: 'forbidden-generic-closing-item',
+      transcript: 'Great, thank you for confirming. If you need help with anything else, just let me know!',
+      audio: 'forbidden-generic-closing-audio',
+      metadata: thirdSummaryPlan.response.metadata,
+    });
+
+    assert.equal(h.audio.includes('forbidden-generic-closing-audio'), false);
+    const repair = latestResponseCreate(h.socket);
+    assert.deepEqual(repair.response.tools.map((tool) => tool.name), [
+      'prepare_estimate_summary',
+    ]);
+    assert.match(repair.response.instructions, /Call prepare_estimate_summary now/i);
+  } finally {
+    h.restore();
+  }
+});
 
 test('Tuesday at 12 cannot dead-end on transition narration or turn recovery chatter into notes', async () => {
   const h = await createHarness();
@@ -777,7 +861,7 @@ test('answered intake fields stay locked while later steps continue', async () =
     assistantResponse(h.socket, {
       responseId: 'locked-address-question',
       itemId: 'locked-address-question-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'locked-address-question-audio',
     });
     caller(
@@ -826,7 +910,7 @@ test('answered intake fields stay locked while later steps continue', async () =
     assistantResponse(h.socket, {
       responseId: 'repeated-completed-address',
       itemId: 'repeated-completed-address-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'repeated-completed-address-audio',
     });
 
@@ -1234,7 +1318,7 @@ test('an explicit final-summary correction may reopen only the corrected field',
     assistantResponse(h.socket, {
       responseId: 'correction-reopen-address',
       itemId: 'correction-reopen-address-item',
-      transcript: "What's the complete project address?",
+      transcript: "What's the full project address?",
       audio: 'correction-reopen-address-audio',
       metadata: correctionQuestionPlan.response.metadata,
     });

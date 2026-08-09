@@ -91,7 +91,7 @@ test('blocks known process narration and unauthorized address expansion', () => 
   assert.equal(shouldBlockReceptionistOutput('Let me clarify the missing part of your address.'), true);
   assert.equal(shouldBlockReceptionistOutput('Quick recap so I can confirm everything.'), true);
   assert.equal(
-    shouldBlockReceptionistOutput('What’s the complete project address, including street, city, state, and ZIP?'),
+    shouldBlockReceptionistOutput('What’s the full project address, including street, city, state, and ZIP?'),
     true,
   );
   assert.equal(shouldBlockReceptionistOutput('Got it.'), true);
@@ -100,7 +100,7 @@ test('blocks known process narration and unauthorized address expansion', () => 
     shouldBlockReceptionistOutput('What name should I use for the estimate request?'),
     false,
   );
-  assert.equal(shouldBlockReceptionistOutput("What's the complete project address?"), false);
+  assert.equal(shouldBlockReceptionistOutput("What's the full project address?"), false);
   assert.equal(
     shouldBlockReceptionistOutput("I'm submitting your estimate request now."),
     false,

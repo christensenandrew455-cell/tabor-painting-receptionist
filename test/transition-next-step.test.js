@@ -22,7 +22,7 @@ test('runtime-blocks transition speech that ends without the actual next questio
 
 test('allows a brief transition when the same response immediately gives the real next step', () => {
   assert.equal(
-    shouldBlockReceptionistOutput("Okay, let's keep this moving. What's the complete project address?"),
+    shouldBlockReceptionistOutput("Okay, let's keep this moving. What's the full project address?"),
     false,
   );
   assert.equal(
@@ -34,7 +34,7 @@ test('allows a brief transition when the same response immediately gives the rea
     false,
   );
   assert.equal(
-    shouldBlockReceptionistOutput("Let me get those details. What's the complete project address?"),
+    shouldBlockReceptionistOutput("Let me get those details. What's the full project address?"),
     false,
   );
   assert.equal(
