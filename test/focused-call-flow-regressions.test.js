@@ -25,6 +25,7 @@ const CONTEXT = Object.freeze({
 const SERVICE_QUESTION = 'What kind of work do you need done?';
 const NOTES_PROMPT = 'Do you have any notes or questions for the business?';
 const MORE_NOTES_PROMPT = 'Do you have any other notes or questions for the business?';
+const UNKNOWN = "I'm sorry, I don't know that. I'll add that question to the notes.";
 const PRE_SUBMIT = "Okay, thanks for confirming. I'm sending the estimate request in now.";
 const SUCCESS = "You're all set. Your estimate request has been submitted.";
 
@@ -104,7 +105,7 @@ function assistantResponse(socket, {
   });
 }
 
-async function createHarness() {
+async function createHarness(context = CONTEXT) {
   const previousApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
   const audio = [];
@@ -114,7 +115,7 @@ async function createHarness() {
   const goodbye = [];
 
   const receptionist = createGuardedOpenAiReceptionist({
-    context: CONTEXT,
+    context,
     runtime: { clientId: 'client-123' },
     callControlId: 'call-focused-regression',
     callerPhone: '+15555550123',
@@ -159,6 +160,27 @@ function responseCreates(socket) {
 function latestResponseCreate(socket) {
   return responseCreates(socket).at(-1);
 }
+
+function sessionInstructions(socket) {
+  return socket.sent.find((event) => event.type === 'session.update')?.session?.instructions || '';
+}
+
+test('session rules remove conflicting business-answer and notes instructions', async () => {
+  const h = await createHarness();
+  try {
+    const instructions = sessionInstructions(h.socket);
+    assert.match(instructions, /business information supplied for this call/i);
+    assert.match(instructions, /same response may contain the brief grounded answer followed by the one appropriate follow-up question/i);
+    assert.match(instructions, /Continue to contact permission only after the caller explicitly says they have no more notes or questions/i);
+    assert.doesNotMatch(instructions, /Choose exactly one next action before speaking/i);
+    assert.doesNotMatch(instructions, /The price depends on the estimate/i);
+    assert.doesNotMatch(instructions, /longest it will take is a week/i);
+    assert.doesNotMatch(instructions, /one of the two fallbacks above/i);
+    assert.doesNotMatch(instructions, /safe fallbacks/i);
+  } finally {
+    h.restore();
+  }
+});
 
 test('greeting asks for the work in ordinary caller language', async () => {
   const h = await createHarness();
@@ -228,7 +250,7 @@ test('an answer to a different field re-asks the field that was actually pending
   }
 });
 
-test('a supported business question stays inside the notes loop instead of restarting intake', async () => {
+test('a supported business question is answered without being added to notes and stays in notes', async () => {
   const h = await createHarness();
   try {
     assistantResponse(h.socket, {
@@ -247,9 +269,43 @@ test('a supported business question stays inside the notes loop instead of resta
 
     assert.equal(h.audio.includes('bad-services-answer-audio'), false);
     const repair = latestResponseCreate(h.socket).response.instructions;
-    assert.match(repair, /supplied structured business data/i);
+    assert.match(repair, /supplied business data for this call/i);
+    assert.match(repair, /Do not add an answered question to the notes/i);
     assert.match(repair, new RegExp(MORE_NOTES_PROMPT.replace(/[?]/g, '\\?')));
+    assert.doesNotMatch(repair, /add that question to the notes/i);
     assert.doesNotMatch(repair, /ask.*service were you looking for/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a business fact supplied by the app can be answered and is not forced into notes', async () => {
+  const context = {
+    ...CONTEXT,
+    knowledgeJson: JSON.stringify({
+      businessHours: 'Monday through Friday',
+      serviceAreas: ['Local service area'],
+      warranty: 'Two-year workmanship warranty',
+    }),
+  };
+  const h = await createHarness(context);
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-warranty',
+      itemId: 'notes-question-warranty-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-warranty-audio',
+    });
+    caller(h.socket, 'Do you have a warranty?', 'caller-warranty-question');
+    assistantResponse(h.socket, {
+      responseId: 'grounded-warranty-answer',
+      itemId: 'grounded-warranty-answer-item',
+      transcript: `Yes, the business data says there is a two-year workmanship warranty. ${MORE_NOTES_PROMPT}`,
+      audio: 'grounded-warranty-audio',
+    });
+
+    assert.equal(h.audio.includes('grounded-warranty-audio'), true);
+    assert.equal(latestResponseCreate(h.socket).response.instructions.includes(UNKNOWN), false);
   } finally {
     h.restore();
   }
@@ -276,7 +332,7 @@ test('an unsupported multi-part business question is not answered from general k
     assert.equal(h.audio.includes('hallucinated-duration-audio'), false);
     assert.equal(
       latestResponseCreate(h.socket).response.instructions,
-      `Say exactly: "Okay, I'll add it to the notes. ${MORE_NOTES_PROMPT}" Do not add anything before or after it.`,
+      `Say exactly: "${UNKNOWN} ${MORE_NOTES_PROMPT}" Do not add anything before or after it.`,
     );
   } finally {
     h.restore();
