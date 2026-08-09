@@ -221,7 +221,7 @@ test('an answer to a different field re-asks the field that was actually pending
     assert.equal(h.audio.includes('bad-advance-audio'), false);
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
-      /I'm sorry, I was asking for the project address\. What's the complete project address\?'/,
+      /I'm sorry, I was asking for the project address\. What's the complete project address\?/,
     );
   } finally {
     h.restore();
@@ -316,7 +316,7 @@ test('notes do not advance to consent until the caller explicitly says they are 
     assert.equal(h.audio.includes('wrong-after-done-audio'), false);
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
-      /Okay, thanks for the notes\. One more question\. Do you consent to being contacted by Tabor Painting\?'/,
+      /Okay, thanks for the notes\. One more question\. Do you consent to being contacted by Tabor Painting\?/,
     );
   } finally {
     h.restore();
