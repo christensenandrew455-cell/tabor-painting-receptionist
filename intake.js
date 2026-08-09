@@ -47,6 +47,32 @@ function fail(message, field = '') {
   throw error;
 }
 
+function isConversationMetadataNote(value) {
+  const text = cleanText(value)
+    .toLowerCase()
+    .replace(/[’]/g, "'")
+    .replace(/[^a-z0-9']+/g, ' ')
+    .trim();
+  if (!text) return true;
+  return /^no (?:other |additional )?(?:project )?notes? (?:(?:were|was) )?provided\b/.test(text)
+    || /\bwhat(?:'s| is) (?:the|your) question\b/.test(text)
+    || /\b(?:did not|didn't) (?:even )?ask (?:a|the|that|any) question\b/.test(text)
+    || /\b(?:caller|customer|they|he|she) (?:asked|wondered|said)\b.*\bwhat\b.*\b(?:talking|asking) about\b/.test(text)
+    || /\b(?:consent(?:ed)?|permission)\b.*\bcontact(?:ed)?\b/.test(text)
+    || /^(?:hello|are you (?:still )?there|can you hear me)$/i.test(text);
+}
+
+export function sanitizeAdditionalNotes(value) {
+  const text = cleanText(value);
+  if (!text) return '';
+  return text
+    .split(/\s*;\s*|(?<=[.!?])\s+/)
+    .map((part) => cleanText(part))
+    .filter((part) => part && !isConversationMetadataNote(part))
+    .join(' ')
+    .trim();
+}
+
 function datePartsInZone(now, timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -343,7 +369,7 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     requestedDate: date.exactDate,
     requestedDateSpoken: date.spokenDate,
     requestedTime,
-    additionalNotes: cleanText(args.additional_notes).slice(0, 1_000),
+    additionalNotes: sanitizeAdditionalNotes(args.additional_notes).slice(0, 1_000),
     consentToContact: true,
   });
 }

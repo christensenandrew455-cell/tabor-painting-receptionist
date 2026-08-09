@@ -206,8 +206,9 @@ test('does not send blocked narration audio to the caller and repairs after resp
     assert.ok(deletion);
 
     const repair = socket.sent
-      .filter((event) => event.type === 'response.create')
-      .find((event) => /What name should I use for the estimate request/i.test(event.response?.instructions));
+      .filter((event) => event.type === 'response.create'
+        && /What name should I use for the estimate request/i.test(event.response?.instructions))
+      .at(-1);
     assert.ok(repair);
     assert.equal(
       repair.response.instructions,
