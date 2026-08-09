@@ -4,6 +4,7 @@ import {
   createIntakeManager,
   normalizeRequestedTime,
   resolveRequestedDate,
+  sanitizeAdditionalNotes,
 } from '../intake.js';
 
 const NOW = new Date('2026-08-03T16:00:00.000Z');
@@ -63,6 +64,19 @@ test('infers a bare hour when only one meridiem fits the estimate window', () =>
       latestEstimateStart: '23:59',
     }),
     /AM or PM/,
+  );
+});
+
+test('removes conversation-repair chatter and consent from project notes', () => {
+  assert.equal(
+    sanitizeAdditionalNotes(
+      'The shed has some rotten wood. Caller asked what I was talking about earlier; no other project notes were provided. They also said they consented to being contacted.',
+    ),
+    'The shed has some rotten wood.',
+  );
+  assert.equal(
+    sanitizeAdditionalNotes("What's the question? I didn't even ask a question."),
+    '',
   );
 });
 

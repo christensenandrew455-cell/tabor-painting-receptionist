@@ -173,6 +173,8 @@ test('session rules remove conflicting business-answer and notes instructions', 
     assert.match(instructions, /same response may contain the brief grounded answer followed by the one appropriate follow-up question/i);
     assert.match(instructions, /Continue to contact permission only after the caller explicitly says they have no more notes or questions/i);
     assert.match(instructions, /required final summary/i);
+    assert.match(instructions, /same spoken response must contain the one actual next required question/i);
+    assert.match(instructions, /that is conversation repair.*never a business question and never a project note/i);
     assert.doesNotMatch(instructions, /Choose exactly one next action before speaking/i);
     assert.doesNotMatch(instructions, /The price depends on the estimate/i);
     assert.doesNotMatch(instructions, /longest it will take is a week/i);
@@ -313,6 +315,29 @@ test('a name-only answer cannot skip the address question', async () => {
   }
 });
 
+test('a natural acknowledgement stays attached to the immediate next question', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'conversational-name-question',
+      itemId: 'conversational-name-question-item',
+      transcript: 'What name should I use for the estimate request?',
+      audio: 'conversational-name-question-audio',
+    });
+    caller(h.socket, 'Andrew Christensen.', 'conversational-caller-name');
+    assistantResponse(h.socket, {
+      responseId: 'conversational-address-question',
+      itemId: 'conversational-address-question-item',
+      transcript: "Okay, Andrew, sounds great. What's the complete project address?",
+      audio: 'conversational-address-question-audio',
+    });
+
+    assert.equal(h.audio.includes('conversational-address-question-audio'), true);
+  } finally {
+    h.restore();
+  }
+});
+
 test('an answer to a different field re-asks the field that was actually pending', async () => {
   const h = await createHarness();
   try {
@@ -362,6 +387,97 @@ test('Monday at 1 silently resolves to 1 PM and advances to notes', async () => 
       latestResponseCreate(h.socket).response.instructions,
       `Say exactly: "${NOTES_PROMPT}" Do not add anything before or after it.`,
     );
+  } finally {
+    h.restore();
+  }
+});
+
+test('Tuesday at 12 cannot dead-end on transition narration or turn recovery chatter into notes', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'noon-schedule-question',
+      itemId: 'noon-schedule-question-item',
+      transcript: 'What date and time would work best for the estimate?',
+      audio: 'noon-schedule-question-audio',
+    });
+    caller(
+      h.socket,
+      'Probably like Tuesday. Uh, and can you do 12 on Tuesday?',
+      'caller-tuesday-noon',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'dead-end-transition',
+      itemId: 'dead-end-transition-item',
+      transcript: 'Got it, let me ask one quick question to move things along.',
+      audio: 'dead-end-transition-audio',
+    });
+
+    assert.equal(h.audio.includes('dead-end-transition-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+
+    assistantResponse(h.socket, {
+      responseId: 'actual-notes-question',
+      itemId: 'actual-notes-question-item',
+      transcript: NOTES_PROMPT,
+      audio: 'actual-notes-question-audio',
+    });
+    caller(h.socket, "What's the question?", 'caller-asks-for-question');
+    assistantResponse(h.socket, {
+      responseId: 'misclassified-recovery-question',
+      itemId: 'misclassified-recovery-question-item',
+      transcript: `${UNKNOWN} ${MORE_NOTES_PROMPT}`,
+      audio: 'misclassified-recovery-question-audio',
+    });
+
+    assert.equal(h.audio.includes('misclassified-recovery-question-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+
+    assistantResponse(h.socket, {
+      responseId: 'repeated-actual-notes-question',
+      itemId: 'repeated-actual-notes-question-item',
+      transcript: NOTES_PROMPT,
+      audio: 'repeated-actual-notes-question-audio',
+    });
+    caller(
+      h.socket,
+      "No, I didn't even ask a question. I was wondering what the hell you were even talking about.",
+      'caller-explains-confusion',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'premature-consent-after-confusion',
+      itemId: 'premature-consent-after-confusion-item',
+      transcript: 'Okay, thanks for the notes. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'premature-consent-after-confusion-audio',
+    });
+
+    assert.equal(h.audio.includes('premature-consent-after-confusion-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      `Say exactly: "${NOTES_PROMPT}" Do not add anything before or after it.`,
+    );
+
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-after-confusion',
+      itemId: 'notes-question-after-confusion-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-after-confusion-audio',
+    });
+    caller(h.socket, "No, I don't have any notes or questions.", 'caller-no-actual-notes');
+    assistantResponse(h.socket, {
+      responseId: 'consent-without-fake-notes',
+      itemId: 'consent-without-fake-notes-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'consent-without-fake-notes-audio',
+    });
+
+    assert.equal(h.audio.includes('consent-without-fake-notes-audio'), true);
   } finally {
     h.restore();
   }
