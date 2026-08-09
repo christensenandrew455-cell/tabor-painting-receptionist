@@ -456,7 +456,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
           },
           turn_detection: {
             type: 'semantic_vad',
-            eagerness: 'low',
+            eagerness: 'high',
             create_response: false,
             interrupt_response: false,
           },
