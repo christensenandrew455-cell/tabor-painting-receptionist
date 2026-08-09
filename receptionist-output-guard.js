@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { cleanText } from './business-context.js';
+import { normalizeRequestedTime } from './intake.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
 
 const OLD_SERVICE_QUESTION = 'What service were you looking for?';
@@ -219,9 +220,68 @@ function isClearAffirmative(value) {
 }
 
 function looksLikeBusinessQuestion(value) {
-  const text = cleanText(value);
+  const text = cleanText(value).replace(
+    /(?:[,;—-]\s*|\s+)(?:you know(?: what i(?:'|’)m talking about| what i mean)?|you (?:know|get) what i mean|(?:does|did) (?:that|this) make sense|if (?:that|this) makes sense|right|okay|ok)\s*[?.!]*$/i,
+    '',
+  ).trim();
+  if (!text) return false;
   return /\?$/.test(text)
     || /^(?:what|when|where|why|how|do|does|can|could|is|are|will|would)\b/i.test(text);
+}
+
+function callerVolunteeredName(value) {
+  const text = cleanText(value);
+  return /\b(?:my name is|this is)\s+[\p{L}][\p{L}'’.-]*/iu.test(text)
+    || /\bi(?: am|'m|’m)\s+(?!looking|calling|trying|interested|hoping|wanting|needing|getting|having|probably\b)[\p{L}][\p{L}'’.-]*/iu.test(text);
+}
+
+function normalizedTimeMinutes(value) {
+  const match = cleanText(value).match(/^(1[0-2]|[1-9]):([0-5]\d)\s+(AM|PM)$/i);
+  if (!match) return null;
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') hour += 12;
+  return hour * 60 + Number(match[2]);
+}
+
+function configuredEstimateMinutes(value) {
+  const text = cleanText(value);
+  const twentyFourHour = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (twentyFourHour) return Number(twentyFourHour[1]) * 60 + Number(twentyFourHour[2]);
+  try {
+    return normalizedTimeMinutes(normalizeRequestedTime(text));
+  } catch {
+    return null;
+  }
+}
+
+function scheduleTimeFromCaller(value) {
+  const text = cleanText(value);
+  const afterAt = text.match(
+    /\b(?:at|around|about)\s+(\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)?)\b/i,
+  );
+  if (afterAt) return afterAt[1];
+  const explicit = text.match(/\b(\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?))\b/i);
+  return explicit ? explicit[1] : '';
+}
+
+function hasCompleteAvailableSchedule(value, context = {}) {
+  const text = cleanText(value);
+  const hasDate = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,2}[/-]\d{1,2}\b/i.test(text);
+  const callerTime = scheduleTimeFromCaller(text);
+  if (!hasDate || !callerTime) return false;
+
+  let requestedMinutes;
+  try {
+    requestedMinutes = normalizedTimeMinutes(normalizeRequestedTime(callerTime, context));
+  } catch {
+    return false;
+  }
+  if (requestedMinutes === null) return false;
+
+  const earliest = configuredEstimateMinutes(context.earliestEstimateStart);
+  const latest = configuredEstimateMinutes(context.latestEstimateStart);
+  return (!Number.isFinite(earliest) || requestedMinutes >= earliest)
+    && (!Number.isFinite(latest) || requestedMinutes <= latest);
 }
 
 function gatheredBusinessDataText(context = {}) {
@@ -536,10 +596,13 @@ function hardenSessionUpdate(event) {
       .replace(oldNotesCompletionRule, explicitNotesCompletionRule)
       + `\nSERVICE QUESTION RULE: Ask exactly: "${SERVICE_QUESTION}" The caller is expected to describe the work in ordinary words rather than know the website service category. Silently match their description to the supplied service when it is clear. Do not repeat the category back during intake.`
       + `\nFIELD FOCUS RULE: Keep the intake on the single field you just asked for. If the caller clearly answers a different field without also answering the pending field, do not consume that answer as a substitute and do not advance. Briefly apologize that you were asking for the pending field and ask that same field again. If the caller deliberately gives several fields in one turn and includes the pending field, keep all usable details and continue to the next genuinely missing field.`
+      + `\nINTAKE ORDER RULE: After a clear service answer, ask for the caller's name immediately. Then ask for the project address, then the preferred date and time, then notes or questions, then contact permission. Never skip the name and never reopen a field that the caller already answered.`
       + `\nCALLER VALUE RULE: Outside the required final summary and server-normalized prepared summary, caller-specific values come only from the caller. Never invent, autocomplete, nickname, alter, or suggest a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge. If you casually use the caller's first name, use exactly the first-name wording the caller supplied; never substitute a nickname. In the required final summary, read back only the prepared values and ask the single overall confirmation question.`
       + `\nADDRESS RULE: Ask exactly "What's the complete project address?" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
+      + `\nTIME INFERENCE RULE: When the caller gives a day and a bare hour, infer AM or PM silently if only one interpretation falls inside the supplied estimate hours. A bare hour such as 1 during a 9:00 AM through 4:00 PM estimate window is 1:00 PM. Do not ask the caller to distinguish an impossible overnight interpretation.`
       + `\nBUSINESS KNOWLEDGE RULE: Business facts may come only from the business data supplied for this call. If that data contains the answer, answer briefly and do not add the answered question to notes. If that data does not contain the answer, do not use general knowledge, common painting knowledge, hardcoded fallback claims, assumptions, or typical industry practice. In particular, never invent job duration, drying time, prep time, pricing details, response-time promises, guarantees, policies, or availability.`
-      + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. After a project note, ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question that the supplied business data can answer, answer it briefly, do not add it to notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question the supplied data cannot answer, say the sentence exactly as "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" preserve that question in the notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded one note or question.`
+      + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. A project statement does not become a business question merely because it ends with a conversational tag such as "you know what I mean?", "you know what I'm talking about?", "right?", or "does that make sense?" Treat that whole turn as a note. After a project note, ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question that the supplied business data can answer, answer it briefly, do not add it to notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question the supplied data cannot answer, say the sentence exactly as "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" preserve that question in the notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded one note or question.`
+      + `\nCONSENT BOUNDARY RULE: After the caller says yes to contact permission, do not speak, repeat their notes, thank them again, or ask for any intake field. Call prepare_estimate_summary immediately with every detail already collected. The next spoken response must be the server-prepared final summary.`
       + `\nHARD OUTPUT RULE: Do not generate standalone process or transition narration. Before speaking, remove phrases such as "one sec", "let me get the details", "let me grab the details", "let me check", "let's keep moving", or any natural variation unless the same spoken response immediately continues into the actual next question or action. Prefer skipping the transition entirely and asking the next question directly. Never end a turn on process narration. Never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
       + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought, wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
       + `\nDELIVERY RULE: Speak with smooth, natural conversational pacing and intonation. Keep sentences short and easy to follow. Do not sound clipped, staccato, overly formal, or like you are reading field labels.`
@@ -636,6 +699,9 @@ function createGuardedWebSocketClass({
       this.submitCallIds = new Set();
       this.submissionStarted = false;
       this.failedSubmitFollowupPending = false;
+      this.pendingDeleteItems = new Set();
+      this.deleteRequestItems = new Map();
+      this.deleteRequestSequence = 0;
 
       this.inner.on('open', (...args) => this.emit('open', ...args));
       this.inner.on('error', (...args) => this.emit('error', ...args));
@@ -720,6 +786,41 @@ function createGuardedWebSocketClass({
       this.emit('message', Buffer.from(JSON.stringify(event)));
     }
 
+    deleteConversationItem(itemId) {
+      const id = cleanText(itemId);
+      if (!id || this.pendingDeleteItems.has(id)) return;
+      const eventId = `guard-delete-${this.deleteRequestSequence += 1}`;
+      this.pendingDeleteItems.add(id);
+      this.deleteRequestItems.set(eventId, id);
+      this.inner.send(JSON.stringify({
+        type: 'conversation.item.delete',
+        event_id: eventId,
+        item_id: id,
+      }));
+    }
+
+    clearDeleteRequest(itemId, eventId = '') {
+      const id = cleanText(itemId);
+      const requestId = cleanText(eventId);
+      if (id) this.pendingDeleteItems.delete(id);
+      if (requestId) this.deleteRequestItems.delete(requestId);
+      for (const [key, value] of this.deleteRequestItems) {
+        if (value === id) this.deleteRequestItems.delete(key);
+      }
+    }
+
+    consumeMissingDeleteError(event) {
+      const message = cleanText(event.error?.message);
+      if (!/error deleting item:.*does not exist/i.test(message)) return false;
+      const requestId = cleanText(event.error?.event_id);
+      const itemFromRequest = this.deleteRequestItems.get(requestId) || '';
+      const itemFromMessage = message.match(/item with id ['"]([^'"]+)['"]/i)?.[1] || '';
+      const itemId = cleanText(itemFromRequest || itemFromMessage);
+      if (!itemId || !this.pendingDeleteItems.has(itemId)) return false;
+      this.clearDeleteRequest(itemId, requestId);
+      return true;
+    }
+
     forwardCreated(state) {
       if (!state.createdEvent || state.createdForwarded) return;
       this.emitJson(state.createdEvent);
@@ -744,6 +845,15 @@ function createGuardedWebSocketClass({
       const spoken = cleanText(transcript);
       const pending = classifyPendingField(spoken);
 
+      if (
+        state.policy?.callerTranscript
+        && !sameSpokenText(state.callerTranscript, state.policy.callerTranscript)
+      ) {
+        state.policy.stale = true;
+        this.markBlocked(state);
+        return false;
+      }
+
       if (state.policy?.expectedTranscript && !sameSpokenText(spoken, state.policy.expectedTranscript)) {
         this.markBlocked(state);
         return false;
@@ -759,11 +869,28 @@ function createGuardedWebSocketClass({
         return false;
       }
 
-      if (callerAnsweredDifferentField(state.answeredField, state.callerTranscript)) {
+      const answeredDifferentField = callerAnsweredDifferentField(
+        state.answeredField,
+        state.callerTranscript,
+      );
+      if (answeredDifferentField) {
         if (pending !== state.answeredField) {
           this.markBlocked(state);
           return false;
         }
+      }
+
+      if (
+        state.answeredField === 'service'
+        && !answeredDifferentField
+        && !looksLikeBusinessQuestion(state.callerTranscript)
+        && (
+          (!callerVolunteeredName(state.callerTranscript) && pending !== 'name')
+          || (callerVolunteeredName(state.callerTranscript) && !pending)
+        )
+      ) {
+        this.markBlocked(state);
+        return false;
       }
 
       if (
@@ -789,6 +916,13 @@ function createGuardedWebSocketClass({
           return false;
         }
         if (
+          !looksLikeBusinessQuestion(state.callerTranscript)
+          && normalized(spoken).startsWith(normalized(UNKNOWN_BUSINESS_QUESTION_RESPONSE))
+        ) {
+          this.markBlocked(state);
+          return false;
+        }
+        if (
           looksLikeBusinessQuestion(state.callerTranscript)
           && !businessDataSupportsQuestion(state.callerTranscript, context)
           && !normalized(spoken).startsWith(normalized(UNKNOWN_BUSINESS_QUESTION_RESPONSE))
@@ -809,19 +943,27 @@ function createGuardedWebSocketClass({
         }
       }
 
-      if (
-        state.answeredField === 'schedule'
-        && pending === 'notes'
-        && !sameSpokenText(spoken, NOTES_AND_QUESTIONS_PROMPT)
-      ) {
-        this.markBlocked(state);
-        return false;
+      if (state.answeredField === 'schedule') {
+        if (
+          hasCompleteAvailableSchedule(state.callerTranscript, context)
+          && (
+            pending !== 'notes'
+            || !sameSpokenText(spoken, NOTES_AND_QUESTIONS_PROMPT)
+          )
+        ) {
+          this.markBlocked(state);
+          return false;
+        }
+        if (pending === 'notes' && !sameSpokenText(spoken, NOTES_AND_QUESTIONS_PROMPT)) {
+          this.markBlocked(state);
+          return false;
+        }
       }
 
       if (
         state.answeredField === 'consent'
         && isClearAffirmative(state.callerTranscript)
-        && isDisallowedAddressClarification(spoken)
+        && !state.policy
       ) {
         this.markBlocked(state);
         return false;
@@ -877,6 +1019,7 @@ function createGuardedWebSocketClass({
       this.pendingResponsePolicies.push({
         expectedTranscript: plan.expectedTranscript || '',
         repairInstruction: plan.instructions,
+        callerTranscript: this.latestCallerTranscript,
       });
       this.inner.send(JSON.stringify({
         type: 'response.create',
@@ -899,16 +1042,11 @@ function createGuardedWebSocketClass({
         },
       });
 
-      for (const itemId of state.itemIds) {
-        this.inner.send(JSON.stringify({
-          type: 'conversation.item.delete',
-          item_id: itemId,
-        }));
-      }
+      for (const itemId of state.itemIds) this.deleteConversationItem(itemId);
 
       if (!repair || state.interrupted) return;
 
-      if (state.policy?.repairInstruction) {
+      if (state.policy?.repairInstruction && !state.policy.stale) {
         this.sendRepair({
           instructions: state.policy.repairInstruction,
           expectedTranscript: state.policy.expectedTranscript || '',
@@ -951,6 +1089,14 @@ function createGuardedWebSocketClass({
         event = JSON.parse(raw.toString());
       } catch {
         this.emit('message', raw);
+        return;
+      }
+
+      if (event.type === 'error' && this.consumeMissingDeleteError(event)) return;
+
+      if (event.type === 'conversation.item.deleted') {
+        this.clearDeleteRequest(event.item_id);
+        this.emitJson(event);
         return;
       }
 

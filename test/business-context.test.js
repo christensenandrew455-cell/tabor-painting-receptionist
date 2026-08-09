@@ -94,7 +94,9 @@ test('caps website knowledge included in the model prompt', () => {
     const context = createBusinessContext({
       profile: {
         businessName: 'Large Website Painting',
-        extraInformation: 'x'.repeat(10_000),
+      },
+      knowledge: {
+        serviceDetails: 'x'.repeat(10_000),
       },
     });
     assert.ok(context.knowledgeJson.length < 2_100);

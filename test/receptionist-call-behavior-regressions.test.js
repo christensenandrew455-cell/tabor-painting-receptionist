@@ -180,7 +180,10 @@ test('session rules use the simple notes question and short unknown-question fal
     assert.ok(sessionUpdate);
     assert.match(sessionUpdate.session.instructions, /Do you have any notes or questions for the business\?/);
     assert.doesNotMatch(sessionUpdate.session.instructions, /you'd like me to help with or pass along/i);
-    assert.match(sessionUpdate.session.instructions, /Okay, I'll add it to the notes\./);
+    assert.match(
+      sessionUpdate.session.instructions,
+      /I'm sorry, I don't know that\. I'll add that question to the notes\./,
+    );
     assert.doesNotMatch(sessionUpdate.session.instructions, /I'm sorry, I don't really know that/i);
   } finally {
     h.restore();

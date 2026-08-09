@@ -54,6 +54,18 @@ test('requires AM or PM for an ambiguous time', () => {
   assert.equal(normalizeRequestedTime('3:30 pm'), '3:30 PM');
 });
 
+test('infers a bare hour when only one meridiem fits the estimate window', () => {
+  assert.equal(normalizeRequestedTime('1', CONTEXT), '1:00 PM');
+  assert.equal(normalizeRequestedTime('9', CONTEXT), '9:00 AM');
+  assert.throws(
+    () => normalizeRequestedTime('3', {
+      earliestEstimateStart: '00:00',
+      latestEstimateStart: '23:59',
+    }),
+    /AM or PM/,
+  );
+});
+
 test('requires explicit contact consent before preparing a summary', () => {
   const manager = createIntakeManager({
     context: CONTEXT,

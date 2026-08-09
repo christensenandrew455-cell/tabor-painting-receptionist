@@ -145,7 +145,10 @@ test('does not send blocked narration audio to the caller and repairs after resp
     const sessionUpdate = socket.sent.find((event) => event.type === 'session.update');
     assert.ok(sessionUpdate);
     assert.doesNotMatch(sessionUpdate.session.instructions, /Light acknowledgments.*are encouraged/i);
-    assert.match(sessionUpdate.session.instructions, /HARD OUTPUT RULE: Process narration is prohibited/i);
+    assert.match(
+      sessionUpdate.session.instructions,
+      /HARD OUTPUT RULE: Do not generate standalone process or transition narration/i,
+    );
 
     socket.receive({ type: 'session.updated', session: {} });
 
