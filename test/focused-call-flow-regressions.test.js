@@ -338,6 +338,64 @@ test('a natural acknowledgement stays attached to the immediate next question', 
   }
 });
 
+test('a corrupted name acknowledgement is discarded before the address question', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'name-question-before-corruption',
+      itemId: 'name-question-before-corruption-item',
+      transcript: 'What name should I use for the estimate request?',
+      audio: 'name-question-before-corruption-audio',
+    });
+    caller(h.socket, 'Andrew Christensen.', 'caller-name-before-corruption');
+    assistantResponse(h.socket, {
+      responseId: 'corrupted-name-acknowledgement',
+      itemId: 'corrupted-name-acknowledgement-item',
+      transcript: "Inter, I’ve got your name. What’s the complete project address?",
+      audio: 'corrupted-name-acknowledgement-audio',
+    });
+
+    assert.equal(h.audio.includes('corrupted-name-acknowledgement-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "What\'s the complete project address?" Do not add anything before or after it.',
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('a complete address cannot end on an announcement that timing comes next', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'address-question-before-dead-end',
+      itemId: 'address-question-before-dead-end-item',
+      transcript: "What's the complete project address?",
+      audio: 'address-question-before-dead-end-audio',
+    });
+    caller(
+      h.socket,
+      '197 Lancaster Road, Berlin, Massachusetts.',
+      'caller-address-before-dead-end',
+    );
+    assistantResponse(h.socket, {
+      responseId: 'timing-announcement-dead-end',
+      itemId: 'timing-announcement-dead-end-item',
+      transcript: 'Got it, thanks for that detail. Let me just ask for the timing next.',
+      audio: 'timing-announcement-dead-end-audio',
+    });
+
+    assert.equal(h.audio.includes('timing-announcement-dead-end-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "What date and time would work best for the estimate?" Do not add anything before or after it.',
+    );
+  } finally {
+    h.restore();
+  }
+});
+
 test('an answer to a different field re-asks the field that was actually pending', async () => {
   const h = await createHarness();
   try {
@@ -726,6 +784,33 @@ test('notes do not advance to consent until the caller explicitly says they are 
   }
 });
 
+test('Nie is treated as a no-notes transcription instead of a project note', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-before-nie',
+      itemId: 'notes-question-before-nie-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-before-nie-audio',
+    });
+    caller(h.socket, 'Nie.', 'caller-no-transcribed-as-nie');
+    assistantResponse(h.socket, {
+      responseId: 'more-notes-after-nie',
+      itemId: 'more-notes-after-nie-item',
+      transcript: MORE_NOTES_PROMPT,
+      audio: 'more-notes-after-nie-audio',
+    });
+
+    assert.equal(h.audio.includes('more-notes-after-nie-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?" Do not add anything before or after it.',
+    );
+  } finally {
+    h.restore();
+  }
+});
+
 test('a project note with a conversational question tag stays a note', async () => {
   const h = await createHarness();
   try {
@@ -840,6 +925,34 @@ test('consent yes cannot repeat notes or reopen any completed intake field', asy
     assert.match(latestResponseCreate(h.socket).response.instructions, /Call prepare_estimate_summary now/i);
     assert.doesNotMatch(latestResponseCreate(h.socket).response.instructions, /saved that note/i);
     assert.doesNotMatch(latestResponseCreate(h.socket).response.instructions, /What name should I use/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('an empty response after consent yes is repaired into the required summary tool call', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'consent-question-before-empty-response',
+      itemId: 'consent-question-before-empty-response-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+      audio: 'consent-question-before-empty-response-audio',
+    });
+    caller(h.socket, 'Yes.', 'caller-consent-before-empty-response');
+    h.socket.receive({
+      type: 'response.created',
+      response: { id: 'empty-response-after-consent' },
+    });
+    h.socket.receive({
+      type: 'response.done',
+      response: { id: 'empty-response-after-consent', output: [] },
+    });
+
+    assert.match(
+      latestResponseCreate(h.socket).response.instructions,
+      /Call prepare_estimate_summary now/i,
+    );
   } finally {
     h.restore();
   }

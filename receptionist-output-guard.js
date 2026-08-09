@@ -37,7 +37,7 @@ const CONDITIONAL_TRANSITION_PATTERNS = Object.freeze([
   /\b(?:hold on|give me (?:a )?(?:sec(?:ond)?|moment))\b/i,
   /\blet(?:(?:'|’)s| us) (?:move on|keep (?:this|it) moving|keep going|continue)\b/i,
   /\bmove on to\b/i,
-  /\b(?:let me|i(?:'|’)ll|we(?:'|’)ll) (?:ask|get|grab|gather|collect|pull|bring|look|check|review|find|fetch|figure out|work out)\b/i,
+  /\b(?:let me|i(?:'|’)ll|we(?:'|’)ll) (?:just )?(?:ask|get|grab|gather|collect|pull|bring|look|check|review|find|fetch|figure out|work out)\b/i,
   /\b(?:get|ask|move to) (?:the )?(?:next|one quick) (?:question|detail)\b/i,
   /\b(?:question|detail)\b[\s\S]{0,40}\bmove (?:things|this|it) along\b/i,
 ]);
@@ -52,6 +52,7 @@ const PROCESS_NARRATION_PATTERNS = Object.freeze([
   /\bget (?:the )?estimate summary ready\b/i,
   /\bi(?:'|’)m (?:still )?(?:getting|a bit )?confused\b/i,
   /\bpackage the estimate request\b/i,
+  /\bi(?:'|’)ve got your name\b/i,
   /\btake your time\b/i,
   /\bwhenever you(?:'re| are) ready\b/i,
   /\bno problem\b/i,
@@ -249,7 +250,7 @@ function classifyPendingField(value) {
 
 function isClearNegative(value) {
   const text = normalized(value);
-  return /^(?:no|nope|nah|none|nothing)\b/.test(text)
+  return /^(?:no|nope|nah|none|nothing|nie)\b/.test(text)
     || /\b(?:do not|don't|dont) have any\b/.test(text)
     || /\bno (?:more )?(?:notes|questions)\b/.test(text)
     || /\bnothing (?:else|to add)\b/.test(text)
@@ -263,7 +264,8 @@ function isClearAffirmative(value) {
 function isConversationRepairRequest(value) {
   const text = normalized(value);
   if (!text) return false;
-  return /^(?:no )?what(?:'s| is) (?:the|your) question\b/.test(text)
+  return /^(?:what|huh|pardon|sorry what)$/.test(text)
+    || /^(?:no )?what(?:'s| is) (?:the|your) question\b/.test(text)
     || /\b(?:i )?(?:do not|don't|did not|didn't) (?:even )?(?:understand|follow|ask (?:a|the|that|any) question)\b/.test(text)
     || /\b(?:you never|you did not|you didn't) ask (?:me )?(?:a|the|that) question\b/.test(text)
     || /\bwhat (?:the hell )?(?:(?:are|were) you|you (?:are|were)) (?:even )?(?:talking|asking) about\b/.test(text)
@@ -970,6 +972,12 @@ function createGuardedWebSocketClass({
         && isClearAffirmative(state.callerTranscript);
     }
 
+    shouldRequireSummaryPreparation(state) {
+      return state.answeredField === 'consent'
+        && isClearAffirmative(state.callerTranscript)
+        && !state.policy?.expectedTranscript;
+    }
+
     approveResponse(state, transcript, transcriptDoneEvent = null) {
       if (state.blocked || state.interrupted) return false;
       const spoken = cleanText(transcript);
@@ -1113,7 +1121,7 @@ function createGuardedWebSocketClass({
       if (
         state.answeredField === 'consent'
         && isClearAffirmative(state.callerTranscript)
-        && !state.policy
+        && !state.policy?.expectedTranscript
       ) {
         this.markBlocked(state);
         return false;
@@ -1377,6 +1385,7 @@ function createGuardedWebSocketClass({
         }
 
         if (!state.transcript) state.transcript = extractResponseTranscript(event.response);
+        const hasPrepareCall = hasFunctionCall(event.response, 'prepare_estimate_summary');
         const hasSubmitCall = hasFunctionCall(event.response, 'submit_estimate_request');
         const isSubmissionStart = sameSpokenText(state.transcript, SUBMISSION_START_RESPONSE);
 
@@ -1394,6 +1403,10 @@ function createGuardedWebSocketClass({
           if (!this.shouldRequireSubmissionStart(state) || !state.approved || !isSubmissionStart) {
             this.markBlocked(state);
           }
+        }
+
+        if (this.shouldRequireSummaryPreparation(state) && !hasPrepareCall) {
+          this.markBlocked(state);
         }
 
         if (state.blocked) {
