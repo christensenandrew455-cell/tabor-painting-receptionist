@@ -152,6 +152,7 @@ async function createHarness() {
 test('classifies hesitation and unfinished schedule thoughts separately from meaningful answers', () => {
   assert.equal(callerTranscriptDisposition('Uh...'), 'filler');
   assert.equal(callerTranscriptDisposition('Um'), 'filler');
+  assert.equal(callerTranscriptDisposition('Oh.'), 'filler');
   assert.equal(callerTranscriptDisposition('어'), 'filler');
   assert.equal(callerTranscriptDisposition("It's probably, like..."), 'filler');
   assert.equal(callerTranscriptDisposition('I would like...'), 'filler');
@@ -264,48 +265,59 @@ test('a filler turn produces no late receptionist audio and no repair speech', a
   }
 });
 
-test('caller speech interrupts and discards already-buffered receptionist output', async () => {
+test('caller speech does not interrupt receptionist audio', async () => {
   const h = await createHarness();
   try {
-    h.socket.receive({ type: 'response.created', response: { id: 'interrupted-response' } });
+    h.socket.receive({ type: 'response.created', response: { id: 'non-interrupted-response' } });
     h.socket.receive({
       type: 'response.output_audio.delta',
-      response_id: 'interrupted-response',
-      item_id: 'interrupted-item',
-      delta: 'late-buffered-audio',
+      response_id: 'non-interrupted-response',
+      item_id: 'non-interrupted-item',
+      delta: 'receptionist-keeps-speaking',
     });
 
     h.socket.receive({ type: 'input_audio_buffer.speech_started' });
+    caller(h.socket, 'I need my roof repaired.', 'overlapping-service-answer');
+    const responsesWhileSpeaking = h.socket.sent.filter(
+      (event) => event.type === 'response.create',
+    ).length;
 
     h.socket.receive({
       type: 'response.output_audio_transcript.done',
-      response_id: 'interrupted-response',
-      item_id: 'interrupted-item',
-      transcript: 'Take your time.',
+      response_id: 'non-interrupted-response',
+      item_id: 'non-interrupted-item',
+      transcript: 'What kind of work do you need done?',
     });
     h.socket.receive({
       type: 'response.done',
       response: {
-        id: 'interrupted-response',
+        id: 'non-interrupted-response',
         output: [{
-          id: 'interrupted-item',
+          id: 'non-interrupted-item',
           type: 'message',
-          content: [{ type: 'audio', transcript: 'Take your time.' }],
+          content: [{ type: 'audio', transcript: 'What kind of work do you need done?' }],
         }],
       },
     });
 
-    assert.equal(h.clears.length, 1);
-    assert.equal(h.audio.includes('late-buffered-audio'), false);
-    assert.ok(h.socket.sent.some(
+    assert.equal(h.clears.length, 0);
+    assert.equal(h.audio.includes('receptionist-keeps-speaking'), true);
+    assert.equal(h.socket.sent.some(
       (event) => event.type === 'conversation.item.delete'
-        && event.item_id === 'interrupted-item',
-    ));
+        && event.item_id === 'non-interrupted-item',
+    ), false);
+    const responsesAfterReceptionist = h.socket.sent.filter(
+      (event) => event.type === 'response.create',
+    );
+    assert.equal(responsesAfterReceptionist.length, responsesWhileSpeaking + 1);
+    assert.match(
+      responsesAfterReceptionist.at(-1).response.instructions,
+      /what name should I use for the estimate request/i,
+    );
   } finally {
     h.restore();
   }
 });
-
 test('unintelligible aa is replaced with a short did-not-catch response', async () => {
   const h = await createHarness();
   try {

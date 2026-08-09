@@ -404,7 +404,6 @@ wss.on('connection', (telnyx, request) => {
       callerPhone: call.callerPhone,
       deliver: (payload, options) => sendArcData(call.runtime, payload, options),
       onAudio: (payload) => sendTelnyx({ event: 'media', media: { payload } }),
-      onClear: () => sendTelnyx({ event: 'clear' }),
       onSubmitted: () => { call.status = 'submitted'; },
       onReady: () => {
         if (call.status === 'streaming') call.status = 'active';

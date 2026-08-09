@@ -102,14 +102,17 @@ test('blocks known process narration and unauthorized address expansion', () => 
   );
   assert.equal(shouldBlockReceptionistOutput("What's the full project address?"), false);
   assert.equal(
-    shouldBlockReceptionistOutput("I'm submitting your estimate request now."),
+    shouldBlockReceptionistOutput("Okay, thanks for confirming. I'm sending the estimate request in now."),
     false,
   );
 });
 
-test('repairs a blocked service response with the exact name question', () => {
+test('repairs a blocked response after a usable service answer with the exact name question', () => {
   assert.equal(
-    repairInstructionForBlockedOutput({ answeredField: 'service' }),
+    repairInstructionForBlockedOutput({
+      answeredField: 'service',
+      callerTranscript: 'I need a room painted.',
+    }),
     'Say exactly: "What name should I use for the estimate request?" Do not add anything before or after it.',
   );
 });
@@ -147,7 +150,7 @@ test('does not send blocked narration audio to the caller and repairs after resp
     assert.doesNotMatch(sessionUpdate.session.instructions, /Light acknowledgments.*are encouraged/i);
     assert.match(
       sessionUpdate.session.instructions,
-      /HARD OUTPUT RULE: Do not generate standalone process or transition narration/i,
+      /Never narrate thinking, planning, field changes, workflow, or internal process/i,
     );
 
     socket.receive({ type: 'session.updated', session: {} });
@@ -156,7 +159,7 @@ test('does not send blocked narration audio to the caller and repairs after resp
       responseId: 'greeting-response',
       itemId: 'greeting-item',
       audio: 'greeting-audio',
-      transcript: 'Hi, thank you for calling Tabor Painting. What service were you looking for?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
     });
 
     socket.receive({
