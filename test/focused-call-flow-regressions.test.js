@@ -172,6 +172,7 @@ test('session rules remove conflicting business-answer and notes instructions', 
     assert.match(instructions, /business information supplied for this call/i);
     assert.match(instructions, /same response may contain the brief grounded answer followed by the one appropriate follow-up question/i);
     assert.match(instructions, /Continue to contact permission only after the caller explicitly says they have no more notes or questions/i);
+    assert.match(instructions, /required final summary/i);
     assert.doesNotMatch(instructions, /Choose exactly one next action before speaking/i);
     assert.doesNotMatch(instructions, /The price depends on the estimate/i);
     assert.doesNotMatch(instructions, /longest it will take is a week/i);
@@ -311,6 +312,37 @@ test('a business fact supplied by the app can be answered and is not forced into
   }
 });
 
+test('grounded business wording containing unit is not mistaken for an address-unit request', async () => {
+  const context = {
+    ...CONTEXT,
+    knowledgeJson: JSON.stringify({
+      businessHours: 'Monday through Friday',
+      serviceAreas: ['Local service area'],
+      pricing: 'Some work is priced per unit after the estimate.',
+    }),
+  };
+  const h = await createHarness(context);
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-unit-pricing',
+      itemId: 'notes-question-unit-pricing-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-unit-pricing-audio',
+    });
+    caller(h.socket, 'Do you price anything per unit?', 'caller-unit-pricing-question');
+    assistantResponse(h.socket, {
+      responseId: 'grounded-unit-answer',
+      itemId: 'grounded-unit-answer-item',
+      transcript: `The supplied business data says some work is priced per unit after the estimate. ${MORE_NOTES_PROMPT}`,
+      audio: 'grounded-unit-answer-audio',
+    });
+
+    assert.equal(h.audio.includes('grounded-unit-answer-audio'), true);
+  } finally {
+    h.restore();
+  }
+});
+
 test('an unsupported multi-part business question is not answered from general knowledge', async () => {
   const h = await createHarness();
   try {
@@ -373,6 +405,40 @@ test('notes do not advance to consent until the caller explicitly says they are 
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
       /Okay, thanks for the notes\. One more question\. Do you consent to being contacted by Tabor Painting\?/,
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('notes completion requires the exact consent wording recognized by submission state', async () => {
+  const h = await createHarness();
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'notes-question-consent-boundary',
+      itemId: 'notes-question-consent-boundary-item',
+      transcript: NOTES_PROMPT,
+      audio: 'notes-question-consent-boundary-audio',
+    });
+    caller(h.socket, 'Please note that the back wall needs extra prep.', 'caller-note-consent-boundary');
+    assistantResponse(h.socket, {
+      responseId: 'more-notes-consent-boundary',
+      itemId: 'more-notes-consent-boundary-item',
+      transcript: MORE_NOTES_PROMPT,
+      audio: 'more-notes-consent-boundary-audio',
+    });
+    caller(h.socket, 'No, that is all.', 'caller-done-consent-boundary');
+    assistantResponse(h.socket, {
+      responseId: 'nonstandard-consent',
+      itemId: 'nonstandard-consent-item',
+      transcript: 'Do you consent to being contacted by Tabor Painting?',
+      audio: 'nonstandard-consent-audio',
+    });
+
+    assert.equal(h.audio.includes('nonstandard-consent-audio'), false);
+    assert.equal(
+      latestResponseCreate(h.socket).response.instructions,
+      'Say exactly: "Okay, thanks for the notes. One more question. Do you consent to being contacted by Tabor Painting?" Do not add anything before or after it.',
     );
   } finally {
     h.restore();
