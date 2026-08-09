@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { cleanText } from './business-context.js';
 import { normalizeRequestedTime } from './intake.js';
-import { createOpenAiReceptionist } from './openai-receptionist.js';
+import { createOpenAiReceptionist, ESTIMATE_TOOLS } from './openai-receptionist.js';
 
 const OLD_SERVICE_QUESTION = 'What service were you looking for?';
 const SERVICE_QUESTION = 'What kind of work do you need done?';
@@ -22,6 +22,7 @@ const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that. I'll a
 const OLD_PRICE_QUESTION_RESPONSE = 'The price depends on the estimate.';
 const OLD_RESPONSE_TIME_QUESTION_RESPONSE = "I don't know exactly when, but the longest it will take is a week to accept or decline your estimate request.";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
+const RESPONSE_PLAN_METADATA_KEY = 'receptionist_plan_id';
 const MAX_REPAIR_ATTEMPTS = 3;
 const COMPLETABLE_INTAKE_FIELDS = new Set([
   'service',
@@ -204,6 +205,7 @@ export function callerTranscriptDisposition(value) {
   if (/^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|mmm+|ah+|eh+|well|like|ay)$/.test(valueNormalized)) {
     return 'filler';
   }
+  if (/^(?:a|an|the|my|our|i|we|it'?s|that'?s)$/.test(valueNormalized)) return 'filler';
   if (/\b(?:um+|uh+|erm+|er+)\s*$/.test(valueNormalized)) return 'filler';
   if (/\b(?:probably|maybe)\s+like$/.test(valueNormalized)) return 'filler';
   if (/^(?:a{2,}|e{2,}|o{2,})$/.test(valueNormalized)) return 'unclear';
@@ -492,7 +494,7 @@ export function buildPreparedSummarySpeech(summary = {}) {
   return `Okay, here's the summary. ${name} is requesting ${service} at ${address}. The preferred date and time is ${preferredDateAndTime}. ${notesSentence} Does that all sound right?`;
 }
 
-function repairPlanForBlockedOutput({
+function buildNextResponsePlan({
   answeredField = '',
   callerTranscript = '',
   callerDisposition = 'meaningful',
@@ -500,6 +502,7 @@ function repairPlanForBlockedOutput({
   businessContext = {},
   notesResolvedNegative = false,
   notesHadContent = false,
+  conversational = false,
 } = {}) {
   if (callerDisposition === 'filler') return { instructions: '', expectedTranscript: '' };
   if (callerDisposition === 'unclear') {
@@ -521,21 +524,31 @@ function repairPlanForBlockedOutput({
 
   switch (answeredField) {
     case 'service': {
-      const text = 'What name should I use for the estimate request?';
+      const text = callerVolunteeredName(callerTranscript)
+        ? conversational
+          ? "Okay, what's the complete project address?"
+          : "What's the complete project address?"
+        : conversational
+          ? 'Okay, what name should I use for the estimate request?'
+          : 'What name should I use for the estimate request?';
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'name': {
-      const text = "What's the complete project address?";
+      const text = `${conversational ? 'Thanks. ' : ''}What's the complete project address?`;
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'address': {
-      const text = 'What date and time would work best for the estimate?';
+      const text = hasCompleteProjectAddress(callerTranscript)
+        ? `${conversational ? 'Got it. ' : ''}What date and time would work best for the estimate?`
+        : looksLikeStreetAddress(callerTranscript)
+          ? 'What city or town and state is the project in?'
+          : "What's the complete project address?";
       return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
     }
     case 'schedule': {
       const text = !cleanText(callerTranscript)
         || hasCompleteAvailableSchedule(callerTranscript, businessContext)
-        ? NOTES_AND_QUESTIONS_PROMPT
+        ? `${conversational ? 'Okay, sounds good. ' : ''}${NOTES_AND_QUESTIONS_PROMPT}`
         : 'What date and time would work best for the estimate?';
       return {
         instructions: exactSpeechInstruction(text),
@@ -579,6 +592,7 @@ function repairPlanForBlockedOutput({
         return {
           instructions: 'Call prepare_estimate_summary now using only details the caller already provided. Do not speak any preamble, acknowledgement, process narration, transition, address confirmation, ZIP question, apartment question, suite question, or unit question before the tool call.',
           expectedTranscript: '',
+          toolName: 'prepare_estimate_summary',
         };
       }
       return {
@@ -593,6 +607,7 @@ function repairPlanForBlockedOutput({
             'Then immediately call submit_estimate_request with caller_confirmed true.',
           ),
           expectedTranscript: SUBMISSION_START_RESPONSE,
+          toolName: 'submit_estimate_request',
         };
       }
       return {
@@ -608,7 +623,7 @@ function repairPlanForBlockedOutput({
 }
 
 export function repairInstructionForBlockedOutput(options = {}) {
-  return repairPlanForBlockedOutput(options).instructions;
+  return buildNextResponsePlan(options).instructions;
 }
 
 function extractResponseTranscript(response = {}) {
@@ -751,6 +766,7 @@ function prepareOutgoingEvent(event, pendingSummary) {
       policy: {
         expectedTranscript: speech,
         repairInstruction: exactSpeechInstruction(speech),
+        trustedPlan: true,
       },
     };
   }
@@ -790,8 +806,12 @@ function createGuardedWebSocketClass({
       this.notesResolvedNegative = false;
       this.notesHadContent = false;
       this.notesCallerBuffer = [];
+      this.addressCallerBuffer = [];
       this.pendingSummary = null;
+      this.summaryCorrectionField = '';
       this.pendingResponsePolicies = [];
+      this.responsePoliciesById = new Map();
+      this.responsePlanSequence = 0;
       this.repairAttempts = 0;
       this.submitCallIds = new Set();
       this.submissionStarted = false;
@@ -811,6 +831,84 @@ function createGuardedWebSocketClass({
       return this.inner.readyState;
     }
 
+    summaryCorrectionAnswerIsComplete(field, transcript) {
+      if (isConversationRepairRequest(transcript)) return false;
+      switch (field) {
+        case 'address':
+          return hasCompleteProjectAddress(transcript);
+        case 'schedule':
+          return hasCompleteAvailableSchedule(transcript, context);
+        case 'notes':
+          return notesStepCompleted(transcript) || Boolean(cleanText(transcript));
+        case 'service':
+        case 'name':
+          return Boolean(cleanText(transcript));
+        default:
+          return false;
+      }
+    }
+
+    prepareCallerTurnResponse(event) {
+      if (
+        event.type !== 'response.create'
+        || cleanText(event.response?.instructions)
+        || this.latestCallerDisposition === 'none'
+      ) return { event, policy: null, suppressed: false };
+
+      const answeredField = this.lastAnsweredField || this.pendingIntakeField || 'service';
+      const summaryCorrectionComplete = answeredField === this.summaryCorrectionField
+        && this.latestCallerDisposition === 'meaningful'
+        && this.summaryCorrectionAnswerIsComplete(answeredField, this.latestCallerTranscript);
+      const plan = summaryCorrectionComplete
+        ? {
+          instructions: 'Call prepare_estimate_summary now using the corrected detail and every other previously confirmed detail. Do not repeat another intake question and do not speak before the tool call.',
+          expectedTranscript: '',
+          toolName: 'prepare_estimate_summary',
+        }
+        : buildNextResponsePlan({
+          answeredField,
+          callerTranscript: this.latestCallerTranscript,
+          callerDisposition: this.latestCallerDisposition,
+          businessName,
+          businessContext: context,
+          notesResolvedNegative: this.notesResolvedNegative,
+          notesHadContent: this.notesHadContent,
+          conversational: true,
+        });
+
+      if (!plan.instructions) return { event, policy: null, suppressed: true };
+
+      event.response ||= {};
+      event.response.instructions = plan.instructions;
+      const allowedTool = plan.toolName
+        ? ESTIMATE_TOOLS.find((tool) => tool.name === plan.toolName)
+        : null;
+      event.response.tools = allowedTool ? [structuredClone(allowedTool)] : [];
+      event.response.tool_choice = allowedTool
+        ? { type: 'function', name: allowedTool.name }
+        : 'none';
+      const planId = `caller-turn-${this.responsePlanSequence += 1}`;
+      event.response.metadata = {
+        ...(event.response.metadata || {}),
+        [RESPONSE_PLAN_METADATA_KEY]: planId,
+      };
+
+      return {
+        event,
+        suppressed: false,
+        policy: {
+          expectedTranscript: plan.expectedTranscript || '',
+          repairInstruction: plan.instructions,
+          callerTranscript: this.latestCallerTranscript,
+          callerDisposition: this.latestCallerDisposition,
+          answeredField,
+          trustedPlan: Boolean(plan.expectedTranscript && !allowedTool),
+          requiredToolName: allowedTool?.name || '',
+          planId,
+        },
+      };
+    }
+
     send(value) {
       let event;
       try {
@@ -822,6 +920,8 @@ function createGuardedWebSocketClass({
       const toolOutput = parseFunctionOutput(event);
       if (toolOutput?.status === 'ready_for_confirmation' && toolOutput.summary) {
         this.pendingSummary = toolOutput.summary;
+        this.summaryCorrectionField = '';
+        this.addressCallerBuffer = [];
         for (const field of COMPLETABLE_INTAKE_FIELDS) this.completedIntakeFields.add(field);
       }
       if (
@@ -839,14 +939,22 @@ function createGuardedWebSocketClass({
         event.response.instructions = exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE);
       }
 
-      const prepared = prepareOutgoingEvent(event, this.pendingSummary);
+      const callerTurn = this.prepareCallerTurnResponse(event);
+      if (callerTurn.suppressed) return undefined;
+
+      const prepared = prepareOutgoingEvent(callerTurn.event, this.pendingSummary);
+      if (callerTurn.policy) prepared.policy = callerTurn.policy;
       if (failedSubmitFollowup) {
         prepared.policy = {
           expectedTranscript: SUBMISSION_FAILURE_RESPONSE,
           repairInstruction: exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE),
         };
       }
-      if (prepared.policy) this.pendingResponsePolicies.push(prepared.policy);
+      if (prepared.policy?.planId) {
+        this.responsePoliciesById.set(prepared.policy.planId, prepared.policy);
+      } else if (prepared.policy) {
+        this.pendingResponsePolicies.push(prepared.policy);
+      }
       return this.inner.send(JSON.stringify(prepared.event));
     }
 
@@ -876,6 +984,7 @@ function createGuardedWebSocketClass({
           notesResolvedNegative: this.notesResolvedNegative,
           notesHadContent: this.notesHadContent,
           policy: null,
+          plannedTransitionCommitted: false,
         });
       }
       return this.responses.get(id);
@@ -959,6 +1068,41 @@ function createGuardedWebSocketClass({
       state.createdForwarded = true;
     }
 
+    commitTrustedPlan(state) {
+      if (!state.policy?.trustedPlan || state.plannedTransitionCommitted) return;
+      state.plannedTransitionCommitted = true;
+      state.approved = true;
+      state.answeredField = state.policy.answeredField || state.answeredField;
+      state.callerTranscript = state.policy.callerTranscript || state.callerTranscript;
+      state.callerDisposition = state.policy.callerDisposition || state.callerDisposition;
+
+      const pending = classifyPendingField(state.policy.expectedTranscript);
+      const answeredDifferentField = callerAnsweredDifferentField(
+        state.answeredField,
+        state.callerTranscript,
+      );
+      this.recordCompletedFields(state, pending, answeredDifferentField);
+      if (pending) {
+        if (pending === 'address' && state.answeredField !== 'address') {
+          this.addressCallerBuffer = [];
+        }
+        this.pendingIntakeField = pending;
+        if (pending === 'consent') {
+          this.notesResolvedNegative = false;
+          this.notesCallerBuffer = [];
+        }
+      }
+      if (state.answeredField === 'address' && pending !== 'address') {
+        this.addressCallerBuffer = [];
+      }
+      if (state.answeredField === 'notes') this.notesCallerBuffer = [];
+      this.repairAttempts = 0;
+
+      this.forwardCreated(state);
+      for (const event of state.audioEvents.splice(0)) this.emitJson(event);
+      for (const event of state.transcriptEvents.splice(0)) this.emitJson(event);
+    }
+
     markBlocked(state) {
       state.blocked = true;
       state.audioEvents.length = 0;
@@ -1012,6 +1156,7 @@ function createGuardedWebSocketClass({
           && !isClearAffirmative(state.callerTranscript);
         if (explicitSummaryCorrection && COMPLETABLE_INTAKE_FIELDS.has(pending)) {
           this.completedIntakeFields.delete(pending);
+          this.summaryCorrectionField = pending;
         } else {
           this.markBlocked(state);
           return false;
@@ -1067,7 +1212,7 @@ function createGuardedWebSocketClass({
         const addressComplete = hasCompleteProjectAddress(state.callerTranscript);
         const validNextField = addressComplete
           ? pending === 'schedule'
-          : pending === 'address' || pending === 'schedule';
+          : pending === 'address';
         if (!validNextField) {
           this.markBlocked(state);
           return false;
@@ -1161,11 +1306,17 @@ function createGuardedWebSocketClass({
       state.transcriptDoneEvent = null;
 
       if (pending) {
+        if (pending === 'address' && state.answeredField !== 'address') {
+          this.addressCallerBuffer = [];
+        }
         this.pendingIntakeField = pending;
         if (pending === 'consent') {
           this.notesResolvedNegative = false;
           this.notesCallerBuffer = [];
         }
+      }
+      if (state.answeredField === 'address' && pending !== 'address') {
+        this.addressCallerBuffer = [];
       }
       if (state.answeredField === 'notes') this.notesCallerBuffer = [];
       this.repairAttempts = 0;
@@ -1175,16 +1326,24 @@ function createGuardedWebSocketClass({
     sendRepair(plan) {
       if (!plan?.instructions || this.repairAttempts >= MAX_REPAIR_ATTEMPTS) return;
       this.repairAttempts += 1;
+      const allowedTool = plan.toolName
+        ? ESTIMATE_TOOLS.find((tool) => tool.name === plan.toolName)
+        : null;
       this.pendingResponsePolicies.push({
         expectedTranscript: plan.expectedTranscript || '',
         repairInstruction: plan.instructions,
         callerTranscript: this.latestCallerTranscript,
+        requiredToolName: allowedTool?.name || '',
       });
       this.inner.send(JSON.stringify({
         type: 'response.create',
         response: {
           output_modalities: ['audio'],
           instructions: plan.instructions,
+          tools: allowedTool ? [structuredClone(allowedTool)] : [],
+          tool_choice: allowedTool
+            ? { type: 'function', name: allowedTool.name }
+            : 'none',
         },
       }));
     }
@@ -1209,11 +1368,12 @@ function createGuardedWebSocketClass({
         this.sendRepair({
           instructions: state.policy.repairInstruction,
           expectedTranscript: state.policy.expectedTranscript || '',
+          toolName: state.policy.requiredToolName || '',
         });
         return;
       }
 
-      const plan = repairPlanForBlockedOutput({
+      const plan = buildNextResponsePlan({
         answeredField: state.answeredField,
         callerTranscript: state.callerTranscript,
         callerDisposition: state.callerDisposition,
@@ -1273,6 +1433,8 @@ function createGuardedWebSocketClass({
       }
 
       if (event.type === 'conversation.item.input_audio_transcription.completed') {
+        this.pendingResponsePolicies = [];
+        this.responsePoliciesById.clear();
         const callerTranscript = cleanText(event.transcript);
         const disposition = callerTranscriptDisposition(callerTranscript);
         this.latestCallerTranscript = callerTranscript;
@@ -1281,6 +1443,15 @@ function createGuardedWebSocketClass({
         let answeredField = this.pendingIntakeField;
         let effectiveTranscript = callerTranscript;
         if (disposition === 'meaningful' && this.pendingIntakeField) {
+          if (
+            this.pendingIntakeField === 'address'
+            && !isConversationRepairRequest(callerTranscript)
+            && !callerAnsweredDifferentField('address', callerTranscript)
+          ) {
+            this.addressCallerBuffer.push(callerTranscript);
+            effectiveTranscript = cleanText(this.addressCallerBuffer.join(' '));
+          }
+
           if (this.pendingIntakeField === 'notes') {
             if (isConversationRepairRequest(callerTranscript)) {
               this.notesResolvedNegative = false;
@@ -1332,8 +1503,17 @@ function createGuardedWebSocketClass({
       if (event.type === 'response.created') {
         const state = this.responseState(event.response?.id);
         state.createdEvent = event;
-        if (this.pendingResponsePolicies.length) {
+        const planId = cleanText(event.response?.metadata?.[RESPONSE_PLAN_METADATA_KEY]);
+        if (planId && this.responsePoliciesById.has(planId)) {
+          state.policy = this.responsePoliciesById.get(planId);
+          this.responsePoliciesById.delete(planId);
+        } else if (this.pendingResponsePolicies.length) {
           state.policy = this.pendingResponsePolicies.shift();
+        }
+        if (state.policy?.planId) {
+          state.answeredField = state.policy.answeredField || state.answeredField;
+          state.callerTranscript = state.policy.callerTranscript || state.callerTranscript;
+          state.callerDisposition = state.policy.callerDisposition || state.callerDisposition;
         }
         return;
       }
@@ -1343,6 +1523,7 @@ function createGuardedWebSocketClass({
         const itemId = cleanText(event.item_id);
         if (itemId) state.itemIds.add(itemId);
         if (state.blocked || state.interrupted) return;
+        this.commitTrustedPlan(state);
         if (state.approved) this.emitJson(event);
         else state.audioEvents.push(event);
         return;
@@ -1354,6 +1535,7 @@ function createGuardedWebSocketClass({
         if (itemId) state.itemIds.add(itemId);
         state.transcript += String(event.delta || '');
         if (state.blocked || state.interrupted) return;
+        this.commitTrustedPlan(state);
         if (state.approved) this.emitJson(event);
         else state.transcriptEvents.push(event);
         return;
@@ -1365,6 +1547,14 @@ function createGuardedWebSocketClass({
         if (itemId) state.itemIds.add(itemId);
         const transcript = cleanText(event.transcript || state.transcript);
         state.transcript = transcript;
+        if (state.policy?.trustedPlan) {
+          this.commitTrustedPlan(state);
+          if (!state.transcriptForwarded) {
+            this.emitJson(event);
+            state.transcriptForwarded = true;
+          }
+          return;
+        }
         if (sameSpokenText(transcript, SUBMISSION_START_RESPONSE)) {
           state.transcriptDoneEvent = event;
           return;
@@ -1385,17 +1575,18 @@ function createGuardedWebSocketClass({
         }
 
         if (!state.transcript) state.transcript = extractResponseTranscript(event.response);
+        if (state.policy?.trustedPlan && state.transcript) this.commitTrustedPlan(state);
         const hasPrepareCall = hasFunctionCall(event.response, 'prepare_estimate_summary');
         const hasSubmitCall = hasFunctionCall(event.response, 'submit_estimate_request');
         const isSubmissionStart = sameSpokenText(state.transcript, SUBMISSION_START_RESPONSE);
 
-        if (isSubmissionStart) {
+        if (!state.policy?.trustedPlan && isSubmissionStart) {
           if (!this.shouldRequireSubmissionStart(state) || !hasSubmitCall) {
             this.markBlocked(state);
           } else if (!state.approved) {
             this.approveResponse(state, state.transcript, state.transcriptDoneEvent);
           }
-        } else if (!state.approved && !state.blocked && state.transcript) {
+        } else if (!state.policy?.trustedPlan && !state.approved && !state.blocked && state.transcript) {
           this.approveResponse(state, state.transcript);
         }
 
@@ -1406,6 +1597,13 @@ function createGuardedWebSocketClass({
         }
 
         if (this.shouldRequireSummaryPreparation(state) && !hasPrepareCall) {
+          this.markBlocked(state);
+        }
+
+        if (
+          state.policy?.requiredToolName
+          && !hasFunctionCall(event.response, state.policy.requiredToolName)
+        ) {
           this.markBlocked(state);
         }
 

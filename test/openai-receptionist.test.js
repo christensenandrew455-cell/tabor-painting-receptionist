@@ -33,6 +33,7 @@ test('configures PCMU audio, low-cost transcripts, and the two-step estimate too
   assert.equal(event.session.audio.input.turn_detection.threshold, 0.45);
   assert.equal(event.session.audio.input.turn_detection.prefix_padding_ms, 500);
   assert.equal(event.session.audio.input.turn_detection.silence_duration_ms, 1000);
+  assert.equal(event.session.audio.input.turn_detection.create_response, false);
   assert.equal(event.session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(event.session.max_output_tokens, 800);
   assert.equal(event.session.truncation.token_limits.post_instructions, 2_500);
@@ -387,6 +388,48 @@ test('does not clear receptionist audio when the caller backchannels', async () 
     socket.receive({ type: 'input_audio_buffer.speech_started' });
 
     assert.equal(clearCount, 0);
+    receptionist.close();
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+  }
+});
+
+test('requests caller responses manually after transcription instead of through VAD', async () => {
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-key';
+
+  try {
+    const receptionist = createOpenAiReceptionist({
+      context: CONTEXT,
+      runtime: { clientId: 'client-123' },
+      callControlId: 'call-manual-response',
+      callerPhone: '+15555550123',
+      deliver: async () => ({ ok: true }),
+      onAudio: () => {},
+      onClear: () => {},
+      onSubmitted: () => {},
+      onReady: () => {},
+      onError: (error) => assert.fail(error.message),
+      WebSocketClass: FakeWebSocket,
+    });
+    await nextTurn();
+
+    const socket = FakeWebSocket.instance;
+    socket.receive({ type: 'session.updated', session: {} });
+    const beforeCaller = socket.sent.filter((event) => event.type === 'response.create').length;
+    socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'manual-caller-item',
+      transcript: 'I need exterior painting.',
+    });
+
+    const requests = socket.sent.filter((event) => event.type === 'response.create');
+    assert.equal(requests.length, beforeCaller + 1);
+    assert.deepEqual(requests.at(-1), {
+      type: 'response.create',
+      response: { output_modalities: ['audio'] },
+    });
     receptionist.close();
   } finally {
     if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;

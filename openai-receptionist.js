@@ -443,7 +443,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
             threshold: 0.45,
             prefix_padding_ms: 500,
             silence_duration_ms: 1000,
-            create_response: true,
+            create_response: false,
             interrupt_response: true,
           },
         },
@@ -662,6 +662,18 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: `Say exactly once: "Hi, thank you for calling ${businessName}. What service were you looking for?" Do not add anything before or after it.`,
+        tools: [],
+        tool_choice: 'none',
+      },
+    });
+  }
+
+  function requestCallerResponse() {
+    if (closed || endingCall || submitted) return;
+    sendJson(openai, {
+      type: 'response.create',
+      response: {
+        output_modalities: ['audio'],
       },
     });
   }
@@ -675,6 +687,8 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: `Say exactly: "Thanks for calling ${businessName}. Have a good day." Do not add "Goodbye" or any words before or after it.`,
+        tools: [],
+        tool_choice: 'none',
       },
     });
   }
@@ -728,6 +742,8 @@ export function createOpenAiReceptionist({
         response: {
           output_modalities: ['audio'],
           instructions: `Say exactly: "${forcedConsentQuestion}" Do not add anything before or after it.`,
+          tools: [],
+          tool_choice: 'none',
         },
       });
       return;
@@ -751,6 +767,8 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: followupInstruction(item.name, safeResult),
+        tools: [],
+        tool_choice: 'none',
       },
     });
   }
@@ -825,6 +843,7 @@ export function createOpenAiReceptionist({
       emitTranscript('caller', callerTranscript, {
         itemId: cleanText(event.item_id),
       });
+      requestCallerResponse();
       return;
     }
     if (event.type === 'response.output_audio_transcript.delta') {
