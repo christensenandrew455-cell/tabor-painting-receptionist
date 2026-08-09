@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createIntakeManager,
+  matchService,
+  normalizeCallerName,
   normalizeRequestedTime,
   resolveRequestedDate,
   sanitizeAdditionalNotes,
@@ -50,6 +52,15 @@ test('treats next weekday as the following week and makes it explicit', () => {
   assert.equal(date.spokenDate, 'Tuesday, August 11, 2026');
 });
 
+test('accepts a spoken day of the month and resolves its next occurrence', () => {
+  const date = resolveRequestedDate('the 8th', {
+    now: new Date('2026-08-09T16:00:00.000Z'),
+    timeZone: 'America/New_York',
+  });
+  assert.equal(date.exactDate, '2026-09-08');
+  assert.equal(date.spokenDate, 'Tuesday, September 8, 2026');
+});
+
 test('requires AM or PM for an ambiguous time', () => {
   assert.throws(() => normalizeRequestedTime('3:30'), /AM or PM/);
   assert.equal(normalizeRequestedTime('3:30 pm'), '3:30 PM');
@@ -66,6 +77,14 @@ test('infers a bare hour when only one meridiem fits the estimate window', () =>
       latestEstimateStart: '23:59',
     }),
     /AM or PM/,
+  );
+});
+
+test('normalizes conversational names and maps natural service wording without a trade rule', () => {
+  assert.equal(normalizeCallerName('Andrew Christensen works well.'), 'Andrew Christensen');
+  assert.equal(
+    matchService('I need the exterior of my house painted.', CONTEXT.services),
+    'Exterior Painting',
   );
 });
 

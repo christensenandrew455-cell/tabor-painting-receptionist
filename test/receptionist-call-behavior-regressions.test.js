@@ -170,7 +170,7 @@ test('runtime-blocks process transitions, punctuation, and reassurance filler', 
     shouldBlockReceptionistOutput('Great, thank you for confirming. If you need help with anything else, just let me know!'),
     true,
   );
-  assert.equal(shouldBlockReceptionistOutput('What date and time would work best for the estimate?'), false);
+  assert.equal(shouldBlockReceptionistOutput('What day or date would you prefer for the estimate, and what time works best?'), false);
 });
 
 test('uses the simple notes question after scheduling', () => {
@@ -222,7 +222,7 @@ test('a filler turn produces no late receptionist audio and no repair speech', a
       responseId: 'schedule-question',
       itemId: 'schedule-question-item',
       audio: 'schedule-question-audio',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: 'What day or date would you prefer for the estimate, and what time works best?',
     });
 
     const beforeRepairs = h.socket.sent.filter((event) => event.type === 'response.create').length;

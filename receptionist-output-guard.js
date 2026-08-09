@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { cleanText } from './business-context.js';
-import { normalizeRequestedTime } from './intake.js';
+import {
+  normalizeRequestedTime,
+  resolveRequestedDate,
+  validateEstimateAvailability,
+} from './intake.js';
 import { createOpenAiReceptionist, ESTIMATE_TOOLS } from './openai-receptionist.js';
 import {
   INTAKE_FIELD_ORDER,
@@ -66,8 +70,8 @@ const OPEN_ENDED_HELP_OFFER_PATTERN = /\b(?:if you need (?:help with )?anything 
 const STANDALONE_ACKNOWLEDGMENT = /^(?:okay|ok|great|got it|okay great|okay got it|sounds good|thanks|thank you)[.!]*$/i;
 const STREET_ADDRESS_PATTERN = /\b\d{1,6}\s+[a-z0-9.' -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/i;
 const US_STATE_PATTERN = /\b(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|district of columbia|a[klrz]|c[aot]|d[ec]|fl|ga|hi|i[adln]|k[sy]|la|m[adeinost]|n[cdehjmvty]|o[hkr]|pa|ri|s[cd]|t[nx]|ut|v[at]|w[aivy])\b/i;
-const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
-const STARTS_SCHEDULE_PATTERN = /^\s*(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|january|february|march|april|may|june|july|august|september|october|november|december|morning|afternoon|evening|noon|midnight)\b|\b(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|\b\d{1,2}[/-]\d{1,2}\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const STARTS_SCHEDULE_PATTERN = /^\s*(?:(?:this|next)\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|january|february|march|april|may|june|july|august|september|october|november|december|morning|afternoon|evening|noon|midnight)\b|^\s*(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|^\s*\d{1,2}[/-]\d{1,2}\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
 const QUESTION_TOPIC_STOP_WORDS = new Set([
   'about', 'also', 'been', 'business', 'could', 'does', 'doing', 'guys', 'have', 'like',
   'long', 'normally', 'please', 'project', 'really', 'service',
@@ -171,7 +175,7 @@ function classifyPendingField(value) {
   if (/\bwhat name should i (?:use|put) (?:for|on) the estimate request\b/.test(text)) return 'name';
   if (/\bwhat'?s the (?:full|complete) project address\b/.test(text)) return 'address';
   if (/\bi was asking for (?:the )?(?:project )?address\b/.test(text)) return 'address';
-  if (/\bwhat date and time would work best for the estimate\b/.test(text)) return 'schedule';
+  if (/\bwhat (?:day or date would you prefer|date and time would work best) for the estimate\b/.test(text)) return 'schedule';
   if (/\bi was asking for (?:the )?estimate date and time\b/.test(text)) return 'schedule';
   if (/\bdo you have any (?:other )?notes or questions for the business\b/.test(text)) return 'notes';
   if (/\bwhat notes or questions do you have for the business\b/.test(text)) return 'notes';
@@ -237,25 +241,6 @@ function hasUsableNameAnswer(value, context = {}) {
   return policyHasUsableNameAnswer(value, context);
 }
 
-function normalizedTimeMinutes(value) {
-  const match = cleanText(value).match(/^(1[0-2]|[1-9]):([0-5]\d)\s+(AM|PM)$/i);
-  if (!match) return null;
-  let hour = Number(match[1]) % 12;
-  if (match[3].toUpperCase() === 'PM') hour += 12;
-  return hour * 60 + Number(match[2]);
-}
-
-function configuredEstimateMinutes(value) {
-  const text = cleanText(value);
-  const twentyFourHour = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
-  if (twentyFourHour) return Number(twentyFourHour[1]) * 60 + Number(twentyFourHour[2]);
-  try {
-    return normalizedTimeMinutes(normalizeRequestedTime(text));
-  } catch {
-    return null;
-  }
-}
-
 function scheduleTimeFromCaller(value) {
   const text = cleanText(value);
   const hour = String.raw`(?:\d{1,2}(?::[0-5]\d)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)`;
@@ -284,24 +269,43 @@ function scheduleTimeFromCaller(value) {
   return beforeWeekday ? beforeWeekday[1] : '';
 }
 
+function scheduleDateFromCaller(value) {
+  const text = cleanText(value);
+  const relativeDay = text.match(
+    /\b(?:the\s+day\s+after\s+tomorrow|day\s+after\s+tomorrow|today|tomorrow)\b/i,
+  );
+  if (relativeDay) return relativeDay[0];
+  const relativeWeekday = text.match(
+    /\b(?:(?:this|next)\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i,
+  );
+  if (relativeWeekday) return relativeWeekday[0];
+  const writtenDate = text.match(
+    /\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{2,4})?\b/i,
+  );
+  if (writtenDate) return writtenDate[0];
+  const numericDate = text.match(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/);
+  if (numericDate) return numericDate[0];
+  const dayOfMonth = text.match(/\b(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b/i);
+  return dayOfMonth ? dayOfMonth[0] : '';
+}
+
 function hasCompleteAvailableSchedule(value, context = {}) {
   const text = cleanText(value);
-  const hasDate = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,2}[/-]\d{1,2}\b/i.test(text);
+  const callerDate = scheduleDateFromCaller(text);
   const callerTime = scheduleTimeFromCaller(text);
-  if (!hasDate || !callerTime) return false;
+  if (!callerDate || !callerTime) return false;
 
-  let requestedMinutes;
   try {
-    requestedMinutes = normalizedTimeMinutes(normalizeRequestedTime(callerTime, context));
+    const requestedDate = resolveRequestedDate(callerDate, {
+      now: context.now instanceof Date ? context.now : new Date(),
+      timeZone: context.timeZone,
+    });
+    const requestedTime = normalizeRequestedTime(callerTime, context);
+    validateEstimateAvailability(requestedDate, requestedTime, context);
   } catch {
     return false;
   }
-  if (requestedMinutes === null) return false;
-
-  const earliest = configuredEstimateMinutes(context.earliestEstimateStart);
-  const latest = configuredEstimateMinutes(context.latestEstimateStart);
-  return (!Number.isFinite(earliest) || requestedMinutes >= earliest)
-    && (!Number.isFinite(latest) || requestedMinutes <= latest);
+  return true;
 }
 
 function gatheredBusinessDataText(context = {}) {
@@ -745,6 +749,7 @@ function createGuardedWebSocketClass({
       this.submitCallIds = new Set();
       this.submissionStarted = false;
       this.failedSubmitFollowupPending = false;
+      this.terminalPreparationFailurePending = false;
       this.pendingDeleteItems = new Set();
       this.deleteRequestItems = new Map();
       this.deleteRequestSequence = 0;
@@ -840,6 +845,7 @@ function createGuardedWebSocketClass({
       event.response.tool_choice = allowedTool
         ? { type: 'function', name: allowedTool.name }
         : 'none';
+      if (plan.expectedTranscript && !allowedTool) event.response.input = [];
       const planId = `caller-turn-${this.responsePlanSequence += 1}`;
       event.response.metadata = {
         ...(event.response.metadata || {}),
@@ -874,8 +880,18 @@ function createGuardedWebSocketClass({
       const functionOutputCallId = cleanText(event.item?.call_id);
       if (functionOutputCallId && this.prepareCallIds.has(functionOutputCallId)) {
         this.prepareCallIds.delete(functionOutputCallId);
-        this.summaryPreparationRequired = false;
         this.summaryPreparationInFlight = false;
+        if (toolOutput?.terminal_preparation_failure === true) {
+          this.summaryPreparationRequired = false;
+          this.pendingSummary = null;
+          this.terminalPreparationFailurePending = true;
+          this.pendingIntakeField = '';
+          this.lastAnsweredField = '';
+          this.lastAnsweredTranscript = '';
+        } else if (toolOutput?.status !== 'ready_for_confirmation' || !toolOutput.summary) {
+          this.summaryPreparationRequired = true;
+          this.pendingSummary = null;
+        }
       }
       if (toolOutput?.status === 'ready_for_confirmation' && toolOutput.summary) {
         this.pendingSummary = toolOutput.summary;
@@ -899,6 +915,18 @@ function createGuardedWebSocketClass({
         this.failedSubmitFollowupPending = false;
         event.response.instructions = exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE);
       }
+      const terminalPreparationFollowup = (
+        event.type === 'response.create'
+        && this.terminalPreparationFailurePending
+      );
+      if (terminalPreparationFollowup) {
+        this.terminalPreparationFailurePending = false;
+        event.response ||= {};
+        event.response.instructions = exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE);
+        event.response.input = [];
+        event.response.tools = [];
+        event.response.tool_choice = 'none';
+      }
 
       const callerTurn = this.prepareCallerTurnResponse(event);
       if (callerTurn.suppressed) return false;
@@ -911,10 +939,27 @@ function createGuardedWebSocketClass({
           repairInstruction: exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE),
         };
       }
-      if (prepared.policy?.planId) {
-        this.responsePoliciesById.set(prepared.policy.planId, prepared.policy);
-      } else if (prepared.policy) {
-        this.pendingResponsePolicies.push(prepared.policy);
+      if (terminalPreparationFollowup) {
+        prepared.policy = {
+          expectedTranscript: SUBMISSION_FAILURE_RESPONSE,
+          repairInstruction: exactSpeechInstruction(SUBMISSION_FAILURE_RESPONSE),
+          trustedPlan: true,
+        };
+      }
+      if (prepared.policy) {
+        const allowMetadataFallback = !prepared.policy.planId;
+        const planId = prepared.policy.planId || `response-plan-${this.responsePlanSequence += 1}`;
+        prepared.policy.planId = planId;
+        prepared.event.response ||= {};
+        prepared.event.response.metadata = {
+          ...(prepared.event.response.metadata || {}),
+          [RESPONSE_PLAN_METADATA_KEY]: planId,
+        };
+        if (prepared.policy.trustedPlan && prepared.policy.expectedTranscript) {
+          prepared.event.response.input = [];
+        }
+        this.responsePoliciesById.set(planId, prepared.policy);
+        if (allowMetadataFallback) this.pendingResponsePolicies.push(prepared.policy);
       }
       return this.inner.send(JSON.stringify(prepared.event));
     }
@@ -1304,21 +1349,29 @@ function createGuardedWebSocketClass({
       const allowedTool = plan.toolName
         ? ESTIMATE_TOOLS.find((tool) => tool.name === plan.toolName)
         : null;
-      this.pendingResponsePolicies.push({
+      const planId = `repair-${this.responsePlanSequence += 1}`;
+      const policy = {
         expectedTranscript: plan.expectedTranscript || '',
         repairInstruction: plan.instructions,
         callerTranscript: this.latestCallerTranscript,
         requiredToolName: allowedTool?.name || '',
-      });
+        trustedPlan: Boolean(plan.expectedTranscript && !allowedTool),
+        planId,
+      };
+      this.responsePoliciesById.set(planId, policy);
       this.inner.send(JSON.stringify({
         type: 'response.create',
         response: {
           output_modalities: ['audio'],
           instructions: plan.instructions,
+          ...(plan.expectedTranscript && !allowedTool ? { input: [] } : {}),
           tools: allowedTool ? [structuredClone(allowedTool)] : [],
           tool_choice: allowedTool
             ? { type: 'function', name: allowedTool.name }
             : 'none',
+          metadata: {
+            [RESPONSE_PLAN_METADATA_KEY]: planId,
+          },
         },
       }));
     }
@@ -1337,7 +1390,19 @@ function createGuardedWebSocketClass({
 
       for (const itemId of state.itemIds) this.deleteConversationItem(itemId);
 
-      if (!repair || state.callerSpokeDuringResponse) return;
+      if (!repair) return;
+
+      if (
+        this.summaryPreparationRequired
+        || state.policy?.requiredToolName === 'prepare_estimate_summary'
+      ) {
+        this.summaryPreparationRequired = true;
+        this.summaryPreparationInFlight = false;
+        this.sendRepair(summaryPreparationPlan());
+        return;
+      }
+
+      if (state.callerSpokeDuringResponse) return;
 
       if (state.policy?.repairInstruction && !state.policy.stale) {
         this.sendRepair({
@@ -1345,11 +1410,6 @@ function createGuardedWebSocketClass({
           expectedTranscript: state.policy.expectedTranscript || '',
           toolName: state.policy.requiredToolName || '',
         });
-        return;
-      }
-
-      if (this.summaryPreparationRequired) {
-        if (!this.summaryPreparationInFlight) this.sendRepair(summaryPreparationPlan());
         return;
       }
 
@@ -1404,8 +1464,6 @@ function createGuardedWebSocketClass({
         for (const state of this.responses.values()) {
           state.callerSpokeDuringResponse = true;
         }
-        this.pendingResponsePolicies = [];
-        this.responsePoliciesById.clear();
         const callerTranscript = cleanText(event.transcript);
         const disposition = callerTranscriptDisposition(callerTranscript);
         this.latestCallerTranscript = callerTranscript;
@@ -1478,8 +1536,12 @@ function createGuardedWebSocketClass({
         if (planId && this.responsePoliciesById.has(planId)) {
           state.policy = this.responsePoliciesById.get(planId);
           this.responsePoliciesById.delete(planId);
+          this.pendingResponsePolicies = this.pendingResponsePolicies.filter(
+            (policy) => policy.planId !== planId,
+          );
         } else if (this.pendingResponsePolicies.length) {
           state.policy = this.pendingResponsePolicies.shift();
+          if (state.policy?.planId) this.responsePoliciesById.delete(state.policy.planId);
         }
         if (state.policy?.planId) {
           state.answeredField = state.policy.answeredField || state.answeredField;

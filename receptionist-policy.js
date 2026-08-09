@@ -12,7 +12,7 @@ export const INTAKE_FIELD_ORDER = Object.freeze([
 export const SERVICE_QUESTION = 'What kind of work do you need done?';
 export const NAME_QUESTION = 'What name should I use for the estimate request?';
 export const PROJECT_ADDRESS_QUESTION = "What's the full project address?";
-export const SCHEDULE_QUESTION = 'What date and time would work best for the estimate?';
+export const SCHEDULE_QUESTION = 'What day or date would you prefer for the estimate, and what time works best?';
 export const NOTES_AND_QUESTIONS_PROMPT = 'Do you have any notes or questions for the business?';
 export const MORE_NOTES_AND_QUESTIONS_PROMPT = 'Do you have any other notes or questions for the business?';
 export const NOTES_DETAILS_PROMPT = 'What notes or questions do you have for the business?';
@@ -133,7 +133,7 @@ export function looksLikeBusinessQuestion(value) {
 
 function nameShapedCandidate(value, { rejectActionForm = false } = {}) {
   const candidate = cleanText(value)
-    .replace(/\s+(?:works(?:\s+the\s+best)?|is\s+(?:fine|good)|please)[.!]*$/i, '')
+    .replace(/\s+(?:works(?:\s+(?:well|the\s+best))?|is\s+(?:fine|good)|please)[.!]*$/i, '')
     .replace(/[.!]+$/g, '')
     .trim();
   if (!candidate || (rejectActionForm && ACTION_FORM_PATTERN.test(candidate))) return false;
@@ -222,7 +222,7 @@ export function hasUsableNameAnswer(value, context = {}) {
 
   const candidate = text
     .replace(/^(?:just\s+|use\s+)/i, '')
-    .replace(/\s+(?:works(?:\s+the\s+best)?|is\s+(?:fine|good)|please)[.!]*$/i, '')
+    .replace(/\s+(?:works(?:\s+(?:well|the\s+best))?|is\s+(?:fine|good)|please)[.!]*$/i, '')
     .replace(/[.!]+$/g, '')
     .trim();
   if (/^(?:i|we|you|he|she|they|it)\b/i.test(candidate)) return false;

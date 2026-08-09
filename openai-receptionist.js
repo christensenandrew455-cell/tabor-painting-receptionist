@@ -3,10 +3,13 @@ import { cleanText } from './business-context.js';
 import { createIntakeManager } from './intake.js';
 import {
   INTAKE_FIELD_ORDER,
+  MORE_NOTES_AND_QUESTIONS_PROMPT,
   NOTES_AND_QUESTIONS_PROMPT,
+  NOTES_DETAILS_PROMPT,
   PROJECT_ADDRESS_QUESTION,
   SCHEDULE_QUESTION,
   SERVICE_QUESTION,
+  SUBMISSION_FAILURE_RESPONSE,
   SUBMISSION_START_RESPONSE,
   SUBMISSION_SUCCESS_RESPONSE,
   UNKNOWN_BUSINESS_QUESTION_RESPONSE,
@@ -23,6 +26,7 @@ const NORMAL_RESPONSE_TARGET_TOKENS = 256;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 2_500;
 const DEFAULT_CONTEXT_RETENTION_RATIO = 0.7;
 const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
+const MAX_SUMMARY_PREPARATION_RETRIES = 3;
 const SUPPORTED_VOICES = new Set([
   'alloy',
   'ash',
@@ -232,6 +236,15 @@ function isContactConsentQuestion(value, context) {
     || spoken === normalizedSpokenText(contactConsentQuestion(context, false));
 }
 
+function isNotesAndQuestionsQuestion(value) {
+  const spoken = normalizedSpokenText(value);
+  return [
+    NOTES_AND_QUESTIONS_PROMPT,
+    MORE_NOTES_AND_QUESTIONS_PROMPT,
+    NOTES_DETAILS_PROMPT,
+  ].some((prompt) => spoken.endsWith(normalizedSpokenText(prompt)));
+}
+
 export function shouldIgnoreConfirmationTranscript(value) {
   const text = cleanText(value);
   if (!text || !/[A-Za-z0-9]/.test(text)) return true;
@@ -275,6 +288,17 @@ export function isAddressGroundedInCallerEvidence(address, callerTranscripts = [
   const evidence = new Set(addressEvidenceTokens(callerTranscripts.join(' ')));
   const connectiveTokens = new Set(['at', 'in']);
   return candidateTokens.every((token) => connectiveTokens.has(token) || evidence.has(token));
+}
+
+function latestCallerProjectAddress(callerTranscripts = []) {
+  for (let index = callerTranscripts.length - 1; index >= 0; index -= 1) {
+    const transcript = cleanText(callerTranscripts[index]);
+    const match = transcript.match(/\b\d{1,6}\s+[\p{L}\p{N}.'’ -]+(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b[\s\S]*/iu);
+    if (!match) continue;
+    const candidate = cleanText(match[0]).replace(/\s+(?:is|was) the (?:full )?project address[.!]*$/i, '');
+    if (addressEvidenceTokens(candidate).length >= 4) return candidate;
+  }
+  return '';
 }
 
 function isAffirmativeSummaryConfirmation(value) {
@@ -547,6 +571,8 @@ export function createOpenAiReceptionist({
   let contactConsentAsked = false;
   let contactConsentGranted = false;
   let awaitingContactConsentAnswer = false;
+  let notesAndQuestionsAsked = false;
+  let summaryPreparationRetries = 0;
   let callerResponseQueued = false;
   let responseCreationPending = false;
   const activeResponseIds = new Set();
@@ -611,9 +637,13 @@ export function createOpenAiReceptionist({
       summaryConfirmationGranted = false;
     }
     if (speaker === 'receptionist' && isContactConsentQuestion(transcript, context)) {
+      notesAndQuestionsAsked = true;
       contactConsentAsked = true;
       contactConsentGranted = false;
       awaitingContactConsentAnswer = true;
+    }
+    if (speaker === 'receptionist' && isNotesAndQuestionsQuestion(transcript)) {
+      notesAndQuestionsAsked = true;
     }
     onTranscript?.({ speaker, text: transcript, ...metadata });
   }
@@ -655,6 +685,7 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: `Say exactly once: "Hi, thank you for calling ${businessName}. ${SERVICE_QUESTION}" Do not add anything before or after it.`,
+        input: [],
         tools: [],
         tool_choice: 'none',
       },
@@ -685,8 +716,22 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: `Say exactly: "Thank you for calling ${businessName}. Have a good day." Do not add "Goodbye" or any words before or after it.`,
+        input: [],
         tools: [],
         tool_choice: 'none',
+      },
+    });
+  }
+
+  function requestSummaryPreparationRetry(errorText) {
+    summaryPreparationRetries += 1;
+    sendJson(openai, {
+      type: 'response.create',
+      response: {
+        output_modalities: ['audio'],
+        instructions: `Call prepare_estimate_summary again now. Correct the previous tool arguments using only the caller's words and the supplied service list. Copy the caller's name and address without adding details. The notes step and standalone contact-consent step are already verified by the server. Do not speak before the tool call. Previous validation problem: ${cleanText(errorText)}`,
+        tools: [structuredClone(ESTIMATE_TOOLS[0])],
+        tool_choice: { type: 'function', name: 'prepare_estimate_summary' },
       },
     });
   }
@@ -701,8 +746,13 @@ export function createOpenAiReceptionist({
         awaitingSummaryConfirmation = false;
         if (callerTranscriptCount > 0) {
           if (!isAddressGroundedInCallerEvidence(args.address, callerTranscripts)) {
-            throw new Error('The proposed project address contains details the caller did not provide. Ask only for the address detail that is unclear.');
+            const callerAddress = latestCallerProjectAddress(callerTranscripts);
+            if (callerAddress) args.address = callerAddress;
           }
+          if (!isAddressGroundedInCallerEvidence(args.address, callerTranscripts)) {
+            throw new Error('The proposed project address contains details the caller did not provide. Copy the project address from the caller transcript.');
+          }
+          args.additional_notes_asked = notesAndQuestionsAsked;
           args.consent_asked_separately = contactConsentAsked;
           args.consent_to_contact = contactConsentGranted;
           if (!contactConsentAsked) {
@@ -725,6 +775,11 @@ export function createOpenAiReceptionist({
     }
 
     const safeResult = safeToolResult(result);
+    const terminalPreparationFailure = (
+      !safeResult.ok
+      && item.name === 'prepare_estimate_summary'
+      && summaryPreparationRetries >= MAX_SUMMARY_PREPARATION_RETRIES
+    );
     if (!safeResult.ok && item.name === 'submit_estimate_request') {
       waitingForSubmissionFailureResponse = true;
     }
@@ -733,7 +788,9 @@ export function createOpenAiReceptionist({
       item: {
         type: 'function_call_output',
         call_id: item.call_id,
-        output: JSON.stringify(safeResult),
+        output: JSON.stringify(terminalPreparationFailure
+          ? { ...safeResult, terminal_preparation_failure: true }
+          : safeResult),
       },
     });
 
@@ -743,11 +800,36 @@ export function createOpenAiReceptionist({
         response: {
           output_modalities: ['audio'],
           instructions: `Say exactly: "${forcedConsentQuestion}" Do not add anything before or after it.`,
+          input: [],
           tools: [],
           tool_choice: 'none',
         },
       });
       return;
+    }
+
+    if (!safeResult.ok && item.name === 'prepare_estimate_summary') {
+      if (!terminalPreparationFailure) {
+        requestSummaryPreparationRetry(safeResult.error);
+      } else {
+        waitingForSubmissionFailureResponse = true;
+        sendJson(openai, {
+          type: 'response.create',
+          response: {
+            output_modalities: ['audio'],
+            instructions: `Say exactly: "${SUBMISSION_FAILURE_RESPONSE}" Do not add anything before or after it.`,
+            input: [],
+            tools: [],
+            tool_choice: 'none',
+          },
+        });
+      }
+      return;
+    }
+
+    if (safeResult.ok && item.name === 'prepare_estimate_summary') {
+      summaryPreparationRetries = 0;
+      callerResponseQueued = false;
     }
 
     if (safeResult.ok && item.name === 'submit_estimate_request') {
@@ -768,6 +850,7 @@ export function createOpenAiReceptionist({
       response: {
         output_modalities: ['audio'],
         instructions: followupInstruction(item.name, safeResult),
+        ...(item.name === 'submit_estimate_request' ? { input: [] } : {}),
         tools: [],
         tool_choice: 'none',
       },

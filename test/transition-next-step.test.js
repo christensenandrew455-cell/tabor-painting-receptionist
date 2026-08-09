@@ -26,7 +26,7 @@ test('allows a brief transition when the same response immediately gives the rea
     false,
   );
   assert.equal(
-    shouldBlockReceptionistOutput('One sec. Let me grab the details. What date and time would work best for the estimate?'),
+    shouldBlockReceptionistOutput('One sec. Let me grab the details. What day or date would you prefer for the estimate, and what time works best?'),
     false,
   );
   assert.equal(
@@ -38,7 +38,7 @@ test('allows a brief transition when the same response immediately gives the rea
     false,
   );
   assert.equal(
-    shouldBlockReceptionistOutput('Give me a second. What date and time would work best for the estimate?'),
+    shouldBlockReceptionistOutput('Give me a second. What day or date would you prefer for the estimate, and what time works best?'),
     false,
   );
   assert.equal(
