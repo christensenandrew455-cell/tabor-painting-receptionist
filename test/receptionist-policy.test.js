@@ -54,6 +54,7 @@ test('recognizes natural names while rejecting project descriptions as names', (
     'María de la Cruz.',
     "My name is D'Andre Williams.",
     'You can use Anne-Marie Smith.',
+    'Andrew Christensen works well.',
   ]) {
     assert.equal(hasUsableNameAnswer(value, HVAC_CONTEXT), true, value);
   }

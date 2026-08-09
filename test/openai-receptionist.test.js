@@ -87,7 +87,7 @@ test('prompt defines one universal intake flow and a clear knowledge boundary', 
   assert.match(prompt, /What name should I use for the estimate request\?/);
   assert.match(prompt, /What's the full project address\?/);
   assert.doesNotMatch(prompt, /What's the complete project address\?/);
-  assert.match(prompt, /What date and time would work best for the estimate\?/);
+  assert.match(prompt, /What day or date would you prefer for the estimate, and what time works best\?/);
   assert.match(prompt, /Do you have any notes or questions for the business\?/);
 
   assert.match(prompt, /ordinary language understanding/i);

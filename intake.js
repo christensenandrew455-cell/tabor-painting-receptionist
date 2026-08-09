@@ -137,6 +137,24 @@ function parseRequestedDate(text, today) {
   const numeric = text.match(/^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2}|\d{4}))?$/);
   if (numeric) return dateFromNumeric(numeric, today);
 
+  const dayOfMonth = text.match(/^(?:the\s+)?(\d{1,2})$/);
+  if (dayOfMonth) {
+    const requestedDay = Number(dayOfMonth[1]);
+    if (requestedDay < 1 || requestedDay > 31) return null;
+    let year = today.getUTCFullYear();
+    let month = today.getUTCMonth() + 1;
+    for (let attempts = 0; attempts < 13; attempts += 1) {
+      const date = calendarDate(year, month, requestedDay);
+      if (date && date >= today) return date;
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+    return null;
+  }
+
   const written = text.match(/^(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:\s+(\d{2}|\d{4}))?$/);
   if (!written) return null;
   let year = written[3] ? Number(written[3]) : today.getUTCFullYear();
@@ -322,6 +340,29 @@ function normalizedService(value) {
   return cleanText(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
+const SERVICE_MATCH_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'at', 'do', 'for', 'get', 'have', 'i', 'in', 'is', 'it', 'my',
+  'need', 'of', 'on', 'one', 'some', 'the', 'to', 'want', 'with', 'would',
+]);
+
+function serviceTokenRoot(value) {
+  let token = normalizedService(value);
+  if (token.length > 5 && token.endsWith('ing')) token = token.slice(0, -3);
+  else if (token.length > 4 && token.endsWith('ied')) token = `${token.slice(0, -3)}y`;
+  else if (token.length > 4 && token.endsWith('ed')) token = token.slice(0, -2);
+  else if (token.length > 4 && token.endsWith('es')) token = token.slice(0, -2);
+  else if (token.length > 3 && token.endsWith('s')) token = token.slice(0, -1);
+  return token;
+}
+
+function meaningfulServiceTokens(value) {
+  return normalizedService(value)
+    .split(' ')
+    .filter((token) => token.length >= 3 && !SERVICE_MATCH_STOP_WORDS.has(token))
+    .map(serviceTokenRoot)
+    .filter(Boolean);
+}
+
 export function matchService(value, services = []) {
   const requested = normalizedService(value);
   if (!requested) fail('Ask which service the caller needs.', 'service');
@@ -335,8 +376,33 @@ export function matchService(value, services = []) {
     return name && (requested.includes(name) || name.includes(requested));
   });
   if (candidates.length === 1) return candidates[0].name;
+
+  const requestedTokens = new Set(meaningfulServiceTokens(value));
+  const scored = services
+    .map((service) => {
+      const nameTokens = new Set(meaningfulServiceTokens(service.name));
+      const descriptionTokens = new Set(meaningfulServiceTokens(service.description));
+      let score = 0;
+      for (const token of requestedTokens) {
+        if (nameTokens.has(token)) score += 2;
+        else if (descriptionTokens.has(token)) score += 1;
+      }
+      return { service, score };
+    })
+    .sort((left, right) => right.score - left.score);
+  if (scored[0]?.score >= 3 && scored[0].score > (scored[1]?.score || 0)) {
+    return scored[0].service.name;
+  }
   const choices = services.map((service) => service.name).join(', ');
   fail(`Match the caller's request to one of these website services: ${choices}.`, 'service');
+}
+
+export function normalizeCallerName(value) {
+  return requiredText(value, 'name', 'their name', 120)
+    .replace(/^(?:my name is|this is|i am|i['’]m|call me|you can use|please use)\s+/i, '')
+    .replace(/\s+(?:works(?:\s+(?:well|the\s+best))?|is\s+(?:fine|good)|please)[.!]*$/i, '')
+    .replace(/[.!]+$/g, '')
+    .trim();
 }
 
 function requiredText(value, field, label, maxLength) {
@@ -365,7 +431,7 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
   validateEstimateAvailability(date, requestedTime, context);
   return Object.freeze({
     service: matchService(args.service, context.services),
-    name: requiredText(args.name, 'name', 'their name', 120),
+    name: normalizeCallerName(args.name),
     address: requiredText(args.address, 'address', 'the project address', 300),
     requestedDateInput: date.input,
     requestedDate: date.exactDate,

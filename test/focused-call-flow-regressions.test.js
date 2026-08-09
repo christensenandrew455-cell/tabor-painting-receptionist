@@ -23,6 +23,7 @@ const CONTEXT = Object.freeze({
 });
 
 const SERVICE_QUESTION = 'What kind of work do you need done?';
+const SCHEDULE_QUESTION = 'What day or date would you prefer for the estimate, and what time works best?';
 const NOTES_PROMPT = 'Do you have any notes or questions for the business?';
 const MORE_NOTES_PROMPT = 'Do you have any other notes or questions for the business?';
 const UNKNOWN = "I'm sorry, I don't know that. I'll add that question to the notes.";
@@ -284,13 +285,14 @@ test('caller turns are constrained before generation and exact planned audio str
       'planned-address-answer',
     );
     const plannedScheduleQuestion = latestResponseCreate(h.socket);
-    assert.match(plannedScheduleQuestion.response.instructions, /What date and time would work best/);
+    assert.match(plannedScheduleQuestion.response.instructions, /What day or date would you prefer/);
+    assert.deepEqual(plannedScheduleQuestion.response.input, []);
     assert.equal(plannedScheduleQuestion.response.tool_choice, 'none');
 
     assistantResponse(h.socket, {
       responseId: 'planned-schedule-question',
       itemId: 'planned-schedule-question-item',
-      transcript: 'Got it. What date and time would work best for the estimate?',
+      transcript: `Got it. ${SCHEDULE_QUESTION}`,
       metadata: plannedScheduleQuestion.response.metadata,
     });
     caller(h.socket, 'Tuesday at 12.', 'planned-schedule-answer');
@@ -325,6 +327,36 @@ test('caller turns are constrained before generation and exact planned audio str
       type: 'function',
       name: 'prepare_estimate_summary',
     });
+
+    assistantResponse(h.socket, {
+      responseId: 'planned-summary-preparation',
+      itemId: 'planned-summary-preparation-item',
+      metadata: plannedSummaryTool.response.metadata,
+      extraOutput: [{
+        id: 'planned-summary-preparation-call-item',
+        type: 'function_call',
+        name: 'prepare_estimate_summary',
+        call_id: 'planned-summary-preparation-call',
+        arguments: JSON.stringify({
+          service: 'I need the exterior of my house painted.',
+          name: 'Andrew Christensen works well.',
+          address: '197 Lancaster Road, Berlin, Massachusetts 01503',
+          preferred_date: 'Tuesday',
+          preferred_time: '12',
+          additional_notes: '',
+          additional_notes_asked: false,
+          consent_to_contact: false,
+          consent_asked_separately: false,
+        }),
+      }],
+    });
+    await nextTurn();
+
+    const summaryReadback = latestResponseCreate(h.socket);
+    assert.match(summaryReadback.response.instructions, /Andrew Christensen is requesting Exterior Painting/);
+    assert.match(summaryReadback.response.instructions, /197 Lancaster Road, Berlin, Massachusetts/);
+    assert.doesNotMatch(summaryReadback.response.instructions, /works well|01503/);
+    assert.deepEqual(summaryReadback.response.input, []);
   } finally {
     h.restore();
   }
@@ -357,7 +389,7 @@ test('unfinished address fragments stay silent instead of advancing the intake',
     caller(h.socket, 'Berlin, Massachusetts.', 'partial-address-location');
     assert.match(
       latestResponseCreate(h.socket).response.instructions,
-      /What date and time would work best for the estimate/,
+      /What day or date would you prefer for the estimate/,
     );
   } finally {
     h.restore();
@@ -382,6 +414,153 @@ test('consent yes is constrained to the summary tool before generation', async (
       name: 'prepare_estimate_summary',
     });
     assert.ok(toolPlan.response.metadata?.receptionist_plan_id);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a failed summary preparation retries silently and keeps the summary gate locked', async () => {
+  const h = await createHarness();
+  try {
+    caller(h.socket, '197 Lancaster Road, Berlin, Massachusetts.', 'retry-address-evidence');
+    assistantResponse(h.socket, {
+      responseId: 'retry-consent-question',
+      itemId: 'retry-consent-question-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+    });
+    caller(h.socket, 'Yes.', 'retry-consent-yes');
+    const firstPreparePlan = latestResponseCreate(h.socket);
+
+    assistantResponse(h.socket, {
+      responseId: 'retry-invalid-prepare-response',
+      itemId: 'retry-invalid-prepare-response-item',
+      metadata: firstPreparePlan.response.metadata,
+      extraOutput: [{
+        id: 'retry-invalid-prepare-call-item',
+        type: 'function_call',
+        name: 'prepare_estimate_summary',
+        call_id: 'retry-invalid-prepare-call',
+        arguments: JSON.stringify({
+          service: 'Exterior Painting',
+          name: 'Andrew Christensen',
+          address: '197 Lancaster Road, Berlin, Massachusetts.',
+          preferred_date: 'not a date',
+          preferred_time: '2',
+          additional_notes: '',
+          additional_notes_asked: false,
+          consent_to_contact: false,
+          consent_asked_separately: false,
+        }),
+      }],
+    });
+    await nextTurn();
+
+    const retryPlan = latestResponseCreate(h.socket);
+    assert.deepEqual(retryPlan.response.tools.map((tool) => tool.name), ['prepare_estimate_summary']);
+    assert.match(retryPlan.response.instructions, /Call prepare_estimate_summary again now/i);
+    assert.doesNotMatch(retryPlan.response.instructions, /ask.*address|what.*address/i);
+
+    const responseCountBeforeWaitCheck = responseCreates(h.socket).length;
+    h.socket.receive({
+      type: 'response.created',
+      response: { id: 'retry-corrected-prepare-response' },
+    });
+    caller(h.socket, 'Hello?', 'retry-summary-wait-check');
+    assert.equal(responseCreates(h.socket).length, responseCountBeforeWaitCheck);
+
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'retry-corrected-prepare-response',
+        output: [{
+          id: 'retry-corrected-prepare-call-item',
+          type: 'function_call',
+          name: 'prepare_estimate_summary',
+          call_id: 'retry-corrected-prepare-call',
+          arguments: JSON.stringify({
+            service: 'Exterior Painting',
+            name: 'Andrew Christensen',
+            address: '197 Lancaster Road, Berlin, Massachusetts.',
+            preferred_date: 'Monday',
+            preferred_time: '2',
+            additional_notes: '',
+            additional_notes_asked: true,
+            consent_to_contact: true,
+            consent_asked_separately: true,
+          }),
+        }],
+      },
+    });
+    await nextTurn();
+
+    const summaryPlan = latestResponseCreate(h.socket);
+    assert.match(summaryPlan.response.instructions, /Okay, here's the summary/i);
+    assert.doesNotMatch(summaryPlan.response.instructions, /address is complete|anything else/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('exhausted summary preparation retries report failure and still end the call', async () => {
+  const h = await createHarness();
+  try {
+    caller(h.socket, '197 Lancaster Road, Berlin, Massachusetts.', 'terminal-retry-address');
+    assistantResponse(h.socket, {
+      responseId: 'terminal-retry-consent-question',
+      itemId: 'terminal-retry-consent-question-item',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+    });
+    caller(h.socket, 'Yes.', 'terminal-retry-consent-yes');
+
+    let preparePlan = latestResponseCreate(h.socket);
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      assistantResponse(h.socket, {
+        responseId: `terminal-invalid-prepare-response-${attempt}`,
+        itemId: `terminal-invalid-prepare-response-item-${attempt}`,
+        metadata: preparePlan.response.metadata,
+        extraOutput: [{
+          id: `terminal-invalid-prepare-call-item-${attempt}`,
+          type: 'function_call',
+          name: 'prepare_estimate_summary',
+          call_id: `terminal-invalid-prepare-call-${attempt}`,
+          arguments: JSON.stringify({
+            service: 'Exterior Painting',
+            name: 'Andrew Christensen',
+            address: '197 Lancaster Road, Berlin, Massachusetts.',
+            preferred_date: 'not a date',
+            preferred_time: '2',
+            additional_notes: '',
+            additional_notes_asked: true,
+            consent_to_contact: true,
+            consent_asked_separately: true,
+          }),
+        }],
+      });
+      await nextTurn();
+      preparePlan = latestResponseCreate(h.socket);
+      if (attempt < 4) {
+        assert.deepEqual(preparePlan.response.tools.map((tool) => tool.name), [
+          'prepare_estimate_summary',
+        ]);
+      }
+    }
+
+    assert.match(preparePlan.response.instructions, /I can't send the estimate request/);
+    assert.deepEqual(preparePlan.response.input, []);
+    assert.deepEqual(preparePlan.response.tools, []);
+
+    assistantResponse(h.socket, {
+      responseId: 'terminal-preparation-failure-response',
+      itemId: 'terminal-preparation-failure-response-item',
+      transcript: "I'm sorry, I can't send the estimate request.",
+      audio: 'terminal-preparation-failure-audio',
+      metadata: preparePlan.response.metadata,
+    });
+    assert.equal(h.audio.includes('terminal-preparation-failure-audio'), true);
+    assert.match(
+      latestResponseCreate(h.socket).response.instructions,
+      /Thank you for calling Tabor Painting\. Have a good day\./,
+    );
   } finally {
     h.restore();
   }
@@ -610,7 +789,7 @@ test('a name-only answer cannot skip the address question', async () => {
     assistantResponse(h.socket, {
       responseId: 'wrong-next-field',
       itemId: 'wrong-next-field-item',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: SCHEDULE_QUESTION,
       audio: 'wrong-next-field-audio',
     });
 
@@ -698,7 +877,7 @@ test('a complete address cannot end on an announcement that timing comes next', 
     assert.equal(h.audio.includes('timing-announcement-dead-end-audio'), false);
     assert.equal(
       latestResponseCreate(h.socket).response.instructions,
-      'Say exactly: "What date and time would work best for the estimate?" Do not add anything before or after it.',
+      `Say exactly: "${SCHEDULE_QUESTION}" Do not add anything before or after it.`,
     );
   } finally {
     h.restore();
@@ -738,7 +917,7 @@ test('Monday at 1 silently resolves to 1 PM and advances to notes', async () => 
     assistantResponse(h.socket, {
       responseId: 'schedule-question-bare-hour',
       itemId: 'schedule-question-bare-hour-item',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: SCHEDULE_QUESTION,
       audio: 'schedule-question-bare-hour-audio',
     });
     caller(h.socket, 'Probably, like, Monday at 1.', 'caller-bare-hour');
@@ -769,19 +948,61 @@ for (const [label, transcript] of [
       assistantResponse(h.socket, {
         responseId: `schedule-question-${label}`,
         itemId: `schedule-question-${label}-item`,
-        transcript: 'What date and time would work best for the estimate?',
+        transcript: SCHEDULE_QUESTION,
         audio: `schedule-question-${label}-audio`,
       });
       caller(h.socket, transcript, `caller-schedule-${label}`);
 
       const plan = latestResponseCreate(h.socket);
       assert.match(plan.response.instructions, /Do you have any notes or questions for the business\?/);
-      assert.doesNotMatch(plan.response.instructions, /What date and time would work best/);
+      assert.doesNotMatch(plan.response.instructions, /What day or date would you prefer/);
     } finally {
       h.restore();
     }
   });
 }
+
+test('schedule accepts a calendar day answer such as the 8th at 2', async () => {
+  const h = await createHarness({
+    ...CONTEXT,
+    now: new Date('2026-08-09T16:00:00.000Z'),
+  });
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'calendar-day-schedule-question',
+      itemId: 'calendar-day-schedule-question-item',
+      transcript: SCHEDULE_QUESTION,
+    });
+    caller(h.socket, 'How about the 8th at 2?', 'calendar-day-schedule-answer');
+
+    const plan = latestResponseCreate(h.socket);
+    assert.match(plan.response.instructions, /Do you have any notes or questions for the business\?/);
+    assert.deepEqual(plan.response.input, []);
+  } finally {
+    h.restore();
+  }
+});
+
+test('schedule keeps an unavailable day pending instead of accepting it at summary time', async () => {
+  const h = await createHarness({
+    ...CONTEXT,
+    now: new Date('2026-08-09T16:00:00.000Z'),
+  });
+  try {
+    assistantResponse(h.socket, {
+      responseId: 'unavailable-schedule-question',
+      itemId: 'unavailable-schedule-question-item',
+      transcript: SCHEDULE_QUESTION,
+    });
+    caller(h.socket, 'Next Saturday at 10.', 'unavailable-schedule-answer');
+
+    const plan = latestResponseCreate(h.socket);
+    assert.match(plan.response.instructions, /What day or date would you prefer/);
+    assert.doesNotMatch(plan.response.instructions, /notes or questions/i);
+  } finally {
+    h.restore();
+  }
+});
 
 test('unfinished scheduling waits and repeated speech after consent cannot replace the summary', async () => {
   const h = await createHarness();
@@ -789,7 +1010,7 @@ test('unfinished scheduling waits and repeated speech after consent cannot repla
     assistantResponse(h.socket, {
       responseId: 'live-schedule-question',
       itemId: 'live-schedule-question-item',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: SCHEDULE_QUESTION,
       audio: 'live-schedule-question-audio',
     });
 
@@ -873,7 +1094,7 @@ test('Tuesday at 12 cannot dead-end on transition narration or turn recovery cha
     assistantResponse(h.socket, {
       responseId: 'noon-schedule-question',
       itemId: 'noon-schedule-question-item',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: SCHEDULE_QUESTION,
       audio: 'noon-schedule-question-audio',
     });
     caller(
@@ -989,7 +1210,7 @@ test('answered intake fields stay locked while later steps continue', async () =
     assistantResponse(h.socket, {
       responseId: 'locked-schedule-question',
       itemId: 'locked-schedule-question-item',
-      transcript: 'What date and time would work best for the estimate?',
+      transcript: SCHEDULE_QUESTION,
       audio: 'locked-schedule-question-audio',
     });
     caller(h.socket, 'Monday at 1.', 'locked-caller-schedule');
