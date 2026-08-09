@@ -210,8 +210,10 @@ export function normalizeRequestedTime(value, context = {}) {
   if (input === 'noon') input = '12 pm';
   if (input === 'midnight') input = '12 am';
 
-  const spoken = input.match(/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(am|pm)$/);
-  if (spoken) input = `${SPOKEN_HOURS[spoken[1]]} ${spoken[2]}`;
+  const spoken = input.match(/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s*(am|pm))?$/);
+  if (spoken) {
+    input = `${SPOKEN_HOURS[spoken[1]]}${spoken[2] ? ` ${spoken[2]}` : ''}`;
+  }
 
   const match = input.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?$/);
   if (!match) fail('That time was unclear. Ask what time they prefer.', 'preferred_time');

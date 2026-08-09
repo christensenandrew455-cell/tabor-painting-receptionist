@@ -642,6 +642,30 @@ test('Monday at 1 silently resolves to 1 PM and advances to notes', async () => 
   }
 });
 
+for (const [label, transcript] of [
+  ['filler around a numeric hour', "Probably, like, I don't know, Wednesday at, like, 9?"],
+  ['a spoken hour', 'Wednesday at nine.'],
+]) {
+  test(`schedule accepts ${label} and advances to notes`, async () => {
+    const h = await createHarness();
+    try {
+      assistantResponse(h.socket, {
+        responseId: `schedule-question-${label}`,
+        itemId: `schedule-question-${label}-item`,
+        transcript: 'What date and time would work best for the estimate?',
+        audio: `schedule-question-${label}-audio`,
+      });
+      caller(h.socket, transcript, `caller-schedule-${label}`);
+
+      const plan = latestResponseCreate(h.socket);
+      assert.match(plan.response.instructions, /Do you have any notes or questions for the business\?/);
+      assert.doesNotMatch(plan.response.instructions, /What date and time would work best/);
+    } finally {
+      h.restore();
+    }
+  });
+}
+
 test('Tuesday at 12 cannot dead-end on transition narration or turn recovery chatter into notes', async () => {
   const h = await createHarness();
   try {

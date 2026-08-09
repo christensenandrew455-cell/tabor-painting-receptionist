@@ -58,6 +58,8 @@ test('requires AM or PM for an ambiguous time', () => {
 test('infers a bare hour when only one meridiem fits the estimate window', () => {
   assert.equal(normalizeRequestedTime('1', CONTEXT), '1:00 PM');
   assert.equal(normalizeRequestedTime('9', CONTEXT), '9:00 AM');
+  assert.equal(normalizeRequestedTime('nine', CONTEXT), '9:00 AM');
+  assert.equal(normalizeRequestedTime('nine am', CONTEXT), '9:00 AM');
   assert.throws(
     () => normalizeRequestedTime('3', {
       earliestEstimateStart: '00:00',
