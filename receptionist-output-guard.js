@@ -16,7 +16,8 @@ const NOTES_AND_QUESTIONS_PROMPT = 'Do you have any notes or questions for the b
 const MORE_NOTES_AND_QUESTIONS_PROMPT = 'Do you have any other notes or questions for the business?';
 const NOTES_DETAILS_PROMPT = 'What notes or questions do you have for the business?';
 const OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't really know that. I'll add it to the notes.";
-const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "Okay, I'll add it to the notes.";
+const PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "Okay, I'll add it to the notes.";
+const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that. I'll add that question to the notes.";
 const OLD_PRICE_QUESTION_RESPONSE = 'The price depends on the estimate.';
 const OLD_RESPONSE_TIME_QUESTION_RESPONSE = "I don't know exactly when, but the longest it will take is a week to accept or decline your estimate request.";
 const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
@@ -141,7 +142,10 @@ function isDisallowedAddressClarification(value) {
   const text = cleanText(value);
   if (!text) return false;
   if (asksForZipCode(text)) return true;
-  if (/\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)) return true;
+  if (/\b(?:apartment|apt\.?|suite|unit)\b/i.test(text)) {
+    return /\?/.test(text)
+      || /\b(?:need|provide|give|tell|share|confirm|what(?:'s| is)|is there|do you have|any)\b/i.test(text);
+  }
   return /\b(?:address|city|town|state)\b/i.test(text)
     && /\b(?:spell|spelled|spelling|did you mean|is that|is this|is it|confirm|correct|exactly)\b/i.test(text);
 }
@@ -402,7 +406,7 @@ function repairPlanForBlockedOutput({
           return { instructions: exactSpeechInstruction(text), expectedTranscript: text };
         }
         return {
-          instructions: `Answer only the caller's business question using only the supplied structured business data for this call. Never answer from general knowledge, common industry knowledge, hardcoded fallback claims, or assumptions about painting. Then ask exactly: ${JSON.stringify(MORE_NOTES_AND_QUESTIONS_PROMPT)} Do not ask another intake question and do not discuss how the caller's own project maps to a service.`,
+          instructions: `Answer only the caller's business question using only the supplied business data for this call. Do not add an answered question to the notes. Never answer from general knowledge, common industry knowledge, hardcoded fallback claims, or assumptions about painting. Then ask exactly: ${JSON.stringify(MORE_NOTES_AND_QUESTIONS_PROMPT)} Do not ask another intake question and do not discuss how the caller's own project maps to a service.`,
           expectedTranscript: '',
         };
       }
@@ -493,27 +497,44 @@ function hardenSessionUpdate(event) {
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
-    [OLD_PRICE_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
-    [OLD_RESPONSE_TIME_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
+    [PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
     ...CALLER_VALUE_EXAMPLE_REPLACEMENTS,
   ]);
 
   if (typeof event.session?.instructions === 'string') {
     const oldAcknowledgmentRule = 'Light acknowledgments such as "Okay," "Great," "Got it," "Okay, great," or "Sounds good" are encouraged and may naturally begin many questions or answers. Do not force one onto every turn, and vary them so the conversation does not sound repetitive.';
     const hardAcknowledgmentRule = 'Natural acknowledgements are fine only when they are attached to a useful answer or question. Never send a standalone filler acknowledgement during intake.';
+    const oldSingleActionRule = 'Produce at most one assistant message in each turn, written as one short paragraph. Choose exactly one next action before speaking. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.';
+    const coherentResponseRule = 'Produce at most one assistant message in each turn, written as one short paragraph. Keep that response focused on the caller\'s current step. When the caller asks a business question, the same response may contain the brief grounded answer followed by the one appropriate follow-up question. Never emit two assistant messages or two separate spoken items in the same response, and never speak a transition sentence and then switch to a different action. Never repeat the same sentence or question within one response. Ask at most one question, then stop and wait for the caller.';
+    const oldBusinessScopeRule = '- Answer only from the structured business information supplied below: services, service areas, normal business hours, estimate days, and estimate hours.';
+    const businessScopeRule = '- Answer business questions only from the business information supplied for this call, including the supplied services and relevant facts present in BUSINESS WEBSITE DATA. If the answer is not present there, do not infer it from general knowledge.';
+    const oldPriceRule = `- If the caller asks about price, cost, a price range, or how much the job will be, answer exactly: "${OLD_PRICE_QUESTION_RESPONSE}"`;
+    const oldResponseTimeRule = `- If the caller asks how long it will take the business to get back to them, respond to their request, accept it, decline it, or otherwise decide the estimate request, answer exactly: "${OLD_RESPONSE_TIME_QUESTION_RESPONSE}"`;
+    const oldUnsupportedRule = `- If the caller asks a business question that cannot be answered from the structured information and is not one of the two fallbacks above, say exactly: "${OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE}" Preserve that unanswered question in additional_notes so the business receives it.`;
+    const unsupportedRule = `- If the supplied business information does not contain the answer, do not answer from general knowledge. During the notes-and-questions step, say "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and then ask "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Preserve that unanswered question in additional_notes. Before the notes-and-questions step, say "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and then return to the one intake field that was still pending.`;
+    const oldAnsweredRule = '- If a question is answered from structured information or one of the safe fallbacks, do not add the answered question to notes unless the caller asks you to.';
+    const answeredRule = '- If a question is answered from the supplied business information, do not add that answered question to notes unless the caller explicitly asks you to.';
+    const oldNotesCompletionRule = 'If the caller clearly has another question or more notes, remain in this step. Otherwise, once this step is complete, continue directly to contact permission.';
+    const explicitNotesCompletionRule = 'After every project note or business question, remain in this step. Continue to contact permission only after the caller explicitly says they have no more notes or questions.';
 
     event.session.instructions = event.session.instructions
       .replace(oldAcknowledgmentRule, hardAcknowledgmentRule)
+      .replace(oldSingleActionRule, coherentResponseRule)
+      .replace(oldBusinessScopeRule, businessScopeRule)
+      .replace(oldPriceRule, '')
+      .replace(oldResponseTimeRule, '')
+      .replace(oldUnsupportedRule, unsupportedRule)
+      .replace(oldAnsweredRule, answeredRule)
+      .replace(oldNotesCompletionRule, explicitNotesCompletionRule)
       + `\nSERVICE QUESTION RULE: Ask exactly: "${SERVICE_QUESTION}" The caller is expected to describe the work in ordinary words rather than know the website service category. Silently match their description to the supplied service when it is clear. Do not repeat the category back during intake.`
       + `\nFIELD FOCUS RULE: Keep the intake on the single field you just asked for. If the caller clearly answers a different field without also answering the pending field, do not consume that answer as a substitute and do not advance. Briefly apologize that you were asking for the pending field and ask that same field again. If the caller deliberately gives several fields in one turn and includes the pending field, keep all usable details and continue to the next genuinely missing field.`
-      + `\nCALLER VALUE RULE: Caller-specific values come only from the caller. Never invent, autocomplete, normalize, nickname, shorten, suggest, or confirm a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge.`
+      + `\nCALLER VALUE RULE: Caller-specific values come only from the caller. Never invent, autocomplete, nickname, alter, suggest, or confirm a caller-specific name, address, city, town, state, date, time, or note from business data, examples, prior calls, or general knowledge. If you casually use the caller's first name, use exactly the first-name wording the caller supplied; never substitute a nickname.`
       + `\nADDRESS RULE: Ask exactly "What's the complete project address?" Never ask for ZIP code, apartment, suite, or unit information. Never ask whether the original address is correct or spelled exactly a certain way. If city or town or state is genuinely missing, ask only for the missing city or town and/or state without suggesting a candidate value.`
-      + `\nBUSINESS KNOWLEDGE RULE: Business facts may come only from the structured business data supplied for this call. Never answer a business question from general knowledge, common painting knowledge, hardcoded fallback claims, assumptions, or typical industry practice. In particular, never invent job duration, drying time, prep time, pricing details, response-time promises, guarantees, policies, or availability. If the structured business data does not contain the answer, treat the question as unsupported and pass it to the notes.`
-      + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. After every project note or business question, remain in the notes step and ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" unless the caller explicitly says they are done. If the caller asks an unsupported business question, say exactly "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded a note or question.`
+      + `\nBUSINESS KNOWLEDGE RULE: Business facts may come only from the business data supplied for this call. If that data contains the answer, answer briefly and do not add the answered question to notes. If that data does not contain the answer, do not use general knowledge, common painting knowledge, hardcoded fallback claims, assumptions, or typical industry practice. In particular, never invent job duration, drying time, prep time, pricing details, response-time promises, guarantees, policies, or availability.`
+      + `\nNOTES LOOP RULE: The notes-and-questions step stays open until the caller explicitly says they have no more notes or questions, such as no, none, nothing else, that's all, or that's it. After a project note, ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question that the supplied business data can answer, answer it briefly, do not add it to notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" After a business question the supplied data cannot answer, say exactly "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" preserve that question in the notes, and then ask exactly "${MORE_NOTES_AND_QUESTIONS_PROMPT}" Never move to contact consent merely because you answered or recorded one note or question.`
       + `\nHARD OUTPUT RULE: Do not generate standalone process or transition narration. Before speaking, remove phrases such as "one sec", "let me get the details", "let me grab the details", "let me check", "let's keep moving", or any natural variation unless the same spoken response immediately continues into the actual next question or action. Prefer skipping the transition entirely and asking the next question directly. Never end a turn on process narration. Never say "let me think", "best way to help", "next step", "let me update", "let me clarify", or "quick recap".`
       + `\nUNCLEAR AUDIO RULE: A hesitation such as "uh" or "um" gets silence. If the caller starts an unfinished thought, wait for them to finish instead of advancing the intake. If the transcription is clearly unintelligible rather than a hesitation, say exactly: "${UNCLEAR_CALLER_RESPONSE}"`
       + `\nDELIVERY RULE: Speak with smooth, natural conversational pacing and intonation. Keep sentences short and easy to follow. Do not sound clipped, staccato, overly formal, or like you are reading field labels.`
-      + `\nNOTES RULE: Ask exactly: "${NOTES_AND_QUESTIONS_PROMPT}" If the caller asks a business question that cannot be answered from the supplied business data, say exactly: "${UNKNOWN_BUSINESS_QUESTION_RESPONSE}" and preserve that question in the notes.`
       + `\nFINAL SUMMARY RULE: Begin with "Okay, here's the summary." State the name, service, address, preferred date and time, and notes exactly once. If there are no notes, say "There are no additional notes." Never say "Note: None" and never repeat the summary.`
       + `\nPRE-SUBMISSION RULE: After the caller confirms the final summary, the required sentence before the submit tool is exactly: "${SUBMISSION_START_RESPONSE}" That sentence and the submit_estimate_request tool call must be produced in the same response. Never say the sentence by itself, never repeat it, and never claim the request is being sent unless the submit tool call is present.`;
   }
@@ -535,6 +556,7 @@ function prepareOutgoingEvent(event, pendingSummary) {
     [OLD_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [PREVIOUS_NOTES_AND_QUESTIONS_PROMPT, NOTES_AND_QUESTIONS_PROMPT],
     [OLD_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
+    [PREVIOUS_UNKNOWN_BUSINESS_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
     [OLD_PRICE_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
     [OLD_RESPONSE_TIME_QUESTION_RESPONSE, UNKNOWN_BUSINESS_QUESTION_RESPONSE],
   ]);
