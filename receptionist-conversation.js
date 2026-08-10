@@ -904,13 +904,12 @@ export function createReceptionistConversation({ context }) {
       && current !== 'summary'
     ) return { type: 'wait', preserve: false };
     if (isConversationRepairRequest(text)) {
-      return { type: 'speak', text: bareQuestion(current), yieldToCaller: true };
+      return { type: 'speak', text: bareQuestion(current) };
     }
     if (disposition === 'unclear') {
       return {
         type: 'speak',
         text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion(current)),
-        yieldToCaller: true,
       };
     }
     return { type: 'analyze' };
@@ -992,11 +991,10 @@ export function createReceptionistConversation({ context }) {
       return {
         type: 'speak',
         text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion()),
-        yieldToCaller: true,
       };
     }
     if (analysis.turn_status === 'conversation_repair') {
-      return { type: 'speak', text: bareQuestion(), yieldToCaller: true };
+      return { type: 'speak', text: bareQuestion() };
     }
     const detectedDate = requestedDateCandidate(transcript, context);
     if (

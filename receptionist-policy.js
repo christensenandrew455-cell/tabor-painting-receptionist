@@ -153,18 +153,6 @@ export function isExplicitCorrectionRequest(value) {
     || /^(?:actually|wait)[, ]+\S/.test(text);
 }
 
-export function shouldInterruptReceptionist(value) {
-  const text = cleanText(value);
-  if (!text || isStandaloneBackchannel(text) || classifyCallerTranscript(text) !== 'meaningful') {
-    return false;
-  }
-  const normalized = normalizedCallerText(text);
-  return isHoldRequest(text)
-    || isExplicitCorrectionRequest(text)
-    || /^(?:please )?(?:stop|wait|hold on|hang on)\b/.test(normalized)
-    || /\b(?:before you (?:continue|go on)|let me stop you)\b/.test(normalized);
-}
-
 export function isAiIdentityQuestion(value) {
   const text = normalizedCallerText(value);
   if (!text) return false;
