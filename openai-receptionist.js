@@ -12,6 +12,7 @@ import {
   SUBMISSION_START_RESPONSE,
   SUBMISSION_SUCCESS_RESPONSE,
   UNCLEAR_CALLER_RESPONSE,
+  looksLikeBusinessQuestion,
   shouldInterruptReceptionist,
   spokenBusinessName,
 } from './receptionist-policy.js';
@@ -22,6 +23,7 @@ const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 const MAX_PENDING_AUDIO_CHUNKS = 500;
 const PCMU_BYTES_PER_SECOND = 8_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
+const DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS = 2_048;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 2_500;
 const DEFAULT_CONTEXT_RETENTION_RATIO = 0.7;
 const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
@@ -56,6 +58,12 @@ function costControls() {
       DEFAULT_MAX_OUTPUT_TOKENS,
       64,
       1_024,
+    )),
+    analysisMaxOutputTokens: Math.round(boundedNumber(
+      process.env.OPENAI_ANALYSIS_MAX_OUTPUT_TOKENS,
+      DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+      256,
+      4_096,
     )),
     contextTokenLimit: Math.round(boundedNumber(
       process.env.OPENAI_CONTEXT_TOKEN_LIMIT,
@@ -535,6 +543,9 @@ export function createOpenAiReceptionist({
     turn.analysisRequestedAt = Date.now();
     return createResponse({
       output_modalities: ['text'],
+      max_output_tokens: turn.attempt > 0
+        ? 4_096
+        : controls.analysisMaxOutputTokens,
       instructions: buildTurnAnalysisInstructions({
         state: conversation.snapshot(),
         callerTranscript: turn.text,
@@ -682,6 +693,17 @@ export function createOpenAiReceptionist({
     dispatchCallerTurn();
   }
 
+  function recoverUnanalyzedTurn(turn) {
+    if (turn && looksLikeBusinessQuestion(turn.text)) {
+      handleConversationAction(conversation.applyAnalysis({
+        turn_status: 'complete',
+        business_answer_status: 'unanswerable',
+      }, turn.text), turn);
+      return;
+    }
+    requestSpeech(conversation.bareQuestion(), { turn });
+  }
+
   function combineContinuation(turn) {
     if (!pendingCallerTurns.length) return null;
     const continuations = pendingCallerTurns.splice(0);
@@ -719,10 +741,7 @@ export function createOpenAiReceptionist({
         turn.attempt += 1;
         requestAnalysis(turn);
       } else {
-        requestSpeech(
-          `${conversation.bareQuestion()}`,
-          { turn },
-        );
+        recoverUnanalyzedTurn(turn);
       }
       return;
     }
@@ -736,7 +755,7 @@ export function createOpenAiReceptionist({
         turn.attempt += 1;
         requestAnalysis(turn);
       } else {
-        requestSpeech(conversation.bareQuestion(), { turn });
+        recoverUnanalyzedTurn(turn);
       }
       return;
     }
@@ -771,7 +790,7 @@ export function createOpenAiReceptionist({
         turn.attempt += 1;
         requestAnalysis(turn);
       } else {
-        requestSpeech(conversation.bareQuestion(), { turn });
+        recoverUnanalyzedTurn(turn);
       }
       return true;
     }

@@ -12,6 +12,7 @@ import {
   isClearNegative,
   isExplicitCorrectionRequest,
   isHoldRequest,
+  looksLikeBusinessQuestion,
   looksLikeUnfinishedThought,
   requestedFieldExplanation,
   shouldInterruptReceptionist,
@@ -76,6 +77,17 @@ test('recognizes trailing question fragments as unfinished thoughts', () => {
     assert.equal(looksLikeUnfinishedThought(value), true, value);
   }
   assert.equal(looksLikeUnfinishedThought('I was wondering if you are open on Saturdays.'), false);
+});
+
+test('recognizes naturally framed and repeated business questions', () => {
+  for (const value of [
+    'Yeah, um, I was just wondering, like, how long will it take for the job to get done?',
+    'Yeah um I was just wondering like how long will it take for the job to get done',
+    'I just asked how long will it take for the job to get done.',
+    'My question was how long will the job take.',
+  ]) {
+    assert.equal(looksLikeBusinessQuestion(value), true, value);
+  }
 });
 
 test('recognizes natural names while rejecting project descriptions as names', () => {

@@ -86,6 +86,7 @@ OPENAI_CALLER_SILENCE_REPROMPT_MS # defaults to 5000
 OPENAI_HOLD_REPROMPT_MS          # defaults to 30000
 BUSINESS_TIME_ZONE             # fallback only; defaults to America/New_York
 OPENAI_MAX_OUTPUT_TOKENS       # defaults to 800
+OPENAI_ANALYSIS_MAX_OUTPUT_TOKENS # defaults to 2048; retries may use 4096
 OPENAI_CONTEXT_TOKEN_LIMIT     # defaults to 2500
 OPENAI_CONTEXT_RETENTION_RATIO # defaults to 0.7
 OPENAI_MAX_RESPONSES_PER_CALL  # defaults to 40

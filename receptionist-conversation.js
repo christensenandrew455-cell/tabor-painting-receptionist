@@ -135,6 +135,10 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
         enum: ['not_a_question', 'answerable', 'unanswerable'],
         description: 'Answerable only when the supplied business information explicitly supports the answer.',
       },
+      business_question: {
+        type: 'string',
+        description: 'The exact information-seeking portion of this caller turn. Classify by meaning, including indirect requests for information without a question mark or standard question word. Empty when the caller is not seeking information. Do not include a project statement merely because it ends with a conversational tag.',
+      },
       business_support: {
         type: 'string',
         description: 'The shortest exact value or sentence copied from supplied business information that answers the question. Empty unless answerable.',
@@ -151,6 +155,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       'summary_confirmation',
       'correction_field',
       'business_answer_status',
+      'business_question',
       'business_support',
     ],
   },
@@ -456,6 +461,7 @@ function safeAnalysis(value = {}) {
     summary_confirmation: cleanText(value.summary_confirmation) || 'not_answered',
     correction_field: cleanText(value.correction_field) || 'none',
     business_answer_status: cleanText(value.business_answer_status) || 'not_a_question',
+    business_question: cleanText(value.business_question),
     business_support: cleanText(value.business_support),
   };
 }
@@ -472,6 +478,7 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
     'The caller should describe the work naturally. Map that description only to the supplied service list; never assume a painting, HVAC, plumbing, electrical, automotive, carpentry, or other trade that was not supplied for this business.',
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
+    'Classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Preserve the caller\'s exact information-seeking words in business_question. Do not reinterpret a duration question as a service answer merely because it also mentions a job, project, or work.',
     'Set project_note only for actual project details stated in LATEST_CALLER_TRANSCRIPT. Preserve useful scope, location, quantity, condition, material, or color details stated while answering the service question; do not discard them merely because fields.service is also set. Never copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech only when the caller is clearly talking to someone else and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
@@ -672,9 +679,18 @@ export function createReceptionistConversation({ context }) {
     dateCandidate = '',
     { scheduleTurn = false, scheduleCorrection = false } = {},
   ) {
-    const question = looksLikeBusinessQuestion(transcript) ? cleanText(transcript) : '';
+    const semanticQuestion = (
+      ['answerable', 'unanswerable'].includes(analysis.business_answer_status)
+      && isGroundedInCallerEvidence(analysis.business_question, [transcript])
+    ) ? cleanText(transcript) : '';
+    const question = semanticQuestion
+      || (looksLikeBusinessQuestion(transcript) ? cleanText(transcript) : '');
     if (!question) return { prefix: '', hadQuestion: false };
-    if (analysis.service_status === 'complete' && analysis.fields.service) {
+    if (
+      pendingField() === 'service'
+      && analysis.service_status === 'complete'
+      && analysis.fields.service
+    ) {
       return { prefix: '', hadQuestion: false };
     }
     if (scheduleTurn) {
@@ -885,7 +901,9 @@ export function createReceptionistConversation({ context }) {
       if (isClearAffirmative(transcript) && !noteAdded && !question.hadQuestion) {
         return { type: 'speak', text: ADDITIONAL_NOTES_DETAILS_PROMPT };
       }
-      const followup = noteAdded ? MORE_NOTES_PROMPT : ADDITIONAL_NOTES_PROMPT;
+      const followup = noteAdded || (question.hadQuestion && !scheduleWasCorrected)
+        ? MORE_NOTES_PROMPT
+        : ADDITIONAL_NOTES_PROMPT;
       notesAsked = true;
       return {
         type: 'speak',
