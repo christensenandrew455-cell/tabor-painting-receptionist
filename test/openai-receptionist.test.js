@@ -313,10 +313,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
         fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
       }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /notes or questions/i);
+    assert.match(latestResponse(h.socket).response.instructions, /additional notes/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-notes',
-      transcript: 'Okay, sounds good. Do you have any notes or questions for the business?',
+      transcript: 'Okay, sounds good. Do you have any additional notes?',
     });
 
     caller(h.socket, 'No.', 'caller-notes');

@@ -8,10 +8,10 @@ import {
   validateEstimateAvailability,
 } from './intake.js';
 import {
-  MORE_NOTES_AND_QUESTIONS_PROMPT,
+  ADDITIONAL_NOTES_DETAILS_PROMPT,
+  ADDITIONAL_NOTES_PROMPT,
+  MORE_NOTES_PROMPT,
   NAME_QUESTION,
-  NOTES_AND_QUESTIONS_PROMPT,
-  NOTES_DETAILS_PROMPT,
   PROJECT_ADDRESS_QUESTION,
   SCHEDULE_QUESTION,
   SERVICE_QUESTION,
@@ -325,7 +325,7 @@ export function createReceptionistConversation({ context }) {
     }
     if (field === 'notes') {
       notesAsked = true;
-      return NOTES_AND_QUESTIONS_PROMPT;
+      return ADDITIONAL_NOTES_PROMPT;
     }
     if (field === 'consent') {
       consentAsked = true;
@@ -341,7 +341,7 @@ export function createReceptionistConversation({ context }) {
     if (field === 'schedule') return `Got it. ${bareQuestion('schedule')}`;
     if (field === 'notes') {
       notesAsked = true;
-      return `Okay, sounds good. ${NOTES_AND_QUESTIONS_PROMPT}`;
+      return `Okay, sounds good. ${ADDITIONAL_NOTES_PROMPT}`;
     }
     return bareQuestion(field);
   }
@@ -555,9 +555,9 @@ export function createReceptionistConversation({ context }) {
         return { type: 'speak', text: joinSpeech(question.prefix, consentQuestion) };
       }
       if (isClearAffirmative(transcript) && !noteAdded && !question.hadQuestion) {
-        return { type: 'speak', text: NOTES_DETAILS_PROMPT };
+        return { type: 'speak', text: ADDITIONAL_NOTES_DETAILS_PROMPT };
       }
-      const followup = notesAsked ? MORE_NOTES_AND_QUESTIONS_PROMPT : NOTES_AND_QUESTIONS_PROMPT;
+      const followup = noteAdded ? MORE_NOTES_PROMPT : ADDITIONAL_NOTES_PROMPT;
       notesAsked = true;
       return { type: 'speak', text: joinSpeech(question.prefix, noteAdded ? 'Okay.' : '', followup) };
     }
