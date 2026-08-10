@@ -15,7 +15,6 @@ import {
   looksLikeBusinessQuestion,
   looksLikeUnfinishedThought,
   requestedFieldExplanation,
-  shouldInterruptReceptionist,
 } from '../receptionist-policy.js';
 
 const HVAC_CONTEXT = Object.freeze({
@@ -141,14 +140,13 @@ test('recognizes hold requests without swallowing an answer that follows one', (
   assert.equal(isHoldRequest('Wait—my name is Jordan Smith.'), false);
 });
 
-test('recognizes corrections as real interruptions but leaves backchannels alone', () => {
+test('recognizes explicit corrections without treating backchannels as corrections', () => {
   for (const value of [
     'Wait, scratch that. Make it Tuesday at 2.',
     'Actually, I meant Wednesday.',
     'No, let me correct that address.',
   ]) {
     assert.equal(isExplicitCorrectionRequest(value), true, value);
-    assert.equal(shouldInterruptReceptionist(value), true, value);
   }
   for (const value of [
     'Okay.',
@@ -157,7 +155,7 @@ test('recognizes corrections as real interruptions but leaves backchannels alone
     'Got it.',
     'The wall is damaged, you know what I mean?',
   ]) {
-    assert.equal(shouldInterruptReceptionist(value), false, value);
+    assert.equal(isExplicitCorrectionRequest(value), false, value);
   }
 });
 

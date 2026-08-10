@@ -14,7 +14,6 @@ import {
   SUBMISSION_SUCCESS_RESPONSE,
   UNCLEAR_CALLER_RESPONSE,
   looksLikeBusinessQuestion,
-  shouldInterruptReceptionist,
   spokenBusinessName,
 } from './receptionist-policy.js';
 
@@ -31,8 +30,8 @@ const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
 const MAX_ANALYSIS_RETRIES = 1;
 const MAX_SPEECH_RETRIES = 1;
 const SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
-const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 8_000;
-const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 12_000;
+const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
+const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
 const DEFAULT_HOLD_RECOVERY_MS = 30_000;
 const SUPPORTED_VOICES = new Set([
   'alloy',
@@ -154,7 +153,7 @@ Estimate-request days and hours are not proof that a specific appointment is ope
 
 # Turn taking
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
-Do not interrupt the caller. Ordinary prompts are not cancelled by incidental caller speech; retry and clarification prompts yield as soon as the caller resumes answering.
+Do not interrupt the caller. The first delivery of every question must finish without caller barge-in. Only a question repeated after the caller-silence delay yields as soon as the caller begins answering.
 Use short spoken turns. Ask one question at a time.
 Let callers describe their work in their own words. Interpret it only through the supplied services for this business so the same receptionist skeleton works across different trades.
 
@@ -362,7 +361,7 @@ export function createOpenAiReceptionist({
   function scheduleIncompleteTurnRecovery(
     text = '',
     delayMs = recoveryDelayMs,
-    { endHold = false } = {},
+    { endHold = false, yieldToCaller = false } = {},
   ) {
     if (closed || endingCall || finalizing || submitted) return;
     clearIncompleteTurnRecovery();
@@ -375,14 +374,18 @@ export function createOpenAiReceptionist({
       incompleteTurnTimer = null;
       if (closed || endingCall || finalizing || submitted) return;
       if (callerSpeechActive || !canCreateResponse() || pendingCallerTurns.length) {
-        scheduleIncompleteTurnRecovery(text, 250, { endHold });
+        scheduleIncompleteTurnRecovery(text, 250, { endHold, yieldToCaller });
         return;
       }
       pendingCallerFragment = '';
       if (endHold) holdActive = false;
-      requestSpeech(cleanText(text) || conversation.bareQuestion(), { yieldToCaller: true });
+      requestSpeech(cleanText(text) || conversation.bareQuestion(), { yieldToCaller });
     }, effectiveDelayMs + playbackRemainingMs);
     incompleteTurnTimer.unref?.();
+  }
+
+  function scheduleQuestionRepeat(text = '', delayMs = recoveryDelayMs) {
+    scheduleIncompleteTurnRecovery(text, delayMs, { yieldToCaller: true });
   }
 
   function scheduleHoldRecovery() {
@@ -392,7 +395,7 @@ export function createOpenAiReceptionist({
   function scheduleCallerSilenceRecovery(delayMs = recoveryDelayMs) {
     if (callerSpeechActive || pendingCallerTurns.length || !canCreateResponse()) return;
     if (holdActive) scheduleHoldRecovery();
-    else scheduleIncompleteTurnRecovery(conversation.bareQuestion(), delayMs);
+    else scheduleQuestionRepeat(conversation.bareQuestion(), delayMs);
   }
 
   function sendSessionUpdate() {
@@ -502,22 +505,6 @@ export function createOpenAiReceptionist({
       : null;
     if (!pending && !active && !playback) return false;
     if (pending) pending.interruptedByCaller = true;
-    stopPlayback({ active, playback });
-    return true;
-  }
-
-  function interruptForCallerTranscript(transcript) {
-    if (
-      closed
-      || endingCall
-      || finalizing
-      || submitted
-      || !shouldInterruptReceptionist(transcript)
-    ) return false;
-
-    const active = activeSpeechResponse();
-    if (!active && receptionistPlaybackEndAt <= Date.now()) return false;
-    const playback = receptionistPlaybackEndAt > Date.now() ? currentPlayback : null;
     stopPlayback({ active, playback });
     return true;
   }
@@ -673,7 +660,7 @@ export function createOpenAiReceptionist({
     }
     if (waitingForContinuation) {
       if (holdActive) scheduleHoldRecovery();
-      else scheduleIncompleteTurnRecovery();
+      else scheduleQuestionRepeat();
     }
   }
 
@@ -735,16 +722,13 @@ export function createOpenAiReceptionist({
     if (!action || action.type === 'wait') {
       if (action?.preserve) rememberCallerFragment(turn?.text);
       if (holdActive) scheduleHoldRecovery();
-      else scheduleIncompleteTurnRecovery();
+      else scheduleQuestionRepeat();
       dispatchCallerTurn();
       return;
     }
     if (action.type === 'speak') {
       holdActive = false;
-      requestSpeech(action.text, {
-        turn,
-        yieldToCaller: action.yieldToCaller === true,
-      });
+      requestSpeech(action.text, { turn });
       return;
     }
     if (action.type === 'prepare') {
@@ -777,7 +761,7 @@ export function createOpenAiReceptionist({
       }, turn.text), turn);
       return;
     }
-    requestSpeech(conversation.bareQuestion(), { turn, yieldToCaller: true });
+    requestSpeech(conversation.bareQuestion(), { turn });
   }
 
   function combineContinuation(turn) {
@@ -1010,7 +994,7 @@ export function createOpenAiReceptionist({
       const retry = receptionistIsSpeakingOrPlaying()
         ? conversation.bareQuestion()
         : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
-      scheduleIncompleteTurnRecovery(
+      scheduleQuestionRepeat(
         retry,
         recoveryDelayMs,
       );
@@ -1022,13 +1006,12 @@ export function createOpenAiReceptionist({
         const retry = receptionistIsSpeakingOrPlaying()
           ? conversation.bareQuestion()
           : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
-        scheduleIncompleteTurnRecovery(
+        scheduleQuestionRepeat(
           retry,
           recoveryDelayMs,
         );
         return;
       }
-      interruptForCallerTranscript(callerTranscript);
       conversation.recordCallerTranscript(callerTranscript);
       emitTranscript('caller', callerTranscript, { itemId: cleanText(event.item_id) });
       queueCallerTurn(callerTranscript, event.item_id);

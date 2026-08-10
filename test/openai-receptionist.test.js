@@ -297,6 +297,7 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /never claim that a particular date or time is available/i);
   assert.match(prompt, /AI receptionist working for Tabor Painting, managed by ARC Client Center/i);
   assert.match(prompt, /call it once without speaking/i);
+  assert.match(prompt, /only a question repeated after the caller-silence delay yields/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
 });
 
@@ -757,25 +758,27 @@ test('caller speech while the receptionist is talking is queued without cancelli
   }
 });
 
-test('a clarification prompt yields immediately when the caller retries', async () => {
-  const h = await createHarness();
+test('a timed question repeat yields immediately when the caller answers', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
   try {
     await finishSpeech(h.socket, {
-      responseId: 'clarification-greeting',
+      responseId: 'repeat-greeting',
       transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+      audio: '',
     });
-    caller(h.socket, 'คุณหนึ่ง อ่า เสียใหม่', 'caller-unclear');
-    await finishAnalysis(h.socket, {
-      responseId: 'analysis-unclear',
-      args: analysis({ turn_status: 'unintelligible' }),
-    });
+    const beforeRepeat = responseCreates(h.socket).length;
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, beforeRepeat + 1);
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /What kind of work are you looking to have done\?/,
+    );
 
-    assert.match(latestResponse(h.socket).response.instructions, /didn't catch/i);
-    h.socket.receive({ type: 'response.created', response: { id: 'active-clarification' } });
+    h.socket.receive({ type: 'response.created', response: { id: 'active-repeat' } });
     h.socket.receive({
       type: 'response.output_audio.delta',
-      response_id: 'active-clarification',
-      item_id: 'active-clarification-item',
+      response_id: 'active-repeat',
+      item_id: 'active-repeat-item',
       content_index: 0,
       delta: Buffer.alloc(32_000).toString('base64'),
     });
@@ -789,13 +792,13 @@ test('a clarification prompt yields immediately when the caller retries', async 
     assert.deepEqual(
       h.socket.sent.find((event) => (
         event.type === 'response.cancel'
-        && event.response_id === 'active-clarification'
+        && event.response_id === 'active-repeat'
       )),
-      { type: 'response.cancel', response_id: 'active-clarification' },
+      { type: 'response.cancel', response_id: 'active-repeat' },
     );
     const truncation = h.socket.sent.find((event) => (
       event.type === 'conversation.item.truncate'
-      && event.item_id === 'active-clarification-item'
+      && event.item_id === 'active-repeat-item'
     ));
     assert.equal(truncation.content_index, 0);
     assert.ok(truncation.audio_end_ms >= 0);
@@ -804,8 +807,8 @@ test('a clarification prompt yields immediately when the caller retries', async 
     const audioBeforeLateDelta = h.audio.length;
     h.socket.receive({
       type: 'response.output_audio.delta',
-      response_id: 'active-clarification',
-      item_id: 'active-clarification-item',
+      response_id: 'active-repeat',
+      item_id: 'active-repeat-item',
       delta: Buffer.alloc(800).toString('base64'),
     });
     assert.equal(h.audio.length, audioBeforeLateDelta);
@@ -822,7 +825,7 @@ test('a clarification prompt yields immediately when the caller retries', async 
     h.socket.receive({
       type: 'response.done',
       response: {
-        id: 'active-clarification',
+        id: 'active-repeat',
         status: 'cancelled',
         output: [],
       },
@@ -849,7 +852,64 @@ test('a clarification prompt yields immediately when the caller retries', async 
   }
 });
 
-test('an explicit correction interrupts playback while a normal backchannel does not', async () => {
+test('an immediate clarification remains non-interruptible', async () => {
+  const h = await createHarness();
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'clarification-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+      audio: '',
+    });
+    caller(h.socket, 'คุณหนึ่ง อ่า เสียใหม่', 'caller-unclear');
+    await finishAnalysis(h.socket, {
+      responseId: 'analysis-unclear',
+      args: analysis({ turn_status: 'unintelligible' }),
+    });
+
+    assert.match(latestResponse(h.socket).response.instructions, /didn't catch/i);
+    h.socket.receive({ type: 'response.created', response: { id: 'active-clarification' } });
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'active-clarification',
+      item_id: 'active-clarification-item',
+      content_index: 0,
+      delta: Buffer.alloc(32_000).toString('base64'),
+    });
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'caller-clarification-answer',
+    });
+
+    assert.equal(h.playbackClears.length, 0);
+    assert.equal(
+      h.socket.sent.some((event) => event.type === 'response.cancel'),
+      false,
+    );
+    assert.equal(
+      h.socket.sent.some((event) => event.type === 'conversation.item.truncate'),
+      false,
+    );
+
+    caller(
+      h.socket,
+      'The whole outside of my house needs painting.',
+      'caller-clarification-answer',
+    );
+    h.socket.receive({
+      type: 'response.done',
+      response: { id: 'active-clarification', output: [] },
+    });
+    await nextTurn();
+    await nextTurn();
+
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('the first question remains non-interruptible even for an explicit correction', async () => {
   const h = await createHarness();
   try {
     h.socket.receive({ type: 'response.created', response: { id: 'corrected-greeting' } });
@@ -859,20 +919,24 @@ test('an explicit correction interrupts playback while a normal backchannel does
       item_id: 'corrected-greeting-item',
       delta: Buffer.alloc(800).toString('base64'),
     });
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'caller-correction-overlap',
+    });
     caller(
       h.socket,
       'Wait, scratch that. Make it Tuesday at 2.',
       'caller-correction-overlap',
     );
 
-    assert.equal(h.playbackClears.length, 1);
-    assert.deepEqual(
-      h.socket.sent.find((event) => event.type === 'response.cancel'),
-      { type: 'response.cancel', response_id: 'corrected-greeting' },
+    assert.equal(h.playbackClears.length, 0);
+    assert.equal(
+      h.socket.sent.some((event) => event.type === 'response.cancel'),
+      false,
     );
     h.socket.receive({
       type: 'response.done',
-      response: { id: 'corrected-greeting', status: 'cancelled', output: [] },
+      response: { id: 'corrected-greeting', output: [] },
     });
     await nextTurn();
     await nextTurn();
