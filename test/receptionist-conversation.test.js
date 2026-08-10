@@ -292,6 +292,70 @@ test('project scope captured earlier stays in notes while the caller is asked on
   assert.deepEqual(conversation.snapshot().notes, ['The two upstairs rooms need painting.']);
 });
 
+test('valid intake answers outrank a false business-question label and extra details become notes', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+
+  let transcript = 'I just need, like, my whole basement repainted.';
+  let action = analyzedTurn(conversation, transcript, {
+    service_status: 'complete',
+    project_note: 'My whole basement repainted.',
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+    business_question_type: 'other',
+    fields: { service: 'Interior Painting' },
+  });
+  assert.match(action.text, /what name should I use/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.equal(conversation.snapshot().values.service, 'Interior Painting');
+  assert.deepEqual(conversation.snapshot().notes, ['My whole basement repainted.']);
+
+  transcript = 'Andrew Christensen.';
+  action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+    business_question_type: 'other',
+    fields: { name: 'Andrew Christensen' },
+  });
+  assert.match(action.text, /full project address/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.equal(conversation.snapshot().values.name, 'Andrew Christensen');
+  assert.deepEqual(conversation.snapshot().notes, ['My whole basement repainted.']);
+
+  transcript = '197 Lancaster Road, Berlin, Massachusetts. It is the big blue house so you do not miss it.';
+  action = analyzedTurn(conversation, transcript, {
+    address_status: 'complete',
+    project_note: 'It is the big blue house so you do not miss it.',
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+    business_question_type: 'other',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.match(action.text, /day or date/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.deepEqual(conversation.snapshot().notes, [
+    'My whole basement repainted.',
+    'It is the big blue house so you do not miss it.',
+  ]);
+
+  transcript = 'Tuesday at 2.';
+  action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+    business_question_type: 'other',
+    fields: { preferred_date: 'Tuesday', preferred_time: '2' },
+  });
+  assert.match(action.text, /additional notes/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, [
+    'My whole basement repainted.',
+    'It is the big blue house so you do not miss it.',
+  ]);
+});
+
 test('useful service-step scope is retained even when the analyzer omits project_note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(
@@ -581,8 +645,9 @@ test('a project statement with a conversational question tag remains a note', ()
   const note = 'The shed is rotted out a bit, so please avoid damaging it further, you know what I mean?';
   const action = analyzedTurn(conversation, note, {
     project_note: note,
-    business_answer_status: 'answerable',
-    business_support: 'Monday through Friday',
+    business_answer_status: 'unanswerable',
+    business_question: note,
+    business_question_type: 'other',
   });
   assert.match(action.text, /other notes/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
