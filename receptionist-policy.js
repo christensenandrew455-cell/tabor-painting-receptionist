@@ -42,6 +42,13 @@ const STANDALONE_BACKCHANNELS = new Set([
   'uh huh',
   'mm hmm',
   'mhm',
+  'hm',
+  'hmm',
+  'mm',
+  'mmm',
+  'uh',
+  'um',
+  'erm',
 ]);
 
 const NON_SERVICE_ANSWERS = new Set([

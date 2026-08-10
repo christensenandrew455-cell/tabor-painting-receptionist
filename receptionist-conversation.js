@@ -109,7 +109,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       project_note: {
         type: 'string',
-        description: 'Actual caller-provided project information to pass to the business, using only content present in this caller turn. When the caller answers the service question with scope, location, quantity, condition, material, color, or another useful project detail beyond the service category, include that detail here even though it was said during the service step. Never copy a prior example, invent a room or project detail, or put a name, address, preferred date/time, consent answer, conversation repair, or field question here. A conversational tag such as “you know what I mean?” does not turn a project note into a question. Empty only when this turn contains no project detail.',
+        description: 'A concise, owner-facing note containing actual caller-provided project information from this turn. Rewrite broken or conversational speech into a short action or condition statement, remove fillers, false starts, and repeated ideas, and preserve every concrete detail without adding facts. Prefer the caller\'s substantive words and rearrange them for clear grammar instead of substituting new concepts. When the caller answers the service question with scope, location, quantity, condition, material, color, or another useful detail beyond the service category, include it even though it was said during the service step. Never copy a prior example, invent a room or project detail, or put a name, address, preferred date/time, consent answer, conversation repair, or field question here. A conversational tag such as “you know what I mean?” does not turn a project note into a question. Empty only when this turn contains no project detail.',
       },
       notes_complete: {
         type: 'boolean',
@@ -137,7 +137,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       business_question: {
         type: 'string',
-        description: 'A concise, standalone version of the information the caller is seeking. Classify by meaning, including indirect requests without a question mark or standard question word. Use only substantive words grounded in this caller turn, but remove fillers and lead-ins such as “yeah,” “um,” “I was wondering,” and “I just asked.” Empty when the caller is not seeking information. Do not include a project statement merely because it ends with a conversational tag.',
+        description: 'One concise, standalone question expressing the information the caller is seeking. Classify by meaning, including indirect requests without a question mark or standard question word. Rewrite it as a direct, grammatical question; remove fillers, false starts, lead-ins, and duplicate restatements while preserving the caller\'s meaning and adding no facts. Empty when the caller is not seeking information. Do not include a project statement merely because it ends with a conversational tag.',
       },
       business_question_type: {
         type: 'string',
@@ -199,8 +199,9 @@ export function isGroundedInCallerEvidence(value, callerTranscripts = []) {
 }
 
 const PROJECT_NOTE_STOP_WORDS = new Set([
-  'a', 'an', 'and', 'are', 'at', 'be', 'for', 'from', 'has', 'have', 'i', 'in', 'is',
-  'it', 'my', 'of', 'on', 'our', 'please', 'that', 'the', 'this', 'to', 'we', 'with',
+  'a', 'an', 'and', 'are', 'at', 'be', 'can', 'could', 'did', 'do', 'does', 'for',
+  'from', 'has', 'have', 'i', 'in', 'is', 'it', 'may', 'my', 'of', 'on', 'our',
+  'please', 'should', 'that', 'the', 'this', 'to', 'we', 'will', 'with', 'would',
 ]);
 
 function groundingRoot(value) {
@@ -208,8 +209,9 @@ function groundingRoot(value) {
   if (token.length > 5 && token.endsWith('ing')) token = token.slice(0, -3);
   else if (token.length > 4 && token.endsWith('ied')) token = `${token.slice(0, -3)}y`;
   else if (token.length > 4 && token.endsWith('ed')) token = token.slice(0, -2);
-  else if (token.length > 4 && token.endsWith('es')) token = token.slice(0, -2);
-  else if (token.length > 3 && token.endsWith('s')) token = token.slice(0, -1);
+  else if (token.length > 4 && /(?:sses|shes|ches|xes|zes|oes)$/.test(token)) {
+    token = token.slice(0, -2);
+  } else if (token.length > 3 && token.endsWith('s')) token = token.slice(0, -1);
   return token;
 }
 
@@ -454,15 +456,21 @@ function deterministicBusinessAnswer(analysis, context) {
 
 function conciseBusinessQuestion(value) {
   let question = cleanText(value)
-    .replace(/^(?:(?:yeah|yes|yep|okay|ok|well|so|uh+|um+|actually)(?:[,;.! ]+|$))+/i, '')
+    .replace(/^(?:(?:yeah|yes|yep|okay|ok|well|so|uh+|um+|hmm+|hm+|mm+|actually)(?:[,;.! ]+|$))+/i, '')
     .replace(/^i\s+(?:was|am|'m)\s+(?:just\s+)?wondering(?:\s*,?\s*like)?\s*[,;:]?\s*/i, '')
     .replace(/^i\s+just\s+asked\s*/i, '')
     .replace(/^my\s+question\s+is\s*/i, '')
-    .replace(/\s*,\s*like\s*,\s*/gi, ' ')
     .replace(/\bjust\s+to\b/gi, 'to')
     .replace(/\s+/g, ' ')
     .trim();
   if (!question) return '';
+  const repeatedRestatement = question.match(
+    /^((how|what|when|where|why|who|which|do|does|did|is|are|can|could|would|will|should|may|has|have)\b[\s\S]*?)[,;]\s*(?:like|i mean|or)\s+\2\b[\s\S]*$/i,
+  );
+  if (repeatedRestatement) question = repeatedRestatement[1];
+  question = question
+    .replace(/\s*,\s*like\s*,?\s*/gi, ' ')
+    .replace(/^how\s+long\s+it\s+takes\b/i, 'how long does it take');
   question = `${question[0].toUpperCase()}${question.slice(1)}`;
   if (/^(?:how|what|when|where|why|who|which|do|does|did|is|are|can|could|would|will|should|may|has|have)\b/i.test(question)) {
     return `${question.replace(/[.?!]+$/g, '')}?`;
@@ -569,8 +577,8 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
     'Only classify business questions while AUTHORITATIVE_CALL_STATE.pendingField is notes, except an estimate-request-window question may be classified while schedule is pending. During service, name, address, or consent collection, keep business_answer_status=not_a_question, business_question empty, and business_question_type=none; focus only on the pending estimate field and extra project details. The server separately handles identity, field-reason, hold, and conversation-repair controls.',
     'When notes are pending, classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Set business_question_type to service_count for the number of offered services, service_list for which services are offered, lead_response_time for how long the business takes to reply after submission, estimate_request_window for accepted estimate-request days/times, and other only for another actual information request. Never use other merely because an intake answer is unfamiliar. Tolerate transcription mistakes in the business name.',
-    'Put a concise standalone request in business_question using only substantive caller words. Remove fillers and lead-ins such as “yeah,” “um,” “like,” “I was wondering,” and “I just asked,” without changing what the caller wants to know. Do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
-    'Set project_note only for extra caller-provided information useful to the business. Preserve scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step—for example, the whole basement needs painting or the project is at the large blue house. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never copy details from an earlier caller, an example, or general knowledge.',
+    'Write business_question as one short, direct, grammatical question. Remove fillers, false starts, conversational lead-ins, and repeated versions of the same question. Do not copy a messy transcript verbatim. Preserve the substantive meaning and do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
+    'Write project_note as a concise owner-facing action or condition statement, not a transcript. Fix broken grammar, remove filler and repeated ideas, and preserve all useful scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step. Prefer the caller\'s substantive words and rearrange them rather than replacing them with unsupported synonyms. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech only when the caller is clearly talking to someone else and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
@@ -811,7 +819,10 @@ export function createReceptionistConversation({ context }) {
     const typedQuestion = analysis.business_question_type !== 'none';
     const groundedQuestion = (
       ['answerable', 'unanswerable'].includes(analysis.business_answer_status)
-      && isGroundedInCallerEvidence(analysis.business_question, [transcript])
+      && (
+        isGroundedInCallerEvidence(analysis.business_question, [transcript])
+        || isProjectNoteGroundedInCallerEvidence(analysis.business_question, transcript)
+      )
     ) ? analysis.business_question : '';
     const question = conciseBusinessQuestion(
       groundedQuestion
@@ -892,9 +903,15 @@ export function createReceptionistConversation({ context }) {
       && current !== 'consent'
       && current !== 'summary'
     ) return { type: 'wait', preserve: false };
-    if (isConversationRepairRequest(text)) return { type: 'speak', text: bareQuestion(current) };
+    if (isConversationRepairRequest(text)) {
+      return { type: 'speak', text: bareQuestion(current), yieldToCaller: true };
+    }
     if (disposition === 'unclear') {
-      return { type: 'speak', text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion(current)) };
+      return {
+        type: 'speak',
+        text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion(current)),
+        yieldToCaller: true,
+      };
     }
     return { type: 'analyze' };
   }
@@ -957,7 +974,14 @@ export function createReceptionistConversation({ context }) {
     if (addressFallback) {
       analysis.fields.address = addressFallback;
       analysis.address_status = 'complete';
-      if (analysis.turn_status === 'unfinished') analysis.turn_status = 'complete';
+      if (['unfinished', 'unintelligible'].includes(analysis.turn_status)) {
+        analysis.turn_status = 'complete';
+      }
+    } else if (
+      hasGroundedAnalyzedAddress
+      && ['unfinished', 'unintelligible'].includes(analysis.turn_status)
+    ) {
+      analysis.turn_status = 'complete';
     }
     if (pendingField() === 'notes' && looksLikeUnfinishedThought(transcript)) {
       return { type: 'wait', preserve: true };
@@ -965,10 +989,14 @@ export function createReceptionistConversation({ context }) {
     if (analysis.turn_status === 'unfinished') return { type: 'wait', preserve: true };
     if (analysis.turn_status === 'background_speech') return { type: 'wait', preserve: false };
     if (analysis.turn_status === 'unintelligible') {
-      return { type: 'speak', text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion()) };
+      return {
+        type: 'speak',
+        text: joinSpeech(UNCLEAR_CALLER_RESPONSE, bareQuestion()),
+        yieldToCaller: true,
+      };
     }
     if (analysis.turn_status === 'conversation_repair') {
-      return { type: 'speak', text: bareQuestion() };
+      return { type: 'speak', text: bareQuestion(), yieldToCaller: true };
     }
     const detectedDate = requestedDateCandidate(transcript, context);
     if (

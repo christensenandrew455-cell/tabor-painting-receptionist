@@ -106,6 +106,10 @@ test('removes conversation-repair chatter and consent from project notes', () =>
     sanitizeAdditionalNotes("What's the question? I didn't even ask a question."),
     '',
   );
+  assert.equal(
+    sanitizeAdditionalNotes('Mm. How long will the job take?'),
+    'How long will the job take?',
+  );
 });
 
 test('requires explicit contact consent before preparing a summary', () => {

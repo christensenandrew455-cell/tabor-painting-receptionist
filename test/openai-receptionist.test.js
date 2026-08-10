@@ -736,6 +736,7 @@ test('caller speech while the receptionist is talking is queued without cancelli
   const h = await createHarness();
   try {
     h.socket.receive({ type: 'response.created', response: { id: 'active-greeting' } });
+    h.socket.receive({ type: 'input_audio_buffer.speech_started', item_id: 'caller-overlap' });
     caller(h.socket, 'I need exterior painting.', 'caller-overlap');
     const beforeDone = responseCreates(h.socket).length;
     assert.equal(beforeDone, 1);
@@ -751,6 +752,98 @@ test('caller speech while the receptionist is talking is queued without cancelli
       false,
     );
     assert.equal(h.playbackClears.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a clarification prompt yields immediately when the caller retries', async () => {
+  const h = await createHarness();
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'clarification-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    caller(h.socket, 'คุณหนึ่ง อ่า เสียใหม่', 'caller-unclear');
+    await finishAnalysis(h.socket, {
+      responseId: 'analysis-unclear',
+      args: analysis({ turn_status: 'unintelligible' }),
+    });
+
+    assert.match(latestResponse(h.socket).response.instructions, /didn't catch/i);
+    h.socket.receive({ type: 'response.created', response: { id: 'active-clarification' } });
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'active-clarification',
+      item_id: 'active-clarification-item',
+      content_index: 0,
+      delta: Buffer.alloc(32_000).toString('base64'),
+    });
+
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'caller-retry-answer',
+    });
+
+    assert.equal(h.playbackClears.length, 1);
+    assert.deepEqual(
+      h.socket.sent.find((event) => (
+        event.type === 'response.cancel'
+        && event.response_id === 'active-clarification'
+      )),
+      { type: 'response.cancel', response_id: 'active-clarification' },
+    );
+    const truncation = h.socket.sent.find((event) => (
+      event.type === 'conversation.item.truncate'
+      && event.item_id === 'active-clarification-item'
+    ));
+    assert.equal(truncation.content_index, 0);
+    assert.ok(truncation.audio_end_ms >= 0);
+    assert.ok(truncation.audio_end_ms < 4_000);
+
+    const audioBeforeLateDelta = h.audio.length;
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'active-clarification',
+      item_id: 'active-clarification-item',
+      delta: Buffer.alloc(800).toString('base64'),
+    });
+    assert.equal(h.audio.length, audioBeforeLateDelta);
+
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_stopped',
+      item_id: 'caller-retry-answer',
+    });
+    h.socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'caller-retry-answer',
+      transcript: 'The whole outside of my house needs painting.',
+    });
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'active-clarification',
+        status: 'cancelled',
+        output: [],
+      },
+    });
+    await nextTurn();
+    await nextTurn();
+
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    await finishAnalysis(h.socket, {
+      responseId: 'analysis-retry-answer',
+      args: analysis({
+        service_status: 'complete',
+        project_note: 'Paint the whole outside of the house.',
+        fields: { service: 'Exterior Painting' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+    assert.deepEqual(h.receptionist.snapshot().state.notes, [
+      'Paint the whole outside of the house.',
+    ]);
+    assert.equal(h.errors.length, 0);
   } finally {
     h.restore();
   }
