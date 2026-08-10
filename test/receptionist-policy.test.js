@@ -7,8 +7,11 @@ import {
   hasUsableNameAnswer,
   hasUsableServiceAnswer,
   isAiIdentityQuestion,
+  isClearNegative,
+  isExplicitCorrectionRequest,
   isHoldRequest,
   requestedFieldExplanation,
+  shouldInterruptReceptionist,
 } from '../receptionist-policy.js';
 
 const HVAC_CONTEXT = Object.freeze({
@@ -100,6 +103,32 @@ test('recognizes hold requests without swallowing an answer that follows one', (
     assert.equal(isHoldRequest(value), true, value);
   }
   assert.equal(isHoldRequest('Wait—my name is Jordan Smith.'), false);
+});
+
+test('recognizes corrections as real interruptions but leaves backchannels alone', () => {
+  for (const value of [
+    'Wait, scratch that. Make it Tuesday at 2.',
+    'Actually, I meant Wednesday.',
+    'No, let me correct that address.',
+  ]) {
+    assert.equal(isExplicitCorrectionRequest(value), true, value);
+    assert.equal(shouldInterruptReceptionist(value), true, value);
+  }
+  for (const value of [
+    'Okay.',
+    'Yeah.',
+    'Yep.',
+    'Got it.',
+    'The wall is damaged, you know what I mean?',
+  ]) {
+    assert.equal(shouldInterruptReceptionist(value), false, value);
+  }
+});
+
+test('recognizes a clear no even when transcription chooses another common language', () => {
+  for (const value of ['No.', 'Não.', 'Nao.', 'Nie.', 'Non.', 'Nein.']) {
+    assert.equal(isClearNegative(value), true, value);
+  }
 });
 
 test('recognizes AI identity questions and field-reason questions', () => {

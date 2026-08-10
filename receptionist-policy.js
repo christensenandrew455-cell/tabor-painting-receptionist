@@ -97,12 +97,12 @@ export function classifyCallerTranscript(value) {
 }
 
 export function isClearAffirmative(value) {
-  return /^(?:yes|yeah|yep|yup|ja|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
+  return /^(?:yes|yeah|yep|yup|ja|si|sí|sim|oui|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
 }
 
 export function isClearNegative(value) {
   const text = normalizedCallerText(value);
-  return /^(?:no|nope|nah|none|nothing|nie)\b/.test(text)
+  return /^(?:no|nope|nah|none|nothing|nie|não|nao|non|nein)\b/.test(text)
     || /\b(?:do not|don't|dont) have any\b/.test(text)
     || /\bno (?:more )?(?:notes|questions)\b/.test(text)
     || /\bnothing (?:else|to add)\b/.test(text)
@@ -127,6 +127,26 @@ export function isHoldRequest(value) {
   if (!text) return false;
   return /^(?:please\s+)?(?:wait|hold on|hang on)(?:\s+(?:a|one|just one)?\s*(?:second|sec|moment|minute))?(?:\s+please)?$/.test(text)
     || /^(?:please\s+)?(?:give me|just|one)\s+(?:a\s+|one\s+)?(?:second|sec|moment|minute)(?:\s+please)?$/.test(text);
+}
+
+export function isExplicitCorrectionRequest(value) {
+  const text = normalizedCallerText(value);
+  if (!text) return false;
+  return /\b(?:scratch that|change that|correct that|make that|instead|i meant|what i meant was|let me (?:change|correct)|that(?:'s| is) (?:not right|wrong))\b/.test(text)
+    || /(?:^|\b(?:no|sorry|actually) )i mean\b/.test(text)
+    || /^(?:actually|wait)[, ]+\S/.test(text);
+}
+
+export function shouldInterruptReceptionist(value) {
+  const text = cleanText(value);
+  if (!text || isStandaloneBackchannel(text) || classifyCallerTranscript(text) !== 'meaningful') {
+    return false;
+  }
+  const normalized = normalizedCallerText(text);
+  return isHoldRequest(text)
+    || isExplicitCorrectionRequest(text)
+    || /^(?:please )?(?:stop|wait|hold on|hang on)\b/.test(normalized)
+    || /\b(?:before you (?:continue|go on)|let me stop you)\b/.test(normalized);
 }
 
 export function isAiIdentityQuestion(value) {

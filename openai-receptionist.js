@@ -12,6 +12,7 @@ import {
   SUBMISSION_START_RESPONSE,
   SUBMISSION_SUCCESS_RESPONSE,
   UNCLEAR_CALLER_RESPONSE,
+  shouldInterruptReceptionist,
   spokenBusinessName,
 } from './receptionist-policy.js';
 
@@ -240,6 +241,7 @@ export function createOpenAiReceptionist({
   callerPhone,
   deliver,
   onAudio,
+  onPlaybackClear,
   onSubmitted,
   onReady,
   onTranscript,
@@ -303,6 +305,7 @@ export function createOpenAiReceptionist({
   let pendingCallerFragment = '';
   let callerSpeechActive = false;
   let holdActive = false;
+  let receptionistPlaybackEndAt = 0;
   let work = Promise.resolve();
   let usageSummary = {
     model,
@@ -342,6 +345,7 @@ export function createOpenAiReceptionist({
   ) {
     if (closed || endingCall || finalizing || submitted) return;
     clearIncompleteTurnRecovery();
+    const playbackRemainingMs = Math.max(0, receptionistPlaybackEndAt - Date.now());
     incompleteTurnTimer = setTimeout(() => {
       incompleteTurnTimer = null;
       if (closed || endingCall || finalizing || submitted) return;
@@ -352,7 +356,7 @@ export function createOpenAiReceptionist({
       pendingCallerFragment = '';
       if (endHold) holdActive = false;
       requestSpeech(cleanText(text) || conversation.bareQuestion());
-    }, delayMs);
+    }, delayMs + playbackRemainingMs);
     incompleteTurnTimer.unref?.();
   }
 
@@ -403,6 +407,44 @@ export function createOpenAiReceptionist({
 
   function canCreateResponse() {
     return !closed && !activeResponseIds.size && !responseCreationPending;
+  }
+
+  function activeSpeechResponse() {
+    for (const responseId of activeResponseIds) {
+      const purpose = responsePurposes.get(responseId);
+      if (purpose?.kind === 'speech' && purpose.after === 'continue') {
+        return { responseId, purpose };
+      }
+    }
+    return null;
+  }
+
+  function receptionistIsSpeakingOrPlaying() {
+    return Boolean(activeSpeechResponse()) || receptionistPlaybackEndAt > Date.now();
+  }
+
+  function interruptForCallerTranscript(transcript) {
+    if (
+      closed
+      || endingCall
+      || finalizing
+      || submitted
+      || !shouldInterruptReceptionist(transcript)
+    ) return false;
+
+    const active = activeSpeechResponse();
+    if (!active && receptionistPlaybackEndAt <= Date.now()) return false;
+    clearIncompleteTurnRecovery();
+    onPlaybackClear?.();
+    receptionistPlaybackEndAt = Date.now();
+    if (active) {
+      active.purpose.interruptedByCaller = true;
+      sendJson(openai, {
+        type: 'response.cancel',
+        response_id: active.responseId,
+      });
+    }
+    return true;
   }
 
   function createResponse(response, purpose) {
@@ -753,6 +795,10 @@ export function createOpenAiReceptionist({
       dispatchCallerTurn();
       return;
     }
+    if (purpose.interruptedByCaller) {
+      dispatchCallerTurn();
+      return;
+    }
     if (recoverFailedResponse(purpose, event.response || {})) return;
     if (purpose.kind === 'analysis') {
       handleAnalysisResponse(purpose, event.response || {});
@@ -778,8 +824,8 @@ export function createOpenAiReceptionist({
     const estimatedPlaybackEndAt = purpose.firstAudioAt && purpose.audioBytes
       ? purpose.firstAudioAt + Math.ceil((purpose.audioBytes / PCMU_BYTES_PER_SECOND) * 1_000)
       : Date.now();
-    const playbackRemainingMs = Math.max(0, estimatedPlaybackEndAt - Date.now());
-    scheduleCallerSilenceRecovery(recoveryDelayMs + playbackRemainingMs);
+    receptionistPlaybackEndAt = Math.max(receptionistPlaybackEndAt, estimatedPlaybackEndAt);
+    scheduleCallerSilenceRecovery(recoveryDelayMs);
   }
 
   openai.on('open', () => {
@@ -836,21 +882,28 @@ export function createOpenAiReceptionist({
       reportError(new Error(
         event.error?.message || 'Caller audio transcription failed.',
       ));
+      const retry = receptionistIsSpeakingOrPlaying()
+        ? conversation.bareQuestion()
+        : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
       scheduleIncompleteTurnRecovery(
-        `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`,
-        Math.min(250, recoveryDelayMs),
+        retry,
+        recoveryDelayMs,
       );
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
       const callerTranscript = cleanText(event.transcript);
       if (!callerTranscript) {
+        const retry = receptionistIsSpeakingOrPlaying()
+          ? conversation.bareQuestion()
+          : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
         scheduleIncompleteTurnRecovery(
-          `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`,
-          Math.min(250, recoveryDelayMs),
+          retry,
+          recoveryDelayMs,
         );
         return;
       }
+      interruptForCallerTranscript(callerTranscript);
       conversation.recordCallerTranscript(callerTranscript);
       emitTranscript('caller', callerTranscript, { itemId: cleanText(event.item_id) });
       queueCallerTurn(callerTranscript, event.item_id);
@@ -924,6 +977,13 @@ export function createOpenAiReceptionist({
             responseKind: purpose.kind,
           });
         }
+      }
+      if (purpose?.firstAudioAt && purpose.audioBytes) {
+        receptionistPlaybackEndAt = Math.max(
+          receptionistPlaybackEndAt,
+          purpose.firstAudioAt
+            + Math.ceil((purpose.audioBytes / PCMU_BYTES_PER_SECOND) * 1_000),
+        );
       }
       onAudio?.(event.delta);
       return;
