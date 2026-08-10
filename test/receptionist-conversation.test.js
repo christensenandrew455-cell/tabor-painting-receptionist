@@ -45,6 +45,7 @@ function analysis(overrides = {}) {
     summary_confirmation: 'not_answered',
     correction_field: 'none',
     business_answer_status: 'not_a_question',
+    business_question: '',
     business_support: '',
     ...rest,
     fields: {
@@ -596,6 +597,45 @@ test('an indirect business question is still recognized without a question mark'
   });
   assert.match(action.text, /business information, Monday through Friday/i);
   assert.match(action.text, /what kind of work/i);
+});
+
+test('the analyzer can identify a business question by meaning without a keyword-shaped sentence', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  const transcript = "Turnaround for something like this is information I'd appreciate.";
+  const action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+  });
+
+  assert.equal(
+    action.text,
+    "I'm sorry, I don't know that. I'll add that question to the notes. Do you have any other notes or business questions?",
+  );
+  assert.deepEqual(conversation.snapshot().notes, [transcript]);
+});
+
+test('notes-step duration questions from the supplied transcript are answered or recorded instead of reprompted', () => {
+  for (const transcript of [
+    'Yeah, um, I was just wondering, like, how long will it take for the job to get done?',
+    'I just asked how long will it take for the job to get done.',
+  ]) {
+    const conversation = createReceptionistConversation({ context: CONTEXT });
+    completeThroughSchedule(conversation);
+    const action = analyzedTurn(conversation, transcript, {
+      service_status: 'complete',
+      business_answer_status: 'unanswerable',
+      business_question: transcript,
+      fields: { service: 'Exterior Painting' },
+    });
+
+    assert.equal(
+      action.text,
+      "I'm sorry, I don't know that. I'll add that question to the notes. Do you have any other notes or business questions?",
+    );
+    assert.deepEqual(conversation.snapshot().notes, [transcript]);
+    assert.equal(conversation.snapshot().pendingField, 'notes');
+  }
 });
 
 test('a grounded business question is answered and the pending field remains pending', () => {
