@@ -137,7 +137,19 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       business_question: {
         type: 'string',
-        description: 'The exact information-seeking portion of this caller turn. Classify by meaning, including indirect requests for information without a question mark or standard question word. Empty when the caller is not seeking information. Do not include a project statement merely because it ends with a conversational tag.',
+        description: 'A concise, standalone version of the information the caller is seeking. Classify by meaning, including indirect requests without a question mark or standard question word. Use only substantive words grounded in this caller turn, but remove fillers and lead-ins such as “yeah,” “um,” “I was wondering,” and “I just asked.” Empty when the caller is not seeking information. Do not include a project statement merely because it ends with a conversational tag.',
+      },
+      business_question_type: {
+        type: 'string',
+        enum: [
+          'none',
+          'service_count',
+          'service_list',
+          'lead_response_time',
+          'estimate_request_window',
+          'other',
+        ],
+        description: 'The semantic information request: how many services are offered, which services are offered, how long the business takes to respond after an estimate request is submitted, the allowed estimate-request days/times, another business question, or none. Classify the caller’s meaning rather than matching exact words, and tolerate transcription mistakes in the business name.',
       },
       business_support: {
         type: 'string',
@@ -156,6 +168,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       'correction_field',
       'business_answer_status',
       'business_question',
+      'business_question_type',
       'business_support',
     ],
   },
@@ -348,6 +361,23 @@ function readableList(values) {
   return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
 }
 
+function readableSuppliedList(values) {
+  const labels = values.map(cleanText).filter(Boolean);
+  if (labels.length <= 1) return labels[0] || '';
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
+}
+
+const SMALL_COUNT_WORDS = Object.freeze([
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+  'seventeen', 'eighteen', 'nineteen', 'twenty',
+]);
+
+function spokenCount(value) {
+  return SMALL_COUNT_WORDS[value] || String(value);
+}
+
 function spokenEstimateTime(value) {
   const match = cleanText(value).match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
   if (!match) return cleanText(value);
@@ -402,6 +432,42 @@ function supportedBusinessAnswer(analysis, context) {
   const normalizedSupport = normalized(support);
   if (normalizedSupport.length < 3 || !reference.includes(normalizedSupport)) return '';
   return `According to the business information, ${support}`;
+}
+
+function deterministicBusinessAnswer(analysis, context) {
+  const questionType = analysis.business_question_type;
+  if (questionType === 'lead_response_time') {
+    return `You should hear back from ${spokenBusinessName(context.businessName)} within one week.`;
+  }
+  if (questionType === 'estimate_request_window') return estimateWindowSpeech(context);
+
+  const services = serviceNames(context);
+  if (!services.length) return '';
+  if (questionType === 'service_count') {
+    return `${spokenBusinessName(context.businessName)} offers ${spokenCount(services.length)} service${services.length === 1 ? '' : 's'}.`;
+  }
+  if (questionType === 'service_list') {
+    return `The services listed are ${readableSuppliedList(services)}.`;
+  }
+  return '';
+}
+
+function conciseBusinessQuestion(value) {
+  let question = cleanText(value)
+    .replace(/^(?:(?:yeah|yes|yep|okay|ok|well|so|uh+|um+|actually)(?:[,;.! ]+|$))+/i, '')
+    .replace(/^i\s+(?:was|am|'m)\s+(?:just\s+)?wondering(?:\s*,?\s*like)?\s*[,;:]?\s*/i, '')
+    .replace(/^i\s+just\s+asked\s*/i, '')
+    .replace(/^my\s+question\s+is\s*/i, '')
+    .replace(/\s*,\s*like\s*,\s*/gi, ' ')
+    .replace(/\bjust\s+to\b/gi, 'to')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!question) return '';
+  question = `${question[0].toUpperCase()}${question.slice(1)}`;
+  if (/^(?:how|what|when|where|why|who|which|do|does|did|is|are|can|could|would|will|should|may|has|have)\b/i.test(question)) {
+    return `${question.replace(/[.?!]+$/g, '')}?`;
+  }
+  return question;
 }
 
 function joinSpeech(...parts) {
@@ -462,6 +528,15 @@ function safeAnalysis(value = {}) {
     correction_field: cleanText(value.correction_field) || 'none',
     business_answer_status: cleanText(value.business_answer_status) || 'not_a_question',
     business_question: cleanText(value.business_question),
+    business_question_type: [
+      'service_count',
+      'service_list',
+      'lead_response_time',
+      'estimate_request_window',
+      'other',
+    ].includes(cleanText(value.business_question_type))
+      ? cleanText(value.business_question_type)
+      : 'none',
     business_support: cleanText(value.business_support),
   };
 }
@@ -478,7 +553,8 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
     'The caller should describe the work naturally. Map that description only to the supplied service list; never assume a painting, HVAC, plumbing, electrical, automotive, carpentry, or other trade that was not supplied for this business.',
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
-    'Classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Preserve the caller\'s exact information-seeking words in business_question. Do not reinterpret a duration question as a service answer merely because it also mentions a job, project, or work.',
+    'Classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Set business_question_type to service_count for the number of offered services, service_list for which services are offered, lead_response_time for how long the business takes to reply after submission, estimate_request_window for accepted estimate-request days/times, and other for anything else. Tolerate transcription mistakes in the business name.',
+    'Put a concise standalone request in business_question using only substantive caller words. Remove fillers and lead-ins such as “yeah,” “um,” “like,” “I was wondering,” and “I just asked,” without changing what the caller wants to know. Do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
     'Set project_note only for actual project details stated in LATEST_CALLER_TRANSCRIPT. Preserve useful scope, location, quantity, condition, material, or color details stated while answering the service question; do not discard them merely because fields.service is also set. Never copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech only when the caller is clearly talking to someone else and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
@@ -490,6 +566,7 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
       earliestStart: context.earliestEstimateStart || '',
       latestStart: context.latestEstimateStart || '',
     })}`,
+    'PLATFORM_BUSINESS_RULES={"leadResponseDeadline":"The caller should hear back from the business within one week after the estimate request is submitted."}',
   ].join('\n');
 }
 
@@ -505,6 +582,23 @@ export function buildSummarySpeech(summary = {}) {
   return joinSpeech(
     `Okay, here's the summary. ${name} is requesting ${service} at ${address}.`,
     `The preferred date and time is ${schedule}.`,
+    notesSentence,
+    'Does that all sound right?',
+  );
+}
+
+export function buildSummaryRecoverySpeech(summary = {}) {
+  const name = cleanText(summary.name).replace(/[.?!]+$/g, '');
+  const service = cleanText(summary.service).replace(/[.?!]+$/g, '');
+  const address = cleanText(summary.address).replace(/[.?!]+$/g, '');
+  const schedule = cleanText(summary.preferredDateAndTime).replace(/[.?!]+$/g, '');
+  const notes = cleanText(summary.notes);
+  const notesSentence = notes && normalized(notes) !== 'none'
+    ? 'I also included the additional notes you gave me.'
+    : '';
+  return joinSpeech(
+    'Sorry, the readback was cut off.',
+    `${name} is requesting ${service} at ${address}, with a preferred date and time of ${schedule}.`,
     notesSentence,
     'Does that all sound right?',
   );
@@ -679,24 +773,28 @@ export function createReceptionistConversation({ context }) {
     dateCandidate = '',
     { scheduleTurn = false, scheduleCorrection = false } = {},
   ) {
-    const semanticQuestion = (
+    const typedQuestion = analysis.business_question_type !== 'none';
+    const groundedQuestion = (
       ['answerable', 'unanswerable'].includes(analysis.business_answer_status)
       && isGroundedInCallerEvidence(analysis.business_question, [transcript])
-    ) ? cleanText(transcript) : '';
-    const question = semanticQuestion
-      || (looksLikeBusinessQuestion(transcript) ? cleanText(transcript) : '');
+    ) ? analysis.business_question : '';
+    const question = conciseBusinessQuestion(
+      groundedQuestion
+      || ((typedQuestion || looksLikeBusinessQuestion(transcript)) ? transcript : ''),
+    );
     if (!question) return { prefix: '', hadQuestion: false };
     if (
       pendingField() === 'service'
       && analysis.service_status === 'complete'
       && analysis.fields.service
+      && analysis.business_question_type === 'none'
     ) {
       return { prefix: '', hadQuestion: false };
     }
-    if (scheduleTurn) {
-      if (!isScheduleRequestQuestion(transcript)) {
-        return { prefix: '', hadQuestion: false };
-      }
+    if (scheduleTurn && !isScheduleRequestQuestion(transcript) && !typedQuestion) {
+      return { prefix: '', hadQuestion: false };
+    }
+    if (scheduleTurn && isScheduleRequestQuestion(transcript)) {
       if (scheduleCorrection) {
         return {
           prefix: 'I can update that preference, and the business will confirm the appointment.',
@@ -710,6 +808,8 @@ export function createReceptionistConversation({ context }) {
         hadQuestion: true,
       };
     }
+    const deterministicAnswer = deterministicBusinessAnswer(analysis, context);
+    if (deterministicAnswer) return { prefix: deterministicAnswer, hadQuestion: true };
     if (isEstimateWindowQuestion(transcript)) {
       const answer = estimateWindowSpeech(context);
       if (answer) return { prefix: answer, hadQuestion: true };
