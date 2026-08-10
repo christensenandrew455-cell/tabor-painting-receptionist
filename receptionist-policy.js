@@ -62,7 +62,7 @@ const NAME_BLOCKERS = new Set([
   'to', 'for', 'from', 'with', 'without', 'under', 'over', 'inside', 'outside',
 ]);
 const ADDRESS_PATTERN = /\b\d{1,6}\s+[\p{L}\p{N}.'’ -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/iu;
-const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
+const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?\b|\b(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
 
 export function normalizedCallerText(value) {
   return cleanText(value)
@@ -120,6 +120,52 @@ export function isConversationRepairRequest(value) {
     || /\b(?:you never|you did not|you didn't) ask (?:me )?(?:a|the|that) question\b/.test(text)
     || /\bwhat (?:the hell )?(?:(?:are|were) you|you (?:are|were)) (?:even )?(?:talking|asking) about\b/.test(text)
     || /^(?:hello|are you (?:still )?there|can you hear me)\b/.test(text);
+}
+
+export function isHoldRequest(value) {
+  const text = normalizedCallerText(value);
+  if (!text) return false;
+  return /^(?:please\s+)?(?:wait|hold on|hang on)(?:\s+(?:a|one|just one)?\s*(?:second|sec|moment|minute))?(?:\s+please)?$/.test(text)
+    || /^(?:please\s+)?(?:give me|just|one)\s+(?:a\s+|one\s+)?(?:second|sec|moment|minute)(?:\s+please)?$/.test(text);
+}
+
+export function isAiIdentityQuestion(value) {
+  const text = normalizedCallerText(value);
+  if (!text) return false;
+  return /\b(?:are you|is this)\s+(?:(?:an?|the)\s+)?(?:ai|artificial intelligence|bot|robot|automated (?:assistant|receptionist|system))\b/.test(text)
+    || /\b(?:are you|is this)\s+(?:a\s+)?(?:real person|human)\b/.test(text);
+}
+
+export function requestedFieldExplanation(value, pendingField = '') {
+  const text = normalizedCallerText(value);
+  if (!text) return '';
+  const asksWhy = /\bwhy\b/.test(text)
+    || /\bwhat (?:do|does|did|would|will) (?:you|the business|they) need\b.*\bfor\b/.test(text)
+    || /\bwhat is (?:that|it|this) for\b/.test(text);
+  if (!asksWhy) return '';
+
+  if (/\b(?:consent|contact permission|permission to contact|call me|contact me)\b/.test(text)) {
+    return 'consent';
+  }
+  if (/\b(?:address|location|where i live|where we live|where the (?:job|project|work) is)\b/.test(text)) {
+    return 'address';
+  }
+  if (/\b(?:date and time|day and time|date|appointment time|estimate time|what time|when)\b/.test(text)) {
+    return 'schedule';
+  }
+  if (/\b(?:name|who i am|who we are)\b/.test(text)) return 'name';
+  if (/\b(?:additional notes|notes|other details|project details)\b/.test(text)) return 'notes';
+  if (/\b(?:service|kind of work|type of work|work i need|job|project)\b/.test(text)) return 'service';
+
+  if (
+    /^(?:why|why not)$/.test(text)
+    || /\bwhy (?:do|does|did|would|will) (?:you|the business|they) need (?:that|it|this|the information)\b/.test(text)
+  ) {
+    return ['service', 'name', 'address', 'schedule', 'notes', 'consent'].includes(pendingField)
+      ? pendingField
+      : '';
+  }
+  return '';
 }
 
 export function looksLikeBusinessQuestion(value) {

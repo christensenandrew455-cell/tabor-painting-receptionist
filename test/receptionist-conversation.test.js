@@ -29,7 +29,7 @@ const CONTEXT = Object.freeze({
   ],
   knowledgeJson: JSON.stringify({
     businessHours: 'Monday through Friday',
-    serviceAreas: ['Berlin', 'Hudson'],
+    serviceAreas: ['Albany', 'Troy'],
   }),
 });
 
@@ -70,12 +70,12 @@ function completeThroughSchedule(conversation) {
     service_status: 'complete',
     fields: { service: 'Exterior Painting' },
   });
-  analyzedTurn(conversation, 'Andrew Christensen.', {
-    fields: { name: 'Andrew Christensen' },
+  analyzedTurn(conversation, 'Jordan Smith.', {
+    fields: { name: 'Jordan Smith' },
   });
-  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
     address_status: 'complete',
-    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '123 Main Street, Albany, New York' },
   });
   return analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
@@ -88,9 +88,9 @@ function completeToSummary(conversation) {
   const consent = analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
   assert.equal(consent.type, 'prepare');
   conversation.enterSummary({
-    name: 'Andrew Christensen',
+    name: 'Jordan Smith',
     service: 'Exterior Painting',
-    address: '197 Lancaster Road, Berlin, Massachusetts',
+    address: '123 Main Street, Albany, New York',
     preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
     notes: 'None',
   });
@@ -106,15 +106,15 @@ test('one authoritative state advances through the required field order exactly 
   assert.match(action.text, /what name should I use/i);
   assert.equal(conversation.snapshot().pendingField, 'name');
 
-  action = analyzedTurn(conversation, 'Andrew Christensen works.', {
-    fields: { name: 'Andrew Christensen' },
+  action = analyzedTurn(conversation, 'Jordan Smith works.', {
+    fields: { name: 'Jordan Smith' },
   });
   assert.match(action.text, /full project address/i);
   assert.equal(conversation.snapshot().pendingField, 'address');
 
-  action = analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+  action = analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
     address_status: 'complete',
-    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '123 Main Street, Albany, New York' },
   });
   assert.match(action.text, /day or date/i);
   assert.equal(conversation.snapshot().pendingField, 'schedule');
@@ -159,14 +159,14 @@ test('conversation repair repeats only the genuinely pending question', () => {
 
 test('several caller-provided fields in one turn are retained without skipping the next missing field', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
-  const transcript = 'I need exterior painting. My name is Andrew Christensen, the address is 197 Lancaster Road, Berlin, Massachusetts, and Tuesday at 2 works.';
+  const transcript = 'I need exterior painting. My name is Jordan Smith, the address is 123 Main Street, Albany, New York, and Tuesday at 2 works.';
   const action = analyzedTurn(conversation, transcript, {
     service_status: 'complete',
     address_status: 'complete',
     fields: {
       service: 'Exterior Painting',
-      name: 'Andrew Christensen',
-      address: '197 Lancaster Road, Berlin, Massachusetts',
+      name: 'Jordan Smith',
+      address: '123 Main Street, Albany, New York',
       preferred_date: 'Tuesday',
       preferred_time: '2',
     },
@@ -177,17 +177,17 @@ test('several caller-provided fields in one turn are retained without skipping t
 
 test('project scope captured earlier stays in notes while the caller is asked only for additional notes', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
-  analyzedTurn(conversation, 'I need my whole basement painted.', {
+  analyzedTurn(conversation, 'I need two upstairs rooms painted.', {
     service_status: 'complete',
-    project_note: 'The whole basement needs painting.',
+    project_note: 'The two upstairs rooms need painting.',
     fields: { service: 'Interior Painting' },
   });
-  analyzedTurn(conversation, 'Andrew Christensen.', {
-    fields: { name: 'Andrew Christensen' },
+  analyzedTurn(conversation, 'Jordan Smith.', {
+    fields: { name: 'Jordan Smith' },
   });
-  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
     address_status: 'complete',
-    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '123 Main Street, Albany, New York' },
   });
   const action = analyzedTurn(conversation, 'Tuesday at 2.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '2' },
@@ -195,7 +195,138 @@ test('project scope captured earlier stays in notes while the caller is asked on
 
   assert.match(action.text, /Do you have any additional notes\?/i);
   assert.doesNotMatch(action.text, /questions for the business/i);
-  assert.deepEqual(conversation.snapshot().notes, ['The whole basement needs painting.']);
+  assert.deepEqual(conversation.snapshot().notes, ['The two upstairs rooms need painting.']);
+});
+
+test('an ordinal day-of-month answer completes the date instead of becoming a note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+
+  const action = analyzedTurn(conversation, 'The 10th works for me.', {
+    project_note: 'The 10th works for me.',
+  });
+
+  assert.equal(conversation.snapshot().values.preferredDate, 'The 10th');
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.equal(action.text, 'What time would work best for the estimate?');
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('a question-shaped date request records only a preference and never claims availability', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+
+  const action = analyzedTurn(conversation, 'Can you do the 10th?', {
+    project_note: 'The 10th.',
+    business_answer_status: 'unanswerable',
+  });
+
+  assert.match(action.text, /put the 10th down as your preferred date/i);
+  assert.match(action.text, /business will confirm the appointment/i);
+  assert.doesNotMatch(action.text, /(?:date|10th) is available/i);
+  assert.equal(conversation.snapshot().values.preferredDate, 'the 10th');
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('estimate-window questions use app constraints without promising an open appointment', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const action = analyzedTurn(conversation, 'When are you able to do estimates?', {
+    business_answer_status: 'unanswerable',
+  });
+
+  assert.match(action.text, /accepts estimate requests/i);
+  assert.match(action.text, /9:00 AM to 4:00 PM/i);
+  assert.match(action.text, /business will confirm the appointment/i);
+  assert.doesNotMatch(action.text, /available/i);
+  assert.match(action.text, /what kind of work/i);
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('an invented project detail cannot enter notes even when the analyzer returns it', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+    service_status: 'complete',
+    project_note: 'The detached garage needs painting.',
+    fields: { service: 'Exterior Painting' },
+  });
+  assert.equal(conversation.snapshot().values.service, 'Exterior Painting');
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('field reason questions get a short explanation and repeat only the pending question', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  let action = analyzedTurn(conversation, 'Why do you need to know the service?');
+  assert.equal(action.text, 'So the business knows what kind of work you need. What kind of work do you need done?');
+
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  action = analyzedTurn(conversation, 'Why do you need my name?');
+  assert.match(action.text, /knows who the estimate request is for.*What name should I use/i);
+
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  action = analyzedTurn(conversation, 'What do you need my address for?');
+  assert.match(action.text, /knows where to go for the estimate.*full project address/i);
+
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+  action = analyzedTurn(conversation, 'Why do you need the date and time?');
+  assert.match(action.text, /preferred day and time.*What day or date/i);
+
+  analyzedTurn(conversation, 'Tuesday at 2.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '2' },
+  });
+  action = analyzedTurn(conversation, 'Why do you need additional notes?');
+  assert.match(action.text, /other project details.*Do you have any additional notes/i);
+
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  action = analyzedTurn(conversation, 'Why do you need my consent?');
+  assert.match(action.text, /permission to contact you.*Do you consent/i);
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('AI identity questions are answered directly without changing intake state', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const action = analyzedTurn(conversation, 'Are you a bot?');
+  assert.equal(
+    action.text,
+    "I'm an AI receptionist working for Tabor Painting, managed by ARC Client Center. What kind of work do you need done?",
+  );
+  assert.equal(conversation.snapshot().pendingField, 'service');
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('background speech does not advance a field or become a caller fragment', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  let action = analyzedTurn(conversation, 'Robert, move that box over there.', {
+    turn_status: 'background_speech',
+  });
+  assert.deepEqual(action, { type: 'wait', preserve: false });
+
+  action = analyzedTurn(conversation, 'Move the other one over there.', {
+    turn_status: 'complete',
+  });
+  assert.deepEqual(action, { type: 'wait', preserve: false });
+  assert.equal(conversation.snapshot().pendingField, 'service');
 });
 
 test('partial addresses stay pending and later fragments combine without invented geography', () => {
@@ -204,27 +335,28 @@ test('partial addresses stay pending and later fragments combine without invente
     service_status: 'complete',
     fields: { service: 'Exterior Painting' },
   });
-  analyzedTurn(conversation, 'Andrew Christensen.', { fields: { name: 'Andrew Christensen' } });
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
 
-  let action = analyzedTurn(conversation, '197 Lancaster Road.', {
+  let action = analyzedTurn(conversation, '123 Main Street.', {
     address_status: 'partial',
   });
   assert.equal(action.text, 'What city or town and state is that in?');
   assert.equal(conversation.snapshot().pendingField, 'address');
 
-  action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
+  action = analyzedTurn(conversation, 'Albany, New York.', {
     address_status: 'complete',
-    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '123 Main Street, Albany, New York' },
   });
   assert.match(action.text, /day or date/i);
-  assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
 });
 
 test('caller evidence prevents names and addresses from being copied from business data', () => {
-  assert.equal(isGroundedInCallerEvidence('Andrew Christensen', ['Andrew Christensen works.']), true);
-  assert.equal(isGroundedInCallerEvidence('197 Lancaster Road', ['The address is 197 Lancaster Road.']), true);
-  assert.equal(isGroundedInCallerEvidence('Alex Owner', ['I need exterior painting.']), false);
-  assert.equal(isGroundedInCallerEvidence('999 Invented Street', ['197 Lancaster Road.']), false);
+  assert.equal(isGroundedInCallerEvidence('Jordan Smith', ['Jordan Smith works.']), true);
+  assert.equal(isGroundedInCallerEvidence('123 Main Street', ['The address is 123 Main Street.']), true);
+  assert.equal(isGroundedInCallerEvidence('Pat Owner', ['I need exterior painting.']), false);
+  assert.equal(isGroundedInCallerEvidence('999 Invented Street', ['123 Main Street.']), false);
+  assert.equal(isGroundedInCallerEvidence('10', ['The 10th works.']), true);
 });
 
 test('a grounded project phrase still cannot be mislabeled as the caller name', () => {
@@ -257,15 +389,16 @@ test('an unavailable day stays pending with a useful replacement question', () =
     service_status: 'complete',
     fields: { service: 'Exterior Painting' },
   });
-  analyzedTurn(conversation, 'Andrew Christensen.', { fields: { name: 'Andrew Christensen' } });
-  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
     address_status: 'complete',
-    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '123 Main Street, Albany, New York' },
   });
   const action = analyzedTurn(conversation, 'Tuesday, August 11, 2099 at 2 PM.', {
     fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
   });
-  assert.match(action.text, /available on Monday/i);
+  assert.match(action.text, /listed estimate-request days are Monday/i);
+  assert.doesNotMatch(action.text, /available/i);
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(conversation.snapshot().values.preferredDate, '');
 });
@@ -350,13 +483,13 @@ test('notes cannot be skipped until the caller explicitly completes that step', 
 test('an explicit mid-call correction updates a locked field without changing the flow order', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
-  const transcript = 'Actually, use 117 Lancaster Road, Berlin, Massachusetts.';
+  const transcript = 'Actually, use 456 Oak Avenue, Albany, New York.';
   const action = analyzedTurn(conversation, transcript, {
     correction_field: 'address',
     address_status: 'complete',
-    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '456 Oak Avenue, Albany, New York' },
   });
-  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().values.address, '456 Oak Avenue, Albany, New York');
   assert.equal(conversation.snapshot().pendingField, 'notes');
   assert.match(action.text, /additional notes/i);
 });
@@ -387,31 +520,31 @@ test('the analyzer\'s explicit consent refusal wins over a misleading leading ye
 test('summary corrections replace only the corrected field and require another readback', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeToSummary(conversation);
-  const transcript = 'No, the address is 117 Lancaster Road, Berlin, Massachusetts.';
+  const transcript = 'No, the address is 456 Oak Avenue, Albany, New York.';
   const action = analyzedTurn(conversation, transcript, {
     summary_confirmation: 'no',
     correction_field: 'address',
     address_status: 'complete',
-    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '456 Oak Avenue, Albany, New York' },
   });
   assert.equal(action.type, 'prepare');
-  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
-  assert.equal(conversation.snapshot().values.name, 'Andrew Christensen');
+  assert.equal(conversation.snapshot().values.address, '456 Oak Avenue, Albany, New York');
+  assert.equal(conversation.snapshot().values.name, 'Jordan Smith');
 });
 
 test('a summary correction wins over a leading yes and cannot accidentally submit', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeToSummary(conversation);
-  const transcript = 'Yes, but the address is 117 Lancaster Road, Berlin, Massachusetts.';
+  const transcript = 'Yes, but the address is 456 Oak Avenue, Albany, New York.';
   const action = analyzedTurn(conversation, transcript, {
     summary_confirmation: 'yes',
     correction_field: 'address',
     address_status: 'complete',
-    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+    fields: { address: '456 Oak Avenue, Albany, New York' },
   });
   assert.equal(action.type, 'prepare');
   assert.equal(conversation.snapshot().phase, 'preparing');
-  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().values.address, '456 Oak Avenue, Albany, New York');
 });
 
 test('correcting only the summary time preserves the already confirmed day', () => {
@@ -439,9 +572,9 @@ test('only a separate yes to the complete readback permits submission', () => {
 
 test('summary speech omits empty notes and includes actual notes once', () => {
   const base = {
-    name: 'Andrew Christensen',
+    name: 'Jordan Smith',
     service: 'Exterior Painting',
-    address: '197 Lancaster Road, Berlin, Massachusetts',
+    address: '123 Main Street, Albany, New York',
     preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
   };
   const empty = buildSummarySpeech({ ...base, notes: 'None' });

@@ -6,6 +6,9 @@ import {
   classifyCallerTranscript,
   hasUsableNameAnswer,
   hasUsableServiceAnswer,
+  isAiIdentityQuestion,
+  isHoldRequest,
+  requestedFieldExplanation,
 } from '../receptionist-policy.js';
 
 const HVAC_CONTEXT = Object.freeze({
@@ -42,7 +45,7 @@ test('accepts substantive service descriptions without hardcoding one trade', ()
 });
 
 test('reactions and non-answers cannot complete the service field', () => {
-  for (const value of ['Oh.', 'Okay.', 'Yes.', "I don't know.", 'Not sure.', 'My name is Andrew.']) {
+  for (const value of ['Oh.', 'Okay.', 'Yes.', "I don't know.", 'Not sure.', 'My name is Jordan.']) {
     assert.equal(hasUsableServiceAnswer(value), false, value);
   }
   assert.equal(classifyCallerTranscript('Oh.'), 'filler');
@@ -50,11 +53,11 @@ test('reactions and non-answers cannot complete the service field', () => {
 
 test('recognizes natural names while rejecting project descriptions as names', () => {
   for (const value of [
-    'Andrew Christensen.',
+    'Jordan Smith.',
     'María de la Cruz.',
     "My name is D'Andre Williams.",
     'You can use Anne-Marie Smith.',
-    'Andrew Christensen works well.',
+    'Jordan Smith works well.',
   ]) {
     assert.equal(hasUsableNameAnswer(value, HVAC_CONTEXT), true, value);
   }
@@ -65,7 +68,7 @@ test('recognizes natural names while rejecting project descriptions as names', (
     'I need the roof replaced.',
     'Mowing lawns.',
     'Replacing a broken gate.',
-    '197 Lancaster Road.',
+    '123 Main Street.',
     'Wednesday at 3 PM.',
     'Okay.',
   ]) {
@@ -75,9 +78,9 @@ test('recognizes natural names while rejecting project descriptions as names', (
 
 test('recognizes introduced names without treating action phrases as names', () => {
   for (const value of [
-    "I'm Andrew Christensen.",
+    "I'm Jordan Smith.",
     'I am María de la Cruz.',
-    "I'm Andrew, and I need a window fixed.",
+    "I'm Jordan, and I need a window fixed.",
   ]) {
     assert.equal(callerVolunteeredName(value), true, value);
   }
@@ -90,4 +93,24 @@ test('recognizes introduced names without treating action phrases as names', () 
   ]) {
     assert.equal(callerVolunteeredName(value), false, value);
   }
+});
+
+test('recognizes hold requests without swallowing an answer that follows one', () => {
+  for (const value of ['Wait.', 'Hold on one second.', 'Hang on a minute.', 'Give me a moment.']) {
+    assert.equal(isHoldRequest(value), true, value);
+  }
+  assert.equal(isHoldRequest('Wait—my name is Jordan Smith.'), false);
+});
+
+test('recognizes AI identity questions and field-reason questions', () => {
+  for (const value of ['Are you an AI?', 'Are you a bot?', 'Is this a real person?']) {
+    assert.equal(isAiIdentityQuestion(value), true, value);
+  }
+  assert.equal(requestedFieldExplanation('Why do you need to know the service?', 'service'), 'service');
+  assert.equal(requestedFieldExplanation('Why do you need my name?', 'name'), 'name');
+  assert.equal(requestedFieldExplanation('What do you need my address for?', 'address'), 'address');
+  assert.equal(requestedFieldExplanation('Why do you need the date and time?', 'schedule'), 'schedule');
+  assert.equal(requestedFieldExplanation('Why do you need my consent?', 'consent'), 'consent');
+  assert.equal(requestedFieldExplanation('Why?', 'notes'), 'notes');
+  assert.equal(requestedFieldExplanation('Why are you closed on Sunday?', 'service'), '');
 });

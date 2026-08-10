@@ -154,7 +154,7 @@ async function finishAnalysis(socket, {
   await nextTurn();
 }
 
-async function createHarness({ deliver, incompleteTurnRecoveryMs } = {}) {
+async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs } = {}) {
   const previousApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
   const audio = [];
@@ -179,6 +179,7 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs } = {}) {
     onLatency: (entry) => latencies.push(entry),
     onError: (error) => errors.push(error),
     incompleteTurnRecoveryMs,
+    holdRecoveryMs,
     WebSocketClass: FakeWebSocket,
   });
   await nextTurn();
@@ -225,6 +226,8 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /server owns the intake state, question order, validation, confirmation, submission, and hangup/i);
   assert.match(prompt, /ordinary general knowledge only to understand natural speech/i);
   assert.match(prompt, /only when the supplied business information explicitly supports/i);
+  assert.match(prompt, /never claim that a particular date or time is available/i);
+  assert.match(prompt, /AI receptionist working for Tabor Painting, managed by ARC Client Center/i);
   assert.match(prompt, /call it once without speaking/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
 });
@@ -281,10 +284,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
       transcript: 'Okay, what name should I use for the estimate request?',
     });
 
-    caller(h.socket, 'Andrew Christensen.', 'caller-name');
+    caller(h.socket, 'Jordan Smith.', 'caller-name');
     await finishAnalysis(h.socket, {
       responseId: 'analysis-name',
-      args: analysis({ fields: { name: 'Andrew Christensen' } }),
+      args: analysis({ fields: { name: 'Jordan Smith' } }),
     });
     assert.match(latestResponse(h.socket).response.instructions, /full project address/i);
     await finishSpeech(h.socket, {
@@ -292,12 +295,12 @@ test('a complete call collects, confirms, submits once, reports success, and end
       transcript: "Thanks. What's the full project address?",
     });
 
-    caller(h.socket, '197 Lancaster Road, Berlin, Massachusetts.', 'caller-address');
+    caller(h.socket, '123 Main Street, Albany, New York.', 'caller-address');
     await finishAnalysis(h.socket, {
       responseId: 'analysis-address',
       args: analysis({
         address_status: 'complete',
-        fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+        fields: { address: '123 Main Street, Albany, New York' },
       }),
     });
     assert.match(latestResponse(h.socket).response.instructions, /day or date/i);
@@ -339,7 +342,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.match(latestResponse(h.socket).response.instructions, /Does that all sound right/i);
     await finishSpeech(h.socket, {
       responseId: 'summary',
-      transcript: "Okay, here's the summary. Andrew Christensen is requesting Exterior Painting at 197 Lancaster Road, Berlin, Massachusetts. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
     });
 
     caller(h.socket, 'Yes, that all sounds right.', 'caller-summary');
@@ -355,8 +358,8 @@ test('a complete call collects, confirms, submits once, reports success, and end
     });
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].payload.service, 'Exterior Painting');
-    assert.equal(deliveries[0].payload.name, 'Andrew Christensen');
-    assert.equal(deliveries[0].payload.address, '197 Lancaster Road, Berlin, Massachusetts');
+    assert.equal(deliveries[0].payload.name, 'Jordan Smith');
+    assert.equal(deliveries[0].payload.address, '123 Main Street, Albany, New York');
     assert.equal(deliveries[0].payload.requestedTime, '2:00 PM');
     assert.equal(deliveries[0].payload.summaryConfirmed, true);
     assert.equal(h.submitted.length, 1);
@@ -413,6 +416,80 @@ test('an abandoned filler turn gets a delayed prompt instead of indefinite silen
     await wait(80);
     assert.equal(responseCreates(h.socket).length, before + 1);
     assert.match(latestResponse(h.socket).response.instructions, /What kind of work do you need done/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('ordinary caller silence repeats only the pending question', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'silent-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+    });
+    const before = responseCreates(h.socket).length;
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, before + 1);
+    const instruction = latestResponse(h.socket).response.instructions;
+    assert.match(instruction, /What kind of work do you need done\?/);
+    assert.doesNotMatch(instruction, /thank you for calling/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('the silence timer does not begin before generated receptionist audio can finish playing', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'playback-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      audio: Buffer.alloc(8_000).toString('base64'),
+    });
+    const before = responseCreates(h.socket).length;
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, before);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a hold request waits longer and then asks whether the caller is still there', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20, holdRecoveryMs: 20 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'hold-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+    });
+    const before = responseCreates(h.socket).length;
+    caller(h.socket, 'Hold on one second.', 'caller-hold');
+    assert.equal(responseCreates(h.socket).length, before);
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, before + 1);
+    assert.match(latestResponse(h.socket).response.instructions, /Are you still there\?/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('speaking before the hold timeout resumes analysis without a still-there prompt', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20, holdRecoveryMs: 100 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'resume-hold-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+    });
+    caller(h.socket, 'Wait a second.', 'caller-hold-before-answer');
+    const beforeAnswer = responseCreates(h.socket).length;
+    caller(h.socket, 'I need exterior painting.', 'caller-answer-after-hold');
+    assert.equal(responseCreates(h.socket).length, beforeAnswer + 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    await wait(140);
+    assert.equal(
+      responseCreates(h.socket).some((event) => /Are you still there/i.test(event.response?.instructions || '')),
+      false,
+    );
   } finally {
     h.restore();
   }
