@@ -207,7 +207,8 @@ export function looksLikeBusinessQuestion(value) {
   return /\?$/.test(text)
     || /^(?:what|when|where|why|how|who|which|do|does|did|can|could|is|are|will|would|should|has|have)\b/i.test(text)
     || /(?:^|[.!?;,]\s*|\band\s+)(?:what|when|where|why|how|who|which|do|does|did|can|could|is|are|will|would|should|has|have)\b/i.test(text)
-    || /\b(?:i (?:am|was|'m) wondering|i(?:'d| would) like to know|can you tell me|do you know)\b/i.test(text);
+    || /\b(?:i (?:am|was|'m) (?:just )?wondering|i(?:'d| would) like to know|can you tell me|do you know)\b/i.test(text)
+    || /\b(?:i (?:just |already )?asked(?: you)?|my question (?:is|was)|what i (?:just )?asked (?:is|was))[,;:]?\s+(?:what|when|where|why|how|who|which|do|does|did|can|could|is|are|will|would|should|has|have)\b/i.test(text);
 }
 
 function nameShapedCandidate(value, { rejectActionForm = false } = {}) {
