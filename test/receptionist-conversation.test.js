@@ -66,7 +66,7 @@ function analyzedTurn(conversation, transcript, overrides = {}) {
 }
 
 function completeThroughSchedule(conversation) {
-  analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+  analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
     fields: { service: 'Exterior Painting' },
   });
@@ -173,6 +173,7 @@ test('several caller-provided fields in one turn are retained without skipping t
   });
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
+  assert.deepEqual(conversation.snapshot().notes, []);
 });
 
 test('project scope captured earlier stays in notes while the caller is asked only for additional notes', () => {
@@ -196,6 +197,83 @@ test('project scope captured earlier stays in notes while the caller is asked on
   assert.match(action.text, /Do you have any additional notes\?/i);
   assert.doesNotMatch(action.text, /questions for the business/i);
   assert.deepEqual(conversation.snapshot().notes, ['The two upstairs rooms need painting.']);
+});
+
+test('useful service-step scope is retained even when the analyzer omits project_note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(
+    conversation,
+    "Um, I'm going to need my entire lower level repainted. The walls are peeling badly.",
+    {
+      service_status: 'complete',
+      fields: { service: 'Interior Painting' },
+    },
+  );
+
+  assert.equal(conversation.snapshot().values.service, 'Interior Painting');
+  assert.deepEqual(conversation.snapshot().notes, [
+    'My entire lower level repainted. The walls are peeling badly.',
+  ]);
+
+  const simple = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(simple, 'I need interior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Interior Painting' },
+  });
+  assert.deepEqual(simple.snapshot().notes, []);
+
+  const scoped = createReceptionistConversation({ context: CONTEXT });
+  const scopedAction = analyzedTurn(scoped, 'Can you paint my detached workshop?', {
+    service_status: 'complete',
+    business_answer_status: 'unanswerable',
+    fields: { service: 'Exterior Painting' },
+  });
+  assert.doesNotMatch(scopedAction.text, /I don't know that/i);
+  assert.deepEqual(scoped.snapshot().notes, ['Paint my detached workshop?']);
+});
+
+test('a question-mark inflection on a day and time is still a preference, never a note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+
+  const action = analyzedTurn(conversation, 'Probably, like, Monday at 1?', {
+    fields: { preferred_date: 'Monday', preferred_time: '1' },
+    project_note: 'Probably, like, Monday at 1.',
+    business_answer_status: 'unanswerable',
+  });
+
+  assert.match(action.text, /additional notes/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('a spoken schedule correction updates the locked preference and never becomes a note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  let action = analyzedTurn(conversation, 'Oh wait, no, scratch that. Can you do D12?', {
+    project_note: 'Can you do D12?',
+    business_answer_status: 'unanswerable',
+  });
+
+  assert.match(action.text, /update that preference/i);
+  assert.match(action.text, /additional notes/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.equal(conversation.snapshot().values.preferredDate, '12');
+  assert.equal(conversation.snapshot().values.preferredTime, '1');
+  assert.deepEqual(conversation.snapshot().notes, []);
+
+  action = analyzedTurn(conversation, 'Não.');
+  assert.match(action.text, /consent to being contacted/i);
+  assert.equal(conversation.snapshot().pendingField, 'consent');
 });
 
 test('an ordinal day-of-month answer completes the date instead of becoming a note', () => {
@@ -266,7 +344,8 @@ test('an invented project detail cannot enter notes even when the analyzer retur
     fields: { service: 'Exterior Painting' },
   });
   assert.equal(conversation.snapshot().values.service, 'Exterior Painting');
-  assert.deepEqual(conversation.snapshot().notes, []);
+  assert.deepEqual(conversation.snapshot().notes, ['The exterior of my house painted.']);
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /detached garage/i);
 });
 
 test('field reason questions get a short explanation and repeat only the pending question', () => {

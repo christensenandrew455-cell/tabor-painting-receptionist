@@ -163,6 +163,7 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs
   const goodbye = [];
   const errors = [];
   const latencies = [];
+  const playbackClears = [];
   const receptionist = createOpenAiReceptionist({
     context: CONTEXT,
     runtime: { clientId: 'client-123' },
@@ -170,6 +171,7 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs
     callerPhone: '+15555550123',
     deliver: deliver || (async () => ({ ok: true })),
     onAudio: (value) => audio.push(value),
+    onPlaybackClear: () => playbackClears.push(true),
     onTranscript: (entry) => transcripts.push(entry),
     onSubmitted: (snapshot) => submitted.push(snapshot),
     onReady: () => {},
@@ -194,6 +196,7 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs
     goodbye,
     errors,
     latencies,
+    playbackClears,
     restore() {
       receptionist.close();
       if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -455,6 +458,40 @@ test('the silence timer does not begin before generated receptionist audio can f
   }
 });
 
+test('an empty transcription during the greeting cannot create a duplicate opening prompt', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
+  try {
+    h.socket.receive({ type: 'response.created', response: { id: 'overlap-greeting' } });
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'overlap-greeting',
+      item_id: 'overlap-greeting-item',
+      delta: Buffer.alloc(800).toString('base64'),
+    });
+    h.socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'empty-overlap',
+      transcript: '',
+    });
+    h.socket.receive({
+      type: 'response.done',
+      response: { id: 'overlap-greeting', output: [] },
+    });
+    await nextTurn();
+
+    const before = responseCreates(h.socket).length;
+    await wait(60);
+    assert.equal(responseCreates(h.socket).length, before);
+    await wait(100);
+    assert.equal(responseCreates(h.socket).length, before + 1);
+    const instruction = latestResponse(h.socket).response.instructions;
+    assert.match(instruction, /What kind of work do you need done\?/);
+    assert.doesNotMatch(instruction, /didn't catch|thank you for calling/i);
+  } finally {
+    h.restore();
+  }
+});
+
 test('a hold request waits longer and then asks whether the caller is still there', async () => {
   const h = await createHarness({ incompleteTurnRecoveryMs: 20, holdRecoveryMs: 20 });
   try {
@@ -523,6 +560,7 @@ test('transcription failure produces a useful retry prompt instead of silence', 
     await finishSpeech(h.socket, {
       responseId: 'transcription-greeting',
       transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      audio: '',
     });
     const before = responseCreates(h.socket).length;
     h.socket.receive({
@@ -599,6 +637,42 @@ test('caller speech while the receptionist is talking is queued without cancelli
       h.socket.sent.some((event) => event.type === 'response.cancel'),
       false,
     );
+    assert.equal(h.playbackClears.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('an explicit correction interrupts playback while a normal backchannel does not', async () => {
+  const h = await createHarness();
+  try {
+    h.socket.receive({ type: 'response.created', response: { id: 'corrected-greeting' } });
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'corrected-greeting',
+      item_id: 'corrected-greeting-item',
+      delta: Buffer.alloc(800).toString('base64'),
+    });
+    caller(
+      h.socket,
+      'Wait, scratch that. Make it Tuesday at 2.',
+      'caller-correction-overlap',
+    );
+
+    assert.equal(h.playbackClears.length, 1);
+    assert.deepEqual(
+      h.socket.sent.find((event) => event.type === 'response.cancel'),
+      { type: 'response.cancel', response_id: 'corrected-greeting' },
+    );
+    h.socket.receive({
+      type: 'response.done',
+      response: { id: 'corrected-greeting', status: 'cancelled', output: [] },
+    });
+    await nextTurn();
+    await nextTurn();
+
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.equal(h.errors.length, 0);
   } finally {
     h.restore();
   }
