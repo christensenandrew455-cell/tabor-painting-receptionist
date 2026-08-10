@@ -55,6 +55,7 @@ function isConversationMetadataNote(value) {
     .trim();
   if (!text) return true;
   return /^no (?:other |additional )?(?:project )?notes? (?:(?:were|was) )?provided\b/.test(text)
+    || /^(?:um+|uh+|erm+|er+|hmm+|hm+|mm+|ah+|eh+)$/.test(text)
     || /\bwhat(?:'s| is) (?:the|your) question\b/.test(text)
     || /\b(?:did not|didn't) (?:even )?ask (?:a|the|that|any) question\b/.test(text)
     || /\b(?:caller|customer|they|he|she) (?:asked|wondered|said)\b.*\bwhat\b.*\b(?:talking|asking) about\b/.test(text)

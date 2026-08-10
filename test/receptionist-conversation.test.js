@@ -148,7 +148,8 @@ test('a reaction or unfinished thought stays silent and cannot complete service'
   const conversation = createReceptionistConversation({ context: CONTEXT });
   assert.deepEqual(analyzedTurn(conversation, 'Oh.'), { type: 'wait', preserve: false });
   assert.deepEqual(analyzedTurn(conversation, 'Hey.'), { type: 'wait', preserve: false });
-  assert.deepEqual(analyzedTurn(conversation, 'Um...'), { type: 'wait', preserve: true });
+  assert.deepEqual(analyzedTurn(conversation, 'Um...'), { type: 'wait', preserve: false });
+  assert.deepEqual(analyzedTurn(conversation, 'Mm.'), { type: 'wait', preserve: false });
   assert.equal(conversation.snapshot().pendingField, 'service');
 });
 
@@ -169,6 +170,34 @@ test('a clearly spoken full address advances even when the analyzer omits it', (
   assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.match(action.text, /day or date/i);
+});
+
+test('a grounded full address outranks a false unintelligible label', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+
+  const action = analyzedTurn(
+    conversation,
+    "It'd be 197 Lancaster Road, Berlin, Massachusetts.",
+    {
+      turn_status: 'unintelligible',
+      address_status: 'complete',
+      fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    },
+  );
+
+  assert.match(action.text, /day or date/i);
+  assert.doesNotMatch(action.text, /didn't catch/i);
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
 });
 
 test('an unfinished notes question stays silent and is never stored as a note', () => {
@@ -733,6 +762,10 @@ test('notes-step duration questions from the supplied transcript are answered or
       'I just asked how long will it take for the job to get done.',
       'How long will it take for the job to get done?',
     ],
+    [
+      'Yeah, I was wondering how long it takes to have the job done, like how long will it be?',
+      'How long does it take to have the job done?',
+    ],
   ]) {
     const conversation = createReceptionistConversation({ context: CONTEXT });
     completeThroughSchedule(conversation);
@@ -751,6 +784,46 @@ test('notes-step duration questions from the supplied transcript are answered or
     assert.deepEqual(conversation.snapshot().notes, [savedQuestion]);
     assert.equal(conversation.snapshot().pendingField, 'notes');
   }
+});
+
+test('the latest supplied call becomes concise notes without preserving a hesitation', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(
+    conversation,
+    'The house painted like the whole outside of my house is painted.',
+    {
+      service_status: 'complete',
+      project_note: 'Paint the whole outside of the house.',
+      fields: { service: 'Exterior Painting' },
+    },
+  );
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  analyzedTurn(conversation, 'Tuesday at noon.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'noon' },
+  });
+
+  assert.deepEqual(analyzedTurn(conversation, 'Mm.'), {
+    type: 'wait',
+    preserve: false,
+  });
+  const question = 'Yeah, I was wondering how long it takes to have the job done, like how long will it be?';
+  const action = analyzedTurn(conversation, question, {
+    business_answer_status: 'unanswerable',
+    business_question: 'How long will the job take?',
+    business_question_type: 'other',
+  });
+
+  assert.match(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, [
+    'Paint the whole outside of the house.',
+    'How long will the job take?',
+  ]);
 });
 
 test('service and callback questions use supplied data while only an unknown duration is saved cleanly', () => {

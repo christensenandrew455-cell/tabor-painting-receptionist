@@ -154,7 +154,7 @@ Estimate-request days and hours are not proof that a specific appointment is ope
 
 # Turn taking
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
-Do not interrupt the caller. Do not let caller speech cancel receptionist audio.
+Do not interrupt the caller. Ordinary prompts are not cancelled by incidental caller speech; retry and clarification prompts yield as soon as the caller resumes answering.
 Use short spoken turns. Ask one question at a time.
 Let callers describe their work in their own words. Interpret it only through the supplied services for this business so the same receptionist skeleton works across different trades.
 
@@ -326,6 +326,7 @@ export function createOpenAiReceptionist({
   let callerSpeechActive = false;
   let holdActive = false;
   let receptionistPlaybackEndAt = 0;
+  let currentPlayback = null;
   let work = Promise.resolve();
   let usageSummary = {
     model,
@@ -379,7 +380,7 @@ export function createOpenAiReceptionist({
       }
       pendingCallerFragment = '';
       if (endHold) holdActive = false;
-      requestSpeech(cleanText(text) || conversation.bareQuestion());
+      requestSpeech(cleanText(text) || conversation.bareQuestion(), { yieldToCaller: true });
     }, effectiveDelayMs + playbackRemainingMs);
     incompleteTurnTimer.unref?.();
   }
@@ -447,6 +448,64 @@ export function createOpenAiReceptionist({
     return Boolean(activeSpeechResponse()) || receptionistPlaybackEndAt > Date.now();
   }
 
+  function truncateCurrentPlayback(playback, interruptedAt = Date.now()) {
+    const purpose = playback?.purpose;
+    const itemId = cleanText(playback?.itemId);
+    if (!itemId || !purpose?.firstAudioAt || !purpose.audioBytes) return false;
+    const generatedAudioMs = Math.ceil(
+      (purpose.audioBytes / PCMU_BYTES_PER_SECOND) * 1_000,
+    );
+    const playedAudioMs = Math.max(
+      0,
+      Math.min(generatedAudioMs, interruptedAt - purpose.firstAudioAt),
+    );
+    return sendJson(openai, {
+      type: 'conversation.item.truncate',
+      item_id: itemId,
+      content_index: playback.contentIndex,
+      audio_end_ms: playedAudioMs,
+    });
+  }
+
+  function stopPlayback({ active = null, playback = null } = {}) {
+    const interruptedAt = Date.now();
+    clearIncompleteTurnRecovery();
+    if (active) {
+      active.purpose.interruptedByCaller = true;
+      sendJson(openai, {
+        type: 'response.cancel',
+        response_id: active.responseId,
+      });
+    }
+    if (playback && receptionistPlaybackEndAt > interruptedAt) {
+      playback.purpose.interruptedByCaller = true;
+      onPlaybackClear?.();
+      truncateCurrentPlayback(playback, interruptedAt);
+      currentPlayback = null;
+    }
+    receptionistPlaybackEndAt = interruptedAt;
+  }
+
+  function interruptRetryForCallerSpeech() {
+    if (closed || endingCall || finalizing || submitted) return false;
+    const pending = pendingResponsePurposes.find((purpose) => (
+      purpose?.kind === 'speech'
+      && purpose.after === 'continue'
+      && purpose.yieldToCaller
+      && !purpose.interruptedByCaller
+    ));
+    const activeCandidate = activeSpeechResponse();
+    const active = activeCandidate?.purpose.yieldToCaller ? activeCandidate : null;
+    const playback = currentPlayback?.purpose.yieldToCaller
+      && receptionistPlaybackEndAt > Date.now()
+      ? currentPlayback
+      : null;
+    if (!pending && !active && !playback) return false;
+    if (pending) pending.interruptedByCaller = true;
+    stopPlayback({ active, playback });
+    return true;
+  }
+
   function interruptForCallerTranscript(transcript) {
     if (
       closed
@@ -458,16 +517,8 @@ export function createOpenAiReceptionist({
 
     const active = activeSpeechResponse();
     if (!active && receptionistPlaybackEndAt <= Date.now()) return false;
-    clearIncompleteTurnRecovery();
-    onPlaybackClear?.();
-    receptionistPlaybackEndAt = Date.now();
-    if (active) {
-      active.purpose.interruptedByCaller = true;
-      sendJson(openai, {
-        type: 'response.cancel',
-        response_id: active.responseId,
-      });
-    }
+    const playback = receptionistPlaybackEndAt > Date.now() ? currentPlayback : null;
+    stopPlayback({ active, playback });
     return true;
   }
 
@@ -505,6 +556,7 @@ export function createOpenAiReceptionist({
     retryCount = 0,
     maxOutputTokens = null,
     failureSpeech = '',
+    yieldToCaller = false,
   } = {}) {
     const speech = cleanText(text);
     if (!speech || closed) return false;
@@ -527,6 +579,7 @@ export function createOpenAiReceptionist({
       expectedSpeech: speech,
       maxOutputTokens: tokenOverride.max_output_tokens || null,
       failureSpeech: cleanText(failureSpeech),
+      yieldToCaller: Boolean(yieldToCaller),
     });
   }
 
@@ -688,7 +741,10 @@ export function createOpenAiReceptionist({
     }
     if (action.type === 'speak') {
       holdActive = false;
-      requestSpeech(action.text, { turn });
+      requestSpeech(action.text, {
+        turn,
+        yieldToCaller: action.yieldToCaller === true,
+      });
       return;
     }
     if (action.type === 'prepare') {
@@ -721,7 +777,7 @@ export function createOpenAiReceptionist({
       }, turn.text), turn);
       return;
     }
-    requestSpeech(conversation.bareQuestion(), { turn });
+    requestSpeech(conversation.bareQuestion(), { turn, yieldToCaller: true });
   }
 
   function combineContinuation(turn) {
@@ -826,6 +882,7 @@ export function createOpenAiReceptionist({
         turn: purpose.turn,
         retryCount: MAX_SPEECH_RETRIES,
         maxOutputTokens: purpose.maxOutputTokens,
+        yieldToCaller: purpose.yieldToCaller,
       });
       return true;
     }
@@ -837,6 +894,7 @@ export function createOpenAiReceptionist({
         retryCount: purpose.retryCount + 1,
         maxOutputTokens: purpose.maxOutputTokens,
         failureSpeech: purpose.failureSpeech,
+        yieldToCaller: purpose.yieldToCaller,
       });
       return true;
     }
@@ -942,6 +1000,7 @@ export function createOpenAiReceptionist({
     if (event.type === 'input_audio_buffer.speech_started') {
       callerSpeechActive = true;
       clearIncompleteTurnRecovery();
+      interruptRetryForCallerSpeech();
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.failed') {
@@ -984,6 +1043,9 @@ export function createOpenAiReceptionist({
       if (responseId) {
         activeResponseIds.add(responseId);
         responsePurposes.set(responseId, purpose);
+        if (purpose?.interruptedByCaller) {
+          sendJson(openai, { type: 'response.cancel', response_id: responseId });
+        }
       }
       responseCount += 1;
       if (!costLimitTriggered && responseCount >= controls.maxResponsesPerCall) {
@@ -1018,7 +1080,9 @@ export function createOpenAiReceptionist({
       return;
     }
     if (event.type === 'response.output_audio.delta' && event.delta) {
-      const purpose = responsePurposes.get(cleanText(event.response_id));
+      const responseId = cleanText(event.response_id);
+      const purpose = responsePurposes.get(responseId);
+      if (purpose?.interruptedByCaller) return;
       if (purpose) {
         try { purpose.audioBytes += Buffer.from(event.delta, 'base64').length; } catch {}
       }
@@ -1050,6 +1114,12 @@ export function createOpenAiReceptionist({
           purpose.firstAudioAt
             + Math.ceil((purpose.audioBytes / PCMU_BYTES_PER_SECOND) * 1_000),
         );
+        currentPlayback = {
+          responseId,
+          purpose,
+          itemId: cleanText(event.item_id),
+          contentIndex: Number.isInteger(event.content_index) ? event.content_index : 0,
+        };
       }
       onAudio?.(event.delta);
       return;
