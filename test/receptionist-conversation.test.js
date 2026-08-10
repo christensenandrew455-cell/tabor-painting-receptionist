@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSummaryRecoverySpeech,
   buildSummarySpeech,
   createReceptionistConversation,
   isGroundedInCallerEvidence,
@@ -46,6 +47,7 @@ function analysis(overrides = {}) {
     correction_field: 'none',
     business_answer_status: 'not_a_question',
     business_question: '',
+    business_question_type: 'none',
     business_support: '',
     ...rest,
     fields: {
@@ -616,9 +618,15 @@ test('the analyzer can identify a business question by meaning without a keyword
 });
 
 test('notes-step duration questions from the supplied transcript are answered or recorded instead of reprompted', () => {
-  for (const transcript of [
-    'Yeah, um, I was just wondering, like, how long will it take for the job to get done?',
-    'I just asked how long will it take for the job to get done.',
+  for (const [transcript, savedQuestion] of [
+    [
+      'Yeah, um, I was just wondering, like, how long will it take for the job to get done?',
+      'How long will it take for the job to get done?',
+    ],
+    [
+      'I just asked how long will it take for the job to get done.',
+      'How long will it take for the job to get done?',
+    ],
   ]) {
     const conversation = createReceptionistConversation({ context: CONTEXT });
     completeThroughSchedule(conversation);
@@ -626,6 +634,7 @@ test('notes-step duration questions from the supplied transcript are answered or
       service_status: 'complete',
       business_answer_status: 'unanswerable',
       business_question: transcript,
+      business_question_type: 'other',
       fields: { service: 'Exterior Painting' },
     });
 
@@ -633,9 +642,55 @@ test('notes-step duration questions from the supplied transcript are answered or
       action.text,
       "I'm sorry, I don't know that. I'll add that question to the notes. Do you have any other notes or business questions?",
     );
-    assert.deepEqual(conversation.snapshot().notes, [transcript]);
+    assert.deepEqual(conversation.snapshot().notes, [savedQuestion]);
     assert.equal(conversation.snapshot().pendingField, 'notes');
   }
+});
+
+test('service and callback questions use supplied data while only an unknown duration is saved cleanly', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  let transcript = 'Uh, yeah, I was wondering, like, how long would it take just to paint, like, one room?';
+  let action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: 'how long would it take just to paint one room?',
+    business_question_type: 'other',
+  });
+  assert.match(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, ['How long would it take to paint one room?']);
+
+  transcript = 'Yeah, so after you send them this request, how long would it take for them to get back to me?';
+  action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'answerable',
+    business_question: 'how long would it take for them to get back to me?',
+    business_question_type: 'lead_response_time',
+  });
+  assert.match(action.text, /hear back from Tabor Painting within one week/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, ['How long would it take to paint one room?']);
+
+  transcript = 'Yeah, how many services does paper painting offer?';
+  action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: 'how many services does paper painting offer?',
+    business_question_type: 'service_count',
+  });
+  assert.match(action.text, /Tabor Painting offers four services/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+
+  transcript = 'Yeah, what services does paper painting offer?';
+  action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: 'what services does paper painting offer?',
+    business_question_type: 'service_list',
+  });
+  assert.match(action.text, /Wood Staining/);
+  assert.match(action.text, /Exterior Painting/);
+  assert.match(action.text, /Interior Painting/);
+  assert.match(action.text, /Small Paint Repair/);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, ['How long would it take to paint one room?']);
 });
 
 test('a grounded business question is answered and the pending field remains pending', () => {
@@ -792,6 +847,15 @@ test('summary speech omits empty notes and includes actual notes once', () => {
 
   const withNotes = buildSummarySpeech({ ...base, notes: 'The back wall has peeling paint.' });
   assert.equal((withNotes.match(/back wall has peeling paint/gi) || []).length, 1);
+
+  const recovery = buildSummaryRecoverySpeech({
+    ...base,
+    notes: 'The back wall has peeling paint. How long would it take to paint one room?',
+  });
+  assert.match(recovery, /readback was cut off/i);
+  assert.match(recovery, /included the additional notes/i);
+  assert.doesNotMatch(recovery, /back wall has peeling paint/i);
+  assert.equal((recovery.match(/Does that all sound right\?/g) || []).length, 1);
 });
 
 test('refusing contact permission ends without preparing or submitting', () => {

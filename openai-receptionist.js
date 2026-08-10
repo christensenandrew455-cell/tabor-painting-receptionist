@@ -3,6 +3,7 @@ import { cleanText } from './business-context.js';
 import { createIntakeManager } from './intake.js';
 import {
   CALLER_TURN_ANALYSIS_TOOL,
+  buildSummaryRecoverySpeech,
   buildTurnAnalysisInstructions,
   createReceptionistConversation,
 } from './receptionist-conversation.js';
@@ -29,6 +30,7 @@ const DEFAULT_CONTEXT_RETENTION_RATIO = 0.7;
 const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
 const MAX_ANALYSIS_RETRIES = 1;
 const MAX_SPEECH_RETRIES = 1;
+const SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
 const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 8_000;
 const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 12_000;
 const DEFAULT_HOLD_RECOVERY_MS = 30_000;
@@ -497,22 +499,30 @@ export function createOpenAiReceptionist({
     after = 'continue',
     turn = null,
     retryCount = 0,
+    maxOutputTokens = null,
+    failureSpeech = '',
   } = {}) {
     const speech = cleanText(text);
     if (!speech || closed) return false;
     clearIncompleteTurnRecovery();
     holdActive = false;
+    const tokenOverride = Number.isFinite(maxOutputTokens)
+      ? { max_output_tokens: Math.max(64, Math.min(4_096, Math.round(maxOutputTokens))) }
+      : {};
     return createResponse({
       instructions: exactSpeechInstruction(speech),
       input: [],
       tools: [],
       tool_choice: 'none',
+      ...tokenOverride,
     }, {
       kind: 'speech',
       after,
       turn,
       retryCount,
       expectedSpeech: speech,
+      maxOutputTokens: tokenOverride.max_output_tokens || null,
+      failureSpeech: cleanText(failureSpeech),
     });
   }
 
@@ -637,7 +647,11 @@ export function createOpenAiReceptionist({
       requestSpeech(conversation.preparationFailed(error), { turn });
       return;
     }
-    requestSpeech(conversation.enterSummary(result.summary), { turn });
+    requestSpeech(conversation.enterSummary(result.summary), {
+      turn,
+      maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+      failureSpeech: buildSummaryRecoverySpeech(result.summary),
+    });
   }
 
   async function submitEstimate(turn) {
@@ -698,6 +712,8 @@ export function createOpenAiReceptionist({
       handleConversationAction(conversation.applyAnalysis({
         turn_status: 'complete',
         business_answer_status: 'unanswerable',
+        business_question: turn.text,
+        business_question_type: 'other',
       }, turn.text), turn);
       return;
     }
@@ -795,11 +811,28 @@ export function createOpenAiReceptionist({
       return true;
     }
 
+    const outputLimitFailure = /max_output_tokens/i.test(message);
+    if (
+      purpose?.kind === 'speech'
+      && purpose.failureSpeech
+      && (outputLimitFailure || purpose.audioBytes > 0)
+    ) {
+      requestSpeech(purpose.failureSpeech, {
+        after: purpose.after,
+        turn: purpose.turn,
+        retryCount: MAX_SPEECH_RETRIES,
+        maxOutputTokens: purpose.maxOutputTokens,
+      });
+      return true;
+    }
+
     if (purpose?.kind === 'speech' && purpose.retryCount < MAX_SPEECH_RETRIES) {
       requestSpeech(purpose.expectedSpeech, {
         after: purpose.after,
         turn: purpose.turn,
         retryCount: purpose.retryCount + 1,
+        maxOutputTokens: purpose.maxOutputTokens,
+        failureSpeech: purpose.failureSpeech,
       });
       return true;
     }

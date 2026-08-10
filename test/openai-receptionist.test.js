@@ -119,6 +119,7 @@ function analysis(overrides = {}) {
     correction_field: 'none',
     business_answer_status: 'not_a_question',
     business_question: '',
+    business_question_type: 'none',
     business_support: '',
     ...rest,
     fields: {
@@ -204,6 +205,68 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs
       else process.env.OPENAI_API_KEY = previousApiKey;
     },
   };
+}
+
+async function advanceHarnessToSummaryRequest(socket) {
+  await finishSpeech(socket, {
+    responseId: 'summary-path-greeting',
+    transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+  });
+  const steps = [
+    {
+      callerText: 'I need exterior painting.',
+      args: analysis({
+        service_status: 'complete',
+        fields: { service: 'Exterior Painting' },
+      }),
+      speech: 'Okay, what name should I use for the estimate request?',
+    },
+    {
+      callerText: 'Jordan Smith.',
+      args: analysis({ fields: { name: 'Jordan Smith' } }),
+      speech: "Thanks. What's the full project address?",
+    },
+    {
+      callerText: '123 Main Street, Albany, New York.',
+      args: analysis({
+        address_status: 'complete',
+        fields: { address: '123 Main Street, Albany, New York' },
+      }),
+      speech: 'Got it. What day or date would you prefer for the estimate, and what time works best?',
+    },
+    {
+      callerText: 'Tuesday, August 11, 2099 at 2 PM.',
+      args: analysis({
+        fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
+      }),
+      speech: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
+    },
+    {
+      callerText: 'No.',
+      args: analysis({ notes_complete: true }),
+      speech: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+    },
+    {
+      callerText: 'Yes.',
+      args: analysis({ contact_consent: 'yes' }),
+      speech: '',
+    },
+  ];
+
+  for (const [index, step] of steps.entries()) {
+    caller(socket, step.callerText, `summary-path-caller-${index}`);
+    await finishAnalysis(socket, {
+      responseId: `summary-path-analysis-${index}`,
+      args: step.args,
+    });
+    if (step.speech) {
+      await finishSpeech(socket, {
+        responseId: `summary-path-speech-${index}`,
+        transcript: step.speech,
+      });
+    }
+  }
+  return latestResponse(socket);
 }
 
 test('session uses responsive semantic turn detection without caller barge-in', () => {
@@ -344,6 +407,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     });
     assert.match(latestResponse(h.socket).response.instructions, /here's the summary/i);
     assert.match(latestResponse(h.socket).response.instructions, /Does that all sound right/i);
+    assert.equal(latestResponse(h.socket).response.max_output_tokens, 4_096);
     await finishSpeech(h.socket, {
       responseId: 'summary',
       transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
@@ -604,6 +668,50 @@ test('a failed speech response is retried without advancing state', async () => 
   }
 });
 
+test('an output-limited summary uses a concise recovery instead of replaying the full summary', async () => {
+  const h = await createHarness();
+  try {
+    const summaryRequest = await advanceHarnessToSummaryRequest(h.socket);
+    const originalInstructions = summaryRequest.response.instructions;
+    assert.match(originalInstructions, /here's the summary/i);
+    assert.equal(summaryRequest.response.max_output_tokens, 4_096);
+
+    h.socket.receive({ type: 'response.created', response: { id: 'limited-summary' } });
+    h.socket.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'limited-summary',
+      item_id: 'limited-summary-item',
+      delta: Buffer.alloc(800).toString('base64'),
+    });
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'limited-summary',
+        status: 'incomplete',
+        status_details: { reason: 'max_output_tokens' },
+        output: [],
+      },
+    });
+    await nextTurn();
+
+    const recoveryRequest = latestResponse(h.socket);
+    assert.notEqual(recoveryRequest.response.instructions, originalInstructions);
+    assert.match(recoveryRequest.response.instructions, /readback was cut off/i);
+    assert.match(recoveryRequest.response.instructions, /Does that all sound right/i);
+    assert.doesNotMatch(recoveryRequest.response.instructions, /here's the summary/i);
+    assert.equal(recoveryRequest.response.max_output_tokens, 4_096);
+    assert.equal(
+      responseCreates(h.socket).filter((event) => /here's the summary/i.test(
+        event.response?.instructions || '',
+      )).length,
+      1,
+    );
+    assert.match(h.errors[0].message, /max_output_tokens/i);
+  } finally {
+    h.restore();
+  }
+});
+
 test('a rejected response.create event is recovered instead of wedging the call', async () => {
   const h = await createHarness();
   try {
@@ -750,7 +858,10 @@ test('analysis uses a larger token budget and safely handles repeated output-lim
     assert.match(latestResponse(h.socket).response.instructions, /I don't know that/i);
     assert.match(latestResponse(h.socket).response.instructions, /add that question to the notes/i);
     assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/i);
-    assert.deepEqual(h.receptionist.snapshot().state.notes, [question]);
+    assert.deepEqual(
+      h.receptionist.snapshot().state.notes,
+      ['How long will it take for the job to get done?'],
+    );
     assert.equal(h.errors.length, 2);
     assert.match(h.errors[0].message, /max_output_tokens/i);
   } finally {
