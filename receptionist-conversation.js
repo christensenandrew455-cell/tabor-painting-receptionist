@@ -232,20 +232,69 @@ const SERVICE_NOTE_GENERIC_WORDS = new Set([
   'yes', 'will', 'would', "we're", "we've",
 ]);
 
-function cleanedServiceTurnNote(value) {
+const PROJECT_NOTE_ACTIONS = Object.freeze({
+  built: 'Build',
+  cleaned: 'Clean',
+  fixed: 'Fix',
+  inspected: 'Inspect',
+  installed: 'Install',
+  painted: 'Paint',
+  rebuilt: 'Rebuild',
+  remodeled: 'Remodel',
+  renovated: 'Renovate',
+  repaired: 'Repair',
+  repainted: 'Repaint',
+  replaced: 'Replace',
+  serviced: 'Service',
+  stained: 'Stain',
+  trimmed: 'Trim',
+});
+
+const PROJECT_NOTE_ACTION_PATTERN = new RegExp(
+  `^(.+?)\\s+(${Object.keys(PROJECT_NOTE_ACTIONS).join('|')})[.!?]*$`,
+  'i',
+);
+
+function cleanedProjectNoteSentence(value) {
   let note = cleanText(value)
     .replace(/^(?:(?:i'm|i am) sorry[,;.! ]*)/i, '')
     .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like)[,;.! ]+)+/i, '')
+    .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+see\s+if\s+(?:i|we)\s+could\s+(?:get|have)\s+/i, '')
     .replace(/^(?:i|we)(?:'m| am|'re| are)\s+(?:gonna|going to)\s+(?:need|want)(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?:need|want)(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?[,; ]+/i, '')
-    .replace(/^(?:i|we)\s+(?:was|were)\s+looking\s+to\s+(?:get|have)[,; ]+/i, '')
+    .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+(?:get|have)[,; ]+/i, '')
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '')
+    .replace(/^(?:get|have)\s+(?=(?:my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
     .replace(/^(?:like)[,; ]+/i, '')
     .trim();
   if (!note) return '';
+
+  const action = note.match(PROJECT_NOTE_ACTION_PATTERN);
+  if (action && !/\b(?:is|are|was|were|be|been|being|has|have|had)\s*$/i.test(action[1])) {
+    let object = cleanText(action[1])
+      .replace(/^(?:wants?|needs?)\s+/i, '')
+      .replace(/^(?:my|our|his|her|their)\s+couple\b/i, 'a couple')
+      .replace(/^(?:my|our|his|her|their)\b/i, 'the')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (object) {
+      object = `${object[0].toLowerCase()}${object.slice(1)}`;
+      return `${PROJECT_NOTE_ACTIONS[action[2].toLowerCase()]} ${object}.`;
+    }
+  }
+
   note = `${note[0].toUpperCase()}${note.slice(1)}`;
   return note;
+}
+
+function cleanedServiceTurnNote(value) {
+  return cleanText(value)
+    .split(/(?<=[.!?])\s+/)
+    .map(cleanedProjectNoteSentence)
+    .filter(Boolean)
+    .join(' ')
+    .trim();
 }
 
 function serviceTurnProjectNote(value, serviceName, context = {}) {
@@ -698,7 +747,7 @@ export function createReceptionistConversation({ context }) {
   }
 
   function groundedProjectNote(value, transcript, dateCandidate = '') {
-    const note = cleanText(value);
+    const note = cleanedServiceTurnNote(value);
     if (!note || !isProjectNoteGroundedInCallerEvidence(note, transcript)) return '';
     if (isScheduleOnlyProjectNote(note, dateCandidate)) return '';
     return note;
@@ -782,10 +831,15 @@ export function createReceptionistConversation({ context }) {
 
     if (analysis.fields.address && canWrite('address')) {
       try {
-        if (analysis.address_status !== 'complete' || !isGroundedInCallerEvidence(analysis.fields.address, callerTranscripts)) {
+        const completeAddress = fullAddressFromCallerText(analysis.fields.address);
+        if (
+          analysis.address_status !== 'complete'
+          || !completeAddress
+          || !isGroundedInCallerEvidence(completeAddress, callerTranscripts)
+        ) {
           throw Object.assign(new Error('The full address was not grounded in caller speech.'), { field: 'address' });
         }
-        values.address = analysis.fields.address;
+        values.address = completeAddress;
         changed = true;
       } catch (fieldError) {
         error ||= fieldError;
@@ -964,8 +1018,11 @@ export function createReceptionistConversation({ context }) {
 
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
+    const completeAnalyzedAddress = fullAddressFromCallerText(analysis.fields.address);
     const hasGroundedAnalyzedAddress = analysis.address_status === 'complete'
-      && isGroundedInCallerEvidence(analysis.fields.address, callerTranscripts);
+      && Boolean(completeAnalyzedAddress)
+      && isGroundedInCallerEvidence(completeAnalyzedAddress, callerTranscripts);
+    if (hasGroundedAnalyzedAddress) analysis.fields.address = completeAnalyzedAddress;
     const addressFallback = !hasGroundedAnalyzedAddress && (
       pendingField() === 'address'
       || analysis.correction_field === 'address'
@@ -973,14 +1030,22 @@ export function createReceptionistConversation({ context }) {
     if (addressFallback) {
       analysis.fields.address = addressFallback;
       analysis.address_status = 'complete';
-      if (['unfinished', 'unintelligible'].includes(analysis.turn_status)) {
+      if (['unfinished', 'unintelligible', 'conversation_repair'].includes(analysis.turn_status)) {
         analysis.turn_status = 'complete';
       }
     } else if (
       hasGroundedAnalyzedAddress
-      && ['unfinished', 'unintelligible'].includes(analysis.turn_status)
+      && ['unfinished', 'unintelligible', 'conversation_repair'].includes(analysis.turn_status)
     ) {
       analysis.turn_status = 'complete';
+    } else if (
+      !hasGroundedAnalyzedAddress
+      && analysis.address_status === 'complete'
+      && analysis.fields.address
+      && (pendingField() === 'address' || analysis.correction_field === 'address')
+    ) {
+      analysis.fields.address = '';
+      analysis.address_status = 'partial';
     }
     if (pendingField() === 'notes' && looksLikeUnfinishedThought(transcript)) {
       return { type: 'wait', preserve: true };
@@ -1041,9 +1106,18 @@ export function createReceptionistConversation({ context }) {
     const projectDetailOverridesQuestion = projectDetail
       && !businessQuestionIsDistinctFromProjectNote(analysis, transcript, projectDetail);
     const scheduleRequestQuestion = scheduleTurn && isScheduleRequestQuestion(transcript);
+    const hasDirectSchedulePreference = Boolean(
+      analysis.fields.preferred_date
+      || analysis.fields.preferred_time
+      || dateCandidate,
+    );
     const scheduleWindowQuestion = before === 'schedule'
+      && !hasDirectSchedulePreference
       && (
-        analysis.business_question_type === 'estimate_request_window'
+        (
+          analysis.business_question_type === 'estimate_request_window'
+          && looksLikeBusinessQuestion(transcript)
+        )
         || isEstimateWindowQuestion(transcript)
       );
     const shouldHandleBusinessQuestion = scheduleRequestQuestion

@@ -336,7 +336,7 @@ test('valid intake answers outrank a false business-question label and extra det
   assert.match(action.text, /what name should I use/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(conversation.snapshot().values.service, 'Interior Painting');
-  assert.deepEqual(conversation.snapshot().notes, ['My whole basement repainted.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Repaint the whole basement.']);
 
   transcript = 'Andrew Christensen.';
   action = analyzedTurn(conversation, transcript, {
@@ -348,7 +348,7 @@ test('valid intake answers outrank a false business-question label and extra det
   assert.match(action.text, /full project address/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(conversation.snapshot().values.name, 'Andrew Christensen');
-  assert.deepEqual(conversation.snapshot().notes, ['My whole basement repainted.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Repaint the whole basement.']);
 
   transcript = '197 Lancaster Road, Berlin, Massachusetts. It is the big blue house so you do not miss it.';
   action = analyzedTurn(conversation, transcript, {
@@ -366,7 +366,7 @@ test('valid intake answers outrank a false business-question label and extra det
     '197 Lancaster Road, Berlin, Massachusetts',
   );
   assert.deepEqual(conversation.snapshot().notes, [
-    'My whole basement repainted.',
+    'Repaint the whole basement.',
     'It is the big blue house so you do not miss it.',
   ]);
 
@@ -380,7 +380,7 @@ test('valid intake answers outrank a false business-question label and extra det
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.deepEqual(conversation.snapshot().notes, [
-    'My whole basement repainted.',
+    'Repaint the whole basement.',
     'It is the big blue house so you do not miss it.',
   ]);
 });
@@ -409,7 +409,7 @@ test('business-question fallback is disabled before notes and the pending estima
   assert.match(action.text, /what name should I use/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(conversation.snapshot().values.service, 'Interior Painting');
-  assert.deepEqual(conversation.snapshot().notes, ['Get my basement painted.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the basement.']);
 });
 
 test('useful service-step scope is retained even when the analyzer omits project_note', () => {
@@ -425,7 +425,7 @@ test('useful service-step scope is retained even when the analyzer omits project
 
   assert.equal(conversation.snapshot().values.service, 'Interior Painting');
   assert.deepEqual(conversation.snapshot().notes, [
-    'My entire lower level repainted. The walls are peeling badly.',
+    'Repaint the entire lower level. The walls are peeling badly.',
   ]);
 
   const simple = createReceptionistConversation({ context: CONTEXT });
@@ -569,7 +569,7 @@ test('an invented project detail cannot enter notes even when the analyzer retur
     fields: { service: 'Exterior Painting' },
   });
   assert.equal(conversation.snapshot().values.service, 'Exterior Painting');
-  assert.deepEqual(conversation.snapshot().notes, ['The exterior of my house painted.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the exterior of my house.']);
   assert.doesNotMatch(conversation.snapshot().notes.join(' '), /detached garage/i);
 });
 
@@ -653,6 +653,60 @@ test('partial addresses stay pending and later fragments combine without invente
   });
   assert.match(action.text, /day or date/i);
   assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
+});
+
+test('the supplied split-address call waits for locality, avoids schedule repetition, and saves a concise note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+
+  let action = analyzedTurn(
+    conversation,
+    'I was just looking to see if I could get my basement painted.',
+    {
+      service_status: 'complete',
+      project_note: 'I was just looking to see if I could get my basement painted.',
+      fields: { service: 'Interior Painting' },
+    },
+  );
+  assert.match(action.text, /what name should I use/i);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the basement.']);
+
+  action = analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  assert.match(action.text, /full project address/i);
+
+  action = analyzedTurn(conversation, 'That would be 197 Lancaster Road.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road' },
+  });
+  assert.equal(action.text, 'What city or town and state is that in?');
+  assert.equal(conversation.snapshot().values.address, '');
+  assert.equal(conversation.snapshot().pendingField, 'address');
+
+  action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
+    turn_status: 'conversation_repair',
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.match(action.text, /day or date/i);
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+
+  action = analyzedTurn(conversation, 'Probably Thursday at like 3.', {
+    business_answer_status: 'answerable',
+    business_question: 'Probably Thursday at like 3.',
+    business_question_type: 'estimate_request_window',
+    business_support: 'Monday through Friday from 9:00 AM to 5:00 PM.',
+    fields: { preferred_date: 'Thursday', preferred_time: '3' },
+  });
+  assert.match(action.text, /additional notes and\/or business questions/i);
+  assert.doesNotMatch(action.text, /accepts estimate requests/i);
+  assert.doesNotMatch(action.text, /what day or date/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the basement.']);
 });
 
 test('caller evidence prevents names and addresses from being copied from business data', () => {
