@@ -27,7 +27,8 @@ const DEFAULT_CONTEXT_RETENTION_RATIO = 0.7;
 const DEFAULT_MAX_RESPONSES_PER_CALL = 40;
 const MAX_ANALYSIS_RETRIES = 1;
 const MAX_SPEECH_RETRIES = 1;
-const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
+const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 8_000;
+const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 12_000;
 const DEFAULT_HOLD_RECOVERY_MS = 30_000;
 const SUPPORTED_VOICES = new Set([
   'alloy',
@@ -141,6 +142,7 @@ Estimate-request days and hours are not proof that a specific appointment is ope
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
 Do not interrupt the caller. Do not let caller speech cancel receptionist audio.
 Use short spoken turns. Ask one question at a time.
+Let callers describe their work in their own words. Interpret it only through the supplied services for this business so the same receptionist skeleton works across different trades.
 
 # Supplied services
 ${serviceGuide(context)}
@@ -183,7 +185,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
           },
           turn_detection: {
             type: 'semantic_vad',
-            eagerness: 'high',
+            eagerness: 'medium',
             create_response: false,
             interrupt_response: false,
           },
@@ -261,13 +263,17 @@ export function createOpenAiReceptionist({
   const realtimeUrl = cleanText(process.env.OPENAI_REALTIME_URL)
     || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
   const controls = costControls();
+  const configuredRecoveryDelay = incompleteTurnRecoveryMs
+    ?? process.env.OPENAI_CALLER_SILENCE_REPROMPT_MS;
   const recoveryDelayMs = Math.round(boundedNumber(
-    incompleteTurnRecoveryMs
-      ?? process.env.OPENAI_CALLER_SILENCE_REPROMPT_MS,
+    configuredRecoveryDelay,
     DEFAULT_INCOMPLETE_TURN_RECOVERY_MS,
     50,
     30_000,
   ));
+  const notesRecoveryDelayMs = configuredRecoveryDelay === undefined
+    ? NOTES_INCOMPLETE_TURN_RECOVERY_MS
+    : recoveryDelayMs;
   const holdDelayMs = Math.round(boundedNumber(
     holdRecoveryMs ?? process.env.OPENAI_HOLD_REPROMPT_MS,
     DEFAULT_HOLD_RECOVERY_MS,
@@ -345,6 +351,10 @@ export function createOpenAiReceptionist({
   ) {
     if (closed || endingCall || finalizing || submitted) return;
     clearIncompleteTurnRecovery();
+    const pendingField = conversation.snapshot().pendingField;
+    const effectiveDelayMs = pendingField === 'notes' && !endHold
+      ? Math.max(delayMs, notesRecoveryDelayMs)
+      : delayMs;
     const playbackRemainingMs = Math.max(0, receptionistPlaybackEndAt - Date.now());
     incompleteTurnTimer = setTimeout(() => {
       incompleteTurnTimer = null;
@@ -356,7 +366,7 @@ export function createOpenAiReceptionist({
       pendingCallerFragment = '';
       if (endHold) holdActive = false;
       requestSpeech(cleanText(text) || conversation.bareQuestion());
-    }, delayMs + playbackRemainingMs);
+    }, effectiveDelayMs + playbackRemainingMs);
     incompleteTurnTimer.unref?.();
   }
 

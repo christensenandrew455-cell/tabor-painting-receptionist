@@ -4,12 +4,15 @@ import {
   INTAKE_FIELD_ORDER,
   callerVolunteeredName,
   classifyCallerTranscript,
+  fullAddressFromCallerText,
   hasUsableNameAnswer,
   hasUsableServiceAnswer,
   isAiIdentityQuestion,
+  isClearAffirmative,
   isClearNegative,
   isExplicitCorrectionRequest,
   isHoldRequest,
+  looksLikeUnfinishedThought,
   requestedFieldExplanation,
   shouldInterruptReceptionist,
 } from '../receptionist-policy.js';
@@ -41,17 +44,38 @@ test('accepts substantive service descriptions without hardcoding one trade', ()
     'The driveway has several cracks.',
     'I need a tree trimmed away from the house.',
     'A couple of rooms need work.',
+    'My car has a dented passenger door that needs body work.',
+    'I need a damaged stair railing rebuilt.',
   ];
   for (const description of descriptions) {
     assert.equal(hasUsableServiceAnswer(description), true, description);
   }
 });
 
-test('reactions and non-answers cannot complete the service field', () => {
-  for (const value of ['Oh.', 'Okay.', 'Yes.', "I don't know.", 'Not sure.', 'My name is Jordan.']) {
+test('reactions, greetings, and non-answers cannot complete the service field', () => {
+  for (const value of ['Oh.', 'Okay.', 'Hey.', 'Hi there.', 'Yes.', "I don't know.", 'Not sure.', 'My name is Jordan.']) {
     assert.equal(hasUsableServiceAnswer(value), false, value);
   }
   assert.equal(classifyCallerTranscript('Oh.'), 'filler');
+});
+
+test('recognizes a complete spoken project address without relying on model extraction', () => {
+  assert.equal(
+    fullAddressFromCallerText('I just said, 197 Lancaster Road, Berlin, Massachusetts.'),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(fullAddressFromCallerText('197 Lancaster Road.'), '');
+});
+
+test('recognizes trailing question fragments as unfinished thoughts', () => {
+  for (const value of [
+    'I was wondering if you guys...',
+    'I was wondering if you guys could...',
+    'Could you',
+  ]) {
+    assert.equal(looksLikeUnfinishedThought(value), true, value);
+  }
+  assert.equal(looksLikeUnfinishedThought('I was wondering if you are open on Saturdays.'), false);
 });
 
 test('recognizes natural names while rejecting project descriptions as names', () => {
@@ -129,6 +153,13 @@ test('recognizes a clear no even when transcription chooses another common langu
   for (const value of ['No.', 'Não.', 'Nao.', 'Nie.', 'Non.', 'Nein.']) {
     assert.equal(isClearNegative(value), true, value);
   }
+});
+
+test('recognizes yes and no after natural conversational fillers', () => {
+  assert.equal(isClearAffirmative('Uh, yeah.'), true);
+  assert.equal(isClearAffirmative('Okay, yes.'), true);
+  assert.equal(isClearNegative("Actually, no, I don't."), true);
+  assert.equal(isClearNegative('Well, no more notes.'), true);
 });
 
 test('recognizes AI identity questions and field-reason questions', () => {

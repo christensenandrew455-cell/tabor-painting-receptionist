@@ -144,8 +144,98 @@ test('one authoritative state advances through the required field order exactly 
 test('a reaction or unfinished thought stays silent and cannot complete service', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   assert.deepEqual(analyzedTurn(conversation, 'Oh.'), { type: 'wait', preserve: false });
+  assert.deepEqual(analyzedTurn(conversation, 'Hey.'), { type: 'wait', preserve: false });
   assert.deepEqual(analyzedTurn(conversation, 'Um...'), { type: 'wait', preserve: true });
   assert.equal(conversation.snapshot().pendingField, 'service');
+});
+
+test('a clearly spoken full address advances even when the analyzer omits it', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', { fields: { name: 'Andrew Christensen' } });
+
+  const action = analyzedTurn(
+    conversation,
+    '197 Lancaster Road, Berlin, Massachusetts.',
+    { address_status: 'not_addressed' },
+  );
+
+  assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.match(action.text, /day or date/i);
+});
+
+test('an unfinished notes question stays silent and is never stored as a note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  const action = analyzedTurn(conversation, 'I was wondering if you guys could...', {
+    project_note: 'I was wondering if you guys could...',
+  });
+
+  assert.deepEqual(action, { type: 'wait', preserve: true });
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('the supplied call transcript no longer skips fields, repeats the address, or stores an abandoned note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+
+  assert.deepEqual(analyzedTurn(conversation, 'Hey.'), { type: 'wait', preserve: false });
+  assert.equal(conversation.snapshot().pendingField, 'service');
+
+  let action = analyzedTurn(
+    conversation,
+    "I was looking to get the exterior of my house painted because it's just way too old.",
+    {
+      service_status: 'complete',
+      fields: { service: 'Exterior Painting' },
+    },
+  );
+  assert.match(action.text, /what name should I use/i);
+
+  action = analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  assert.match(action.text, /full project address/i);
+
+  action = analyzedTurn(
+    conversation,
+    '197 Lancaster Road, Berlin, Massachusetts.',
+    { address_status: 'not_addressed' },
+  );
+  assert.match(action.text, /day or date/i);
+  assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
+
+  action = analyzedTurn(conversation, 'Tuesday at 2.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '2' },
+  });
+  assert.match(action.text, /Do you have any additional notes and\/or business questions\?$/);
+
+  action = analyzedTurn(conversation, 'Uh, yeah.');
+  assert.equal(action.text, 'What notes or business questions would you like me to add?');
+
+  assert.deepEqual(
+    analyzedTurn(conversation, 'I was wondering if you guys could...', {
+      project_note: 'I was wondering if you guys could...',
+    }),
+    { type: 'wait', preserve: true },
+  );
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /wondering if you guys could/i);
+
+  action = analyzedTurn(
+    conversation,
+    "I was wondering if you guys could... Actually, no, I don't.",
+    {
+      project_note: 'I was wondering if you guys could...',
+      notes_complete: true,
+    },
+  );
+  assert.match(action.text, /consent to being contacted/i);
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /wondering if you guys could/i);
 });
 
 test('conversation repair repeats only the genuinely pending question', () => {
@@ -153,7 +243,7 @@ test('conversation repair repeats only the genuinely pending question', () => {
   completeThroughSchedule(conversation);
   const action = analyzedTurn(conversation, 'What was the question?');
   assert.equal(action.type, 'speak');
-  assert.equal(action.text, 'Do you have any additional notes?');
+  assert.equal(action.text, 'Do you have any additional notes and/or business questions?');
   assert.equal(conversation.snapshot().notes.length, 0);
 });
 
@@ -194,8 +284,8 @@ test('project scope captured earlier stays in notes while the caller is asked on
     fields: { preferred_date: 'Tuesday', preferred_time: '2' },
   });
 
-  assert.match(action.text, /Do you have any additional notes\?/i);
-  assert.doesNotMatch(action.text, /questions for the business/i);
+  assert.match(action.text, /Do you have any additional notes and\/or business questions\?/i);
+  assert.match(action.text, /business questions/i);
   assert.deepEqual(conversation.snapshot().notes, ['The two upstairs rooms need painting.']);
 });
 
@@ -351,7 +441,7 @@ test('an invented project detail cannot enter notes even when the analyzer retur
 test('field reason questions get a short explanation and repeat only the pending question', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   let action = analyzedTurn(conversation, 'Why do you need to know the service?');
-  assert.equal(action.text, 'So the business knows what kind of work you need. What kind of work do you need done?');
+  assert.equal(action.text, 'So the business knows what kind of work you need. What kind of work are you looking to have done?');
 
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -388,7 +478,7 @@ test('AI identity questions are answered directly without changing intake state'
   const action = analyzedTurn(conversation, 'Are you a bot?');
   assert.equal(
     action.text,
-    "I'm an AI receptionist working for Tabor Painting, managed by ARC Client Center. What kind of work do you need done?",
+    "I'm an AI receptionist working for Tabor Painting, managed by ARC Client Center. What kind of work are you looking to have done?",
   );
   assert.equal(conversation.snapshot().pendingField, 'service');
   assert.deepEqual(conversation.snapshot().notes, []);
