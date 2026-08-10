@@ -114,6 +114,8 @@ export function isConversationRepairRequest(value) {
   if (!text) return false;
   return /^(?:what|huh|pardon|sorry what)$/.test(text)
     || /^(?:no )?what(?:'s| is) (?:the|your) question\b/.test(text)
+    || /^what (?:was|did you ask as) (?:the )?question\b/.test(text)
+    || /^what did you (?:just )?ask(?: me)?\b/.test(text)
     || /\b(?:i )?(?:do not|don't|did not|didn't) (?:even )?(?:understand|follow|ask (?:a|the|that|any) question)\b/.test(text)
     || /\b(?:you never|you did not|you didn't) ask (?:me )?(?:a|the|that) question\b/.test(text)
     || /\bwhat (?:the hell )?(?:(?:are|were) you|you (?:are|were)) (?:even )?(?:talking|asking) about\b/.test(text)
@@ -128,7 +130,9 @@ export function looksLikeBusinessQuestion(value) {
   ).trim();
   if (!text) return false;
   return /\?$/.test(text)
-    || /^(?:what|when|where|why|how|do|does|can|could|is|are|will|would)\b/i.test(text);
+    || /^(?:what|when|where|why|how|who|which|do|does|did|can|could|is|are|will|would|should|has|have)\b/i.test(text)
+    || /(?:^|[.!?;,]\s*|\band\s+)(?:what|when|where|why|how|who|which|do|does|did|can|could|is|are|will|would|should|has|have)\b/i.test(text)
+    || /\b(?:i (?:am|was|'m) wondering|i(?:'d| would) like to know|can you tell me|do you know)\b/i.test(text);
 }
 
 function nameShapedCandidate(value, { rejectActionForm = false } = {}) {
@@ -234,9 +238,7 @@ export function spokenBusinessName(value) {
   return cleanText(value).replace(/-/g, ' ').replace(/\s+/g, ' ').trim() || 'the business';
 }
 
-export function contactConsentQuestion(businessName, hasNotes) {
+export function contactConsentQuestion(businessName) {
   const business = spokenBusinessName(businessName);
-  return hasNotes
-    ? `Okay, thanks for the notes. One more question. Do you consent to being contacted by ${business}?`
-    : `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
+  return `Okay, thanks. One more question. Do you consent to being contacted by ${business}?`;
 }

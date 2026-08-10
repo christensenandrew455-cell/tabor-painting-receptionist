@@ -1,0 +1,440 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  buildSummarySpeech,
+  createReceptionistConversation,
+  isGroundedInCallerEvidence,
+} from '../receptionist-conversation.js';
+
+const CONTEXT = Object.freeze({
+  businessName: 'Tabor Painting',
+  timeZone: 'America/New_York',
+  clientId: 'client-123',
+  estimateWeekdays: [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+  ],
+  earliestEstimateStart: '09:00',
+  latestEstimateStart: '16:00',
+  services: [
+    { name: 'Wood Staining', description: 'Wood staining' },
+    { name: 'Exterior Painting', description: 'Exterior painting' },
+    { name: 'Interior Painting', description: 'Interior painting' },
+    { name: 'Small Paint Repair', description: 'Small paint repair' },
+  ],
+  knowledgeJson: JSON.stringify({
+    businessHours: 'Monday through Friday',
+    serviceAreas: ['Berlin', 'Hudson'],
+  }),
+});
+
+function analysis(overrides = {}) {
+  const { fields = {}, ...rest } = overrides;
+  return {
+    turn_status: 'complete',
+    address_status: 'not_addressed',
+    service_status: 'not_addressed',
+    project_note: '',
+    notes_complete: false,
+    contact_consent: 'not_answered',
+    summary_confirmation: 'not_answered',
+    correction_field: 'none',
+    business_answer_status: 'not_a_question',
+    business_support: '',
+    ...rest,
+    fields: {
+      service: '',
+      name: '',
+      address: '',
+      preferred_date: '',
+      preferred_time: '',
+      ...fields,
+    },
+  };
+}
+
+function analyzedTurn(conversation, transcript, overrides = {}) {
+  conversation.recordCallerTranscript(transcript);
+  const preflight = conversation.preflight(transcript);
+  if (preflight.type !== 'analyze') return preflight;
+  return conversation.applyAnalysis(analysis(overrides), transcript);
+}
+
+function completeThroughSchedule(conversation) {
+  analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  return analyzedTurn(conversation, 'Tuesday at 1.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '1' },
+  });
+}
+
+function completeToSummary(conversation) {
+  completeThroughSchedule(conversation);
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  const consent = analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
+  assert.equal(consent.type, 'prepare');
+  conversation.enterSummary({
+    name: 'Andrew Christensen',
+    service: 'Exterior Painting',
+    address: '197 Lancaster Road, Berlin, Massachusetts',
+    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+    notes: 'None',
+  });
+}
+
+test('one authoritative state advances through the required field order exactly once', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+
+  let action = analyzedTurn(conversation, 'I need the exterior of my house painted.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  assert.match(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().pendingField, 'name');
+
+  action = analyzedTurn(conversation, 'Andrew Christensen works.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  assert.match(action.text, /full project address/i);
+  assert.equal(conversation.snapshot().pendingField, 'address');
+
+  action = analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.match(action.text, /day or date/i);
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+
+  action = analyzedTurn(conversation, 'Tuesday at 1.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '1' },
+  });
+  assert.match(action.text, /notes or questions/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+
+  action = analyzedTurn(conversation, 'No.', { notes_complete: true });
+  assert.match(action.text, /consent to being contacted/i);
+  assert.equal(conversation.snapshot().pendingField, 'consent');
+
+  action = analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
+  assert.equal(action.type, 'prepare');
+  assert.deepEqual(conversation.snapshot().completed, {
+    service: true,
+    name: true,
+    address: true,
+    schedule: true,
+    notes: true,
+    consent: true,
+  });
+});
+
+test('a reaction or unfinished thought stays silent and cannot complete service', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  assert.deepEqual(analyzedTurn(conversation, 'Oh.'), { type: 'wait', preserve: false });
+  assert.deepEqual(analyzedTurn(conversation, 'Um...'), { type: 'wait', preserve: true });
+  assert.equal(conversation.snapshot().pendingField, 'service');
+});
+
+test('conversation repair repeats only the genuinely pending question', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  const action = analyzedTurn(conversation, 'What was the question?');
+  assert.equal(action.type, 'speak');
+  assert.equal(action.text, 'Do you have any notes or questions for the business?');
+  assert.equal(conversation.snapshot().notes.length, 0);
+});
+
+test('several caller-provided fields in one turn are retained without skipping the next missing field', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'I need exterior painting. My name is Andrew Christensen, the address is 197 Lancaster Road, Berlin, Massachusetts, and Tuesday at 2 works.';
+  const action = analyzedTurn(conversation, transcript, {
+    service_status: 'complete',
+    address_status: 'complete',
+    fields: {
+      service: 'Exterior Painting',
+      name: 'Andrew Christensen',
+      address: '197 Lancaster Road, Berlin, Massachusetts',
+      preferred_date: 'Tuesday',
+      preferred_time: '2',
+    },
+  });
+  assert.match(action.text, /notes or questions/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('partial addresses stay pending and later fragments combine without invented geography', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', { fields: { name: 'Andrew Christensen' } });
+
+  let action = analyzedTurn(conversation, '197 Lancaster Road.', {
+    address_status: 'partial',
+  });
+  assert.equal(action.text, 'What city or town and state is that in?');
+  assert.equal(conversation.snapshot().pendingField, 'address');
+
+  action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.match(action.text, /day or date/i);
+  assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
+});
+
+test('caller evidence prevents names and addresses from being copied from business data', () => {
+  assert.equal(isGroundedInCallerEvidence('Andrew Christensen', ['Andrew Christensen works.']), true);
+  assert.equal(isGroundedInCallerEvidence('197 Lancaster Road', ['The address is 197 Lancaster Road.']), true);
+  assert.equal(isGroundedInCallerEvidence('Alex Owner', ['I need exterior painting.']), false);
+  assert.equal(isGroundedInCallerEvidence('999 Invented Street', ['197 Lancaster Road.']), false);
+});
+
+test('a grounded project phrase still cannot be mislabeled as the caller name', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  const action = analyzedTurn(conversation, 'A couple rooms painted.', {
+    fields: { name: 'A couple rooms painted' },
+  });
+  assert.equal(conversation.snapshot().values.name, '');
+  assert.match(action.text, /what name should I use/i);
+});
+
+test('bare hours are accepted for every day when business hours resolve AM or PM', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const action = completeThroughSchedule(conversation);
+  assert.match(action.text, /notes or questions/i);
+  assert.equal(conversation.snapshot().values.preferredTime, '1');
+});
+
+test('an unavailable day stays pending with a useful replacement question', () => {
+  const context = {
+    ...CONTEXT,
+    estimateWeekdays: ['monday'],
+  };
+  const conversation = createReceptionistConversation({ context });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', { fields: { name: 'Andrew Christensen' } });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  const action = analyzedTurn(conversation, 'Tuesday, August 11, 2099 at 2 PM.', {
+    fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
+  });
+  assert.match(action.text, /available on Monday/i);
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.equal(conversation.snapshot().values.preferredDate, '');
+});
+
+test('a project statement with a conversational question tag remains a note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  const note = 'The shed is rotted out a bit, so please avoid damaging it further, you know what I mean?';
+  const action = analyzedTurn(conversation, note, {
+    project_note: note,
+    business_answer_status: 'answerable',
+    business_support: 'Monday through Friday',
+  });
+  assert.match(action.text, /other notes or questions/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.doesNotMatch(action.text, /business information/i);
+  assert.deepEqual(conversation.snapshot().notes, [note]);
+});
+
+test('an indirect business question is still recognized without a question mark', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'I was wondering what days you are open';
+  const action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'answerable',
+    business_support: 'Monday through Friday',
+  });
+  assert.match(action.text, /business information, Monday through Friday/i);
+  assert.match(action.text, /what kind of work/i);
+});
+
+test('a grounded business question is answered and the pending field remains pending', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'What days are you open?';
+  const action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'answerable',
+    business_support: 'Monday through Friday',
+  });
+  assert.match(action.text, /business information, Monday through Friday/i);
+  assert.match(action.text, /what kind of work/i);
+  assert.equal(conversation.snapshot().pendingField, 'service');
+  assert.equal(conversation.snapshot().notes.length, 0);
+});
+
+test('an unsupported business question is not answered from general knowledge and is saved once', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'How long does it take to paint a shed?';
+  const action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+  });
+  assert.match(action.text, /I don't know that/i);
+  assert.match(action.text, /what kind of work/i);
+  assert.deepEqual(conversation.snapshot().notes, [transcript]);
+});
+
+test('a claimed business answer without exact supplied support is rejected', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'Do you guarantee the work?';
+  const action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'answerable',
+    business_support: 'All work has a lifetime guarantee',
+  });
+  assert.match(action.text, /I don't know that/i);
+  assert.doesNotMatch(action.text, /lifetime guarantee/i);
+});
+
+test('notes cannot be skipped until the caller explicitly completes that step', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  let action = analyzedTurn(conversation, 'The back wall has peeling paint.', {
+    project_note: 'The back wall has peeling paint.',
+    contact_consent: 'yes',
+  });
+  assert.match(action.text, /other notes or questions/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+
+  action = analyzedTurn(conversation, 'No more.', { notes_complete: true });
+  assert.match(action.text, /consent to being contacted/i);
+  assert.doesNotMatch(action.text, /thanks for the notes/i);
+  assert.equal(conversation.snapshot().pendingField, 'consent');
+});
+
+test('an explicit mid-call correction updates a locked field without changing the flow order', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  const transcript = 'Actually, use 117 Lancaster Road, Berlin, Massachusetts.';
+  const action = analyzedTurn(conversation, transcript, {
+    correction_field: 'address',
+    address_status: 'complete',
+    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+  assert.match(action.text, /notes or questions/i);
+});
+
+test('contact permission cannot confirm the final summary', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  const consent = analyzedTurn(conversation, 'Yes.', {
+    contact_consent: 'yes',
+    summary_confirmation: 'yes',
+  });
+  assert.equal(consent.type, 'prepare');
+  assert.notEqual(consent.type, 'submit');
+});
+
+test('the analyzer\'s explicit consent refusal wins over a misleading leading yes', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  analyzedTurn(conversation, 'No notes.', { notes_complete: true });
+  const action = analyzedTurn(conversation, 'Yes—actually, do not contact me.', {
+    contact_consent: 'no',
+  });
+  assert.equal(action.type, 'end');
+  assert.equal(conversation.snapshot().phase, 'ending');
+});
+
+test('summary corrections replace only the corrected field and require another readback', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeToSummary(conversation);
+  const transcript = 'No, the address is 117 Lancaster Road, Berlin, Massachusetts.';
+  const action = analyzedTurn(conversation, transcript, {
+    summary_confirmation: 'no',
+    correction_field: 'address',
+    address_status: 'complete',
+    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.equal(action.type, 'prepare');
+  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
+  assert.equal(conversation.snapshot().values.name, 'Andrew Christensen');
+});
+
+test('a summary correction wins over a leading yes and cannot accidentally submit', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeToSummary(conversation);
+  const transcript = 'Yes, but the address is 117 Lancaster Road, Berlin, Massachusetts.';
+  const action = analyzedTurn(conversation, transcript, {
+    summary_confirmation: 'yes',
+    correction_field: 'address',
+    address_status: 'complete',
+    fields: { address: '117 Lancaster Road, Berlin, Massachusetts' },
+  });
+  assert.equal(action.type, 'prepare');
+  assert.equal(conversation.snapshot().phase, 'preparing');
+  assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
+});
+
+test('correcting only the summary time preserves the already confirmed day', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeToSummary(conversation);
+  const action = analyzedTurn(conversation, 'No, make that 3 PM.', {
+    summary_confirmation: 'no',
+    correction_field: 'schedule',
+    fields: { preferred_time: '3 PM' },
+  });
+  assert.equal(action.type, 'prepare');
+  assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
+  assert.equal(conversation.snapshot().values.preferredTime, '3 PM');
+});
+
+test('only a separate yes to the complete readback permits submission', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeToSummary(conversation);
+  const action = analyzedTurn(conversation, 'Yes, that all sounds right.', {
+    summary_confirmation: 'yes',
+  });
+  assert.deepEqual(action, { type: 'submit' });
+  assert.equal(conversation.snapshot().phase, 'submitting');
+});
+
+test('summary speech omits empty notes and includes actual notes once', () => {
+  const base = {
+    name: 'Andrew Christensen',
+    service: 'Exterior Painting',
+    address: '197 Lancaster Road, Berlin, Massachusetts',
+    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+  };
+  const empty = buildSummarySpeech({ ...base, notes: 'None' });
+  assert.doesNotMatch(empty, /notes/i);
+  assert.match(empty, /Does that all sound right\?$/);
+
+  const withNotes = buildSummarySpeech({ ...base, notes: 'The back wall has peeling paint.' });
+  assert.equal((withNotes.match(/back wall has peeling paint/gi) || []).length, 1);
+});
+
+test('refusing contact permission ends without preparing or submitting', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+  analyzedTurn(conversation, 'No notes.', { notes_complete: true });
+  const action = analyzedTurn(conversation, 'No, do not contact me.', { contact_consent: 'no' });
+  assert.equal(action.type, 'end');
+  assert.match(action.text, /can't submit/i);
+  assert.equal(conversation.snapshot().phase, 'ending');
+});
