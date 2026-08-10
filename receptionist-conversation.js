@@ -224,11 +224,12 @@ function projectNoteTokens(value) {
 }
 
 const SERVICE_NOTE_GENERIC_WORDS = new Set([
-  'am', 'are', 'can', 'could', 'done', 'get', 'go', 'gonna', 'help', 'hope', "i'm",
+  'actually', 'am', 'are', 'basically', 'believe', 'can', 'could', 'done', 'figure',
+  'get', 'go', 'gonna', 'guess', 'help', 'hope', "i'm",
   "i've", 'job',
   'just', 'kind', 'like',
   'look', 'maybe', 'need', 'okay', 'ok', 'please', 'probably', 'project', 'sorry',
-  'somebody', 'someone', 'sort', 'try', 'uh', 'um', 'want', 'well', 'work', 'yeah',
+  'somebody', 'someone', 'sort', 'suppose', 'think', 'try', 'uh', 'um', 'want', 'well', 'work', 'yeah',
   'yes', 'will', 'would', "we're", "we've",
 ]);
 
@@ -255,13 +256,60 @@ const PROJECT_NOTE_ACTION_PATTERN = new RegExp(
   'i',
 );
 
+const PROJECT_NOTE_NEEDED_ACTIONS = Object.freeze({
+  ...PROJECT_NOTE_ACTIONS,
+  building: 'Build',
+  cleaning: 'Clean',
+  fixing: 'Fix',
+  inspecting: 'Inspect',
+  installing: 'Install',
+  painting: 'Paint',
+  rebuilding: 'Rebuild',
+  remodeling: 'Remodel',
+  renovating: 'Renovate',
+  repairing: 'Repair',
+  repainting: 'Repaint',
+  replacing: 'Replace',
+  servicing: 'Service',
+  staining: 'Stain',
+  trimming: 'Trim',
+});
+
+const PROJECT_NOTE_NEED_PATTERN = new RegExp(
+  `^(.+?)\\s+(?:needs?|wants?)\\s+(?:to\\s+be\\s+)?(${Object.keys(PROJECT_NOTE_NEEDED_ACTIONS).join('|')})[.!?]*$`,
+  'i',
+);
+
+function normalizedProjectObject(value) {
+  let object = cleanText(value)
+    .replace(/^(?:wants?|needs?)\s+/i, '')
+    .replace(/^(?:my|our|his|her|their)\s+couple(?:\s+of)?\b/i, 'a couple of')
+    .replace(/\b(?:my|our|his|her|their)\b/gi, 'the')
+    .replace(/^couple\s+(?:of\s+)?/i, 'a couple of ')
+    .replace(/^a\s+couple\s+(?!of\b)/i, 'a couple of ')
+    .replace(/^whole\b/i, 'the whole')
+    .replace(/\bthe\s+the\b/gi, 'the')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!object) return '';
+  object = `${object[0].toLowerCase()}${object.slice(1)}`;
+  return object;
+}
+
+function projectActionSentence(action, objectValue) {
+  const object = normalizedProjectObject(objectValue);
+  return object ? `${action} ${object}.` : '';
+}
+
 function cleanedProjectNoteSentence(value) {
   let note = cleanText(value)
     .replace(/^(?:(?:i'm|i am) sorry[,;.! ]*)/i, '')
-    .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like)[,;.! ]+)+/i, '')
+    .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like|actually|basically)[,;.! ]+)+/i, '')
+    .replace(/^(?:i|we)\s+(?:think|guess|suppose|believe|figure)(?:\s+that)?\s+/i, '')
+    .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?thinking\s+(?:about\s+)?(?:getting|having)?\s*/i, '')
     .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+see\s+if\s+(?:i|we)\s+could\s+(?:get|have)\s+/i, '')
     .replace(/^(?:i|we)(?:'m| am|'re| are)\s+(?:gonna|going to)\s+(?:need|want)(?:\s+to)?[,; ]+/i, '')
-    .replace(/^(?:i|we)\s+(?:need|want)(?:\s+to)?[,; ]+/i, '')
+    .replace(/^(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+(?:get|have)[,; ]+/i, '')
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '')
@@ -270,18 +318,20 @@ function cleanedProjectNoteSentence(value) {
     .trim();
   if (!note) return '';
 
+  const neededAction = note.match(PROJECT_NOTE_NEED_PATTERN);
+  if (neededAction) {
+    return projectActionSentence(
+      PROJECT_NOTE_NEEDED_ACTIONS[neededAction[2].toLowerCase()],
+      neededAction[1],
+    );
+  }
+
   const action = note.match(PROJECT_NOTE_ACTION_PATTERN);
-  if (action && !/\b(?:is|are|was|were|be|been|being|has|have|had)\s*$/i.test(action[1])) {
-    let object = cleanText(action[1])
-      .replace(/^(?:wants?|needs?)\s+/i, '')
-      .replace(/^(?:my|our|his|her|their)\s+couple\b/i, 'a couple')
-      .replace(/^(?:my|our|his|her|their)\b/i, 'the')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (object) {
-      object = `${object[0].toLowerCase()}${object.slice(1)}`;
-      return `${PROJECT_NOTE_ACTIONS[action[2].toLowerCase()]} ${object}.`;
-    }
+  if (action && !/\b(?:is|are|was|were|be|been|being|has|have|had)\b/i.test(action[1])) {
+    return projectActionSentence(
+      PROJECT_NOTE_ACTIONS[action[2].toLowerCase()],
+      action[1],
+    );
   }
 
   note = `${note[0].toUpperCase()}${note.slice(1)}`;
@@ -295,6 +345,16 @@ function cleanedServiceTurnNote(value) {
     .filter(Boolean)
     .join(' ')
     .trim();
+}
+
+function isLowQualityProjectNote(value) {
+  const text = normalized(value);
+  if (!text) return true;
+  if (/\b(?:i mean|you know|like)\b/.test(text)) return true;
+  const actionWords = text.match(
+    /\b(?:build|built|clean|cleaned|fix|fixed|install|installed|paint|painted|repaint|repainted|repair|repaired|replace|replaced|service|serviced|stain|stained)\b/g,
+  ) || [];
+  return actionWords.length > 1;
 }
 
 function serviceTurnProjectNote(value, serviceName, context = {}) {
@@ -627,8 +687,8 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Only classify business questions while AUTHORITATIVE_CALL_STATE.pendingField is notes, except an estimate-request-window question may be classified while schedule is pending. During service, name, address, or consent collection, keep business_answer_status=not_a_question, business_question empty, and business_question_type=none; focus only on the pending estimate field and extra project details. The server separately handles identity, field-reason, hold, and conversation-repair controls.',
     'When notes are pending, classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Set business_question_type to service_count for the number of offered services, service_list for which services are offered, lead_response_time for how long the business takes to reply after submission, estimate_request_window for accepted estimate-request days/times, and other only for another actual information request. Never use other merely because an intake answer is unfamiliar. Tolerate transcription mistakes in the business name.',
     'Write business_question as one short, direct, grammatical question. Remove fillers, false starts, conversational lead-ins, and repeated versions of the same question. Do not copy a messy transcript verbatim. Preserve the substantive meaning and do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
-    'Write project_note as a concise owner-facing action or condition statement, not a transcript. Fix broken grammar, remove filler and repeated ideas, and preserve all useful scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step. Prefer the caller\'s substantive words and rearrange them rather than replacing them with unsupported synonyms. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
-    'Use background_speech only when the caller is clearly talking to someone else and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first.',
+    'Write project_note as a concise owner-facing action or condition statement, not a transcript. Fix broken grammar, remove filler and repeated ideas, and preserve all useful scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step. Prefer the caller\'s exact concrete nouns and work action, rearranging them rather than replacing them with synonyms such as changed, serviced, or repaired unless the caller actually used that meaning. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
+    'Use background_speech when the caller is talking to someone else or making an unrelated self-directed remark and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first. When AUTHORITATIVE_CALL_STATE.holdActive is true, be especially strict: unrelated speech remains background_speech and only a relevant answer, correction, business question, or explicit statement that the caller is ready ends the hold.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
     `LATEST_CALLER_TRANSCRIPT=${JSON.stringify(cleanText(callerTranscript))}`,
@@ -1206,7 +1266,14 @@ export function createReceptionistConversation({ context }) {
     }
 
     const serviceWasMissing = !values.service;
-    let projectNoteAdded = collectingCorrection === 'schedule'
+    const hasOtherStructuredField = Boolean(
+      analysis.fields.name
+      || analysis.fields.address
+      || analysis.fields.preferred_date
+      || analysis.fields.preferred_time,
+    );
+    const preferCodeOwnedServiceNote = serviceWasMissing && !hasOtherStructuredField;
+    let projectNoteAdded = collectingCorrection === 'schedule' || preferCodeOwnedServiceNote
       ? false
       : addGroundedProjectNote(
         analysis.project_note,
@@ -1221,23 +1288,25 @@ export function createReceptionistConversation({ context }) {
       };
     }
 
-    const hasOtherStructuredField = Boolean(
-      analysis.fields.name
-      || analysis.fields.address
-      || analysis.fields.preferred_date
-      || analysis.fields.preferred_time,
-    );
     if (
       serviceWasMissing
       && values.service
-      && !projectNoteAdded
       && !hasOtherStructuredField
     ) {
-      projectNoteAdded = addGroundedProjectNote(
+      const codeOwnedNote = groundedProjectNote(
         serviceTurnProjectNote(transcript, values.service, context),
         transcript,
         dateCandidate,
       );
+      const analyzedNote = groundedProjectNote(
+        analysis.project_note,
+        transcript,
+        dateCandidate,
+      );
+      const preferredNote = codeOwnedNote && !isLowQualityProjectNote(codeOwnedNote)
+        ? codeOwnedNote
+        : (analyzedNote || codeOwnedNote);
+      projectNoteAdded = preferredNote ? addNote(preferredNote) : false;
     }
 
     const changed = correctionResult.changed || applied.changed;
@@ -1253,6 +1322,9 @@ export function createReceptionistConversation({ context }) {
       return { type: 'speak', text: joinSpeech(question.prefix, followup) };
     }
     if (!changed && analysis.service_status === 'ambiguous' && before === 'service') {
+      return { type: 'speak', text: joinSpeech(question.prefix, 'Could you tell me a little more about the work you need done?') };
+    }
+    if (!changed && analysis.service_status === 'complete' && before === 'service') {
       return { type: 'speak', text: joinSpeech(question.prefix, 'Could you tell me a little more about the work you need done?') };
     }
     if (!changed && !projectNoteAdded && !question.hadQuestion) {
