@@ -118,6 +118,7 @@ function analysis(overrides = {}) {
     summary_confirmation: 'not_answered',
     correction_field: 'none',
     business_answer_status: 'not_a_question',
+    business_question: '',
     business_support: '',
     ...rest,
     fields: {
@@ -701,6 +702,57 @@ test('a missing analysis tool call retries and then asks the pending question in
       includeTool: false,
     });
     assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('analysis uses a larger token budget and safely handles repeated output-limit failures', async () => {
+  const h = await createHarness();
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'token-budget-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    const question = 'I just asked how long will it take for the job to get done.';
+    caller(h.socket, question, 'caller-token-budget');
+
+    const initialAnalysis = latestResponse(h.socket);
+    assert.equal(initialAnalysis.response.max_output_tokens, 2_048);
+    assert.equal(initialAnalysis.response.tool_choice.name, 'analyze_caller_turn');
+
+    h.socket.receive({ type: 'response.created', response: { id: 'analysis-token-limit-one' } });
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'analysis-token-limit-one',
+        status: 'incomplete',
+        status_details: { reason: 'max_output_tokens' },
+        output: [],
+      },
+    });
+    await nextTurn();
+    assert.equal(latestResponse(h.socket).response.max_output_tokens, 4_096);
+
+    h.socket.receive({ type: 'response.created', response: { id: 'analysis-token-limit-two' } });
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'analysis-token-limit-two',
+        status: 'incomplete',
+        status_details: { reason: 'max_output_tokens' },
+        output: [],
+      },
+    });
+    await nextTurn();
+    await nextTurn();
+
+    assert.match(latestResponse(h.socket).response.instructions, /I don't know that/i);
+    assert.match(latestResponse(h.socket).response.instructions, /add that question to the notes/i);
+    assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/i);
+    assert.deepEqual(h.receptionist.snapshot().state.notes, [question]);
+    assert.equal(h.errors.length, 2);
+    assert.match(h.errors[0].message, /max_output_tokens/i);
   } finally {
     h.restore();
   }
