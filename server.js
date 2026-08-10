@@ -4,7 +4,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildArcRuntimeForward } from './arc-runtime.js';
 import { createBusinessContext } from './business-context.js';
-import { createGuardedOpenAiReceptionist as createOpenAiReceptionist } from './receptionist-output-guard.js';
+import { createOpenAiReceptionist } from './openai-receptionist.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
@@ -412,6 +412,10 @@ wss.on('connection', (telnyx, request) => {
       onGoodbyeComplete: finishAfterGoodbye,
       onCostLimit: ({ reason }) => stopForCostLimit(call, reason),
       onUsage: (usage) => { call.openAiUsage = usage; },
+      onLatency: (latency) => console.log('[Call latency]', JSON.stringify({
+        callControlId: call.id,
+        ...latency,
+      })),
       onError: (error) => console.error('[Receptionist error]', error.message),
     });
     call.receptionist = receptionist;

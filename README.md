@@ -4,31 +4,38 @@ This Railway service connects Telnyx calls to an OpenAI Realtime receptionist. T
 
 ## Conversation behavior
 
-The receptionist opens with two clear paths: filling out an estimate request (its primary objective) or answering a question about the business. It does not force an estimate on callers who only want information, and it never advertises unsupported topics such as pricing or availability.
+The receptionist follows one server-owned intake sequence for every configured business:
 
-During intake it asks exactly one question per turn. Date and time are treated as one scheduling question, while additional notes and contact consent are always separate questions. It records the address exactly as the caller gives it without interrupting the flow for a separate address readback.
-
-For an estimate, it collects:
-
-1. Website service
+1. Service
 2. Caller name
-3. Project address
-4. Preferred estimate date
-5. Preferred estimate time
-6. Optional additional notes
-7. Explicit consent for the business to contact the caller
+3. Full project address
+4. Preferred estimate day or date and time
+5. Notes or questions for the business
+6. Standalone consent to be contacted
+7. Final readback and separate caller confirmation
+8. Submission result, goodbye, and hangup
 
-The server blocks summary preparation unless the notes-question and standalone-consent gates are complete. It converts relative dates such as `Tuesday` into an exact `YYYY-MM-DD` date in the business timezone and rejects requests outside the estimate weekdays or start-time range supplied by ARC. The final readback includes only the caller's name, service, address, exact date and time, and notes; it does not repeat contact consent. The caller must explicitly confirm that summary before the server permits submission. On that confirmation it says it is submitting the request, then sends it.
+One conversation controller owns all completed fields and the current step. The language model interprets the caller's natural speech, but it cannot reorder the flow, reopen a completed field, prepare a summary, submit a request, or end the call. If the caller volunteers several details together, all grounded details are retained and the receptionist asks only for the next missing field.
 
-Incoming audio uses OpenAI's far-field noise reduction for callers speaking from farther away or on speakerphone. Voice activity detection keeps 500 milliseconds before speech starts so initial words are less likely to be clipped, and it responds after 500 milliseconds of silence to reduce turn latency.
+General language understanding is used for names, addresses, dates, times, corrections, unfinished thoughts, and matching requested work to the business's supplied services. Business, trade, price, duration, method, policy, and availability answers must have an exact supporting fact in ARC-provided business information. The server speaks that supplied fact. If no support exists, the receptionist says it does not know, saves the caller's actual question once in the notes, and resumes the same intake step.
 
-After ARC successfully accepts the request, the receptionist says only that the request was successfully submitted and asks whether the caller has any other questions. The live OpenAI session is updated with no intake tools. For the remainder of the call, it answers only questions the caller actually asks and only from website data, or uses the dedicated end-call tool. When the caller says they have no more questions, it gives a short goodbye, waits for that audio to finish playing, and hangs up.
+Notes and business questions are separate meanings. A project detail ending in a conversational phrase such as “you know what I mean?” remains a note. After a note is acknowledged, later turns do not repeat or paraphrase it. Empty notes are omitted from the final readback.
+
+The server normalizes relative dates such as `Tuesday` in the business timezone and rejects requests outside ARC-supplied estimate days or start-time ranges. A bare hour such as `1` is inferred as AM or PM only when exactly one interpretation fits that range; otherwise the receptionist asks which one the caller means.
+
+After notes and standalone contact consent are complete, the server prepares the final readback. Contact consent cannot double as summary confirmation. The caller must separately confirm the complete readback before submission. The receptionist then says it is submitting, performs one idempotent ARC write, reports success or failure, says goodbye, waits for the audio playback mark, and hangs up. There is no post-submission question mode.
+
+## Turn taking and recovery
+
+Incoming audio uses far-field noise reduction and high-eagerness semantic voice activity detection. OpenAI does not automatically create or interrupt responses: caller turns are analyzed by the server-controlled flow, and caller speech never cancels receptionist audio. Speech captured while the receptionist is talking is queued and handled after that response finishes.
+
+The implementation does not generate a response and then delete or suppress it. Meaningful caller turns first use one forced, silent analysis tool call; the controller then requests only the exact next spoken turn. Split caller phrases are recombined even if the first analysis has finished. Reactions and unfinished thoughts do not advance a field, and an abandoned fragment receives a delayed re-prompt instead of leaving the line silent. Missing tool calls, failed transcription, and failed speech responses also have bounded recovery paths.
 
 ## Cost controls
 
 The default model is `gpt-realtime-2.1-mini`. The service also applies four independent protections:
 
-- A normal response target of about 256 output tokens, with a hard maximum of 800 so important answers and estimate readbacks are not cut off
+- Maximum 800 output tokens per model response so important estimate readbacks are not cut off
 - Maximum 2,500 post-instruction conversation tokens retained per response
 - Maximum 40 AI responses per call
 - Maximum 8-minute call duration
@@ -39,19 +46,20 @@ When Telnyx reports the call ended, Railway logs one `[Call OpenAI usage]` recor
 
 Railway also logs each completed caller and receptionist utterance as `[Call transcript line]`, then logs the full ordered call as `[Call transcript]` when the call ends. Caller lines are automatic speech-recognition transcripts; receptionist lines are the generated audio transcripts. These logs contain caller-provided personal information such as names and addresses, so access to Railway logs should stay restricted.
 
+For each substantive caller turn, Railway logs `[Call latency]` with speech-stop-to-transcript time, speech-stop-to-first-audio time, caller-transcript-to-first-audio time, silent analysis time, and speech-generation time. These measurements separate transcription delay from model analysis and audio generation.
+
 ## Call flow
 
 ```mermaid
 flowchart TD
     A[Telnyx incoming call] --> B[Load website data from ARC]
     B --> C[Open PCMU media stream]
-    C --> D[Answer questions or collect estimate]
-    D --> E[Collect notes and consent]
-    E --> J[Normalize date and prepare summary]
-    J --> F{Caller confirms?}
-    F -- No, correction --> D
-    F -- Yes --> G[Send once to ARC]
-    G --> H[Questions-only mode]
+    C --> D[Collect six intake steps in order]
+    D --> E[Normalize and prepare readback]
+    E --> F{Caller confirms?}
+    F -- Correction --> D
+    F -- Yes --> G[Announce and send once to ARC]
+    G --> H[Report result]
     H --> I[Goodbye and hang up]
 ```
 
@@ -72,8 +80,9 @@ OPENAI_REALTIME_MODEL          # defaults to gpt-realtime-2.1-mini
 OPENAI_VOICE                   # defaults to marin
 OPENAI_TRANSCRIPTION_MODEL     # defaults to gpt-4o-mini-transcribe
 OPENAI_TRANSCRIPTION_LANGUAGE  # defaults to en
+OPENAI_INCOMPLETE_TURN_RECOVERY_MS # defaults to 1800
 BUSINESS_TIME_ZONE             # fallback only; defaults to America/New_York
-OPENAI_MAX_OUTPUT_TOKENS       # defaults to 800; prompt normally targets about 256
+OPENAI_MAX_OUTPUT_TOKENS       # defaults to 800
 OPENAI_CONTEXT_TOKEN_LIMIT     # defaults to 2500
 OPENAI_CONTEXT_RETENTION_RATIO # defaults to 0.7
 OPENAI_MAX_RESPONSES_PER_CALL  # defaults to 40
