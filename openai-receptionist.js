@@ -13,6 +13,7 @@ import {
   SUBMISSION_START_RESPONSE,
   SUBMISSION_SUCCESS_RESPONSE,
   UNCLEAR_CALLER_RESPONSE,
+  isHoldResume,
   looksLikeBusinessQuestion,
   spokenBusinessName,
 } from './receptionist-policy.js';
@@ -324,6 +325,7 @@ export function createOpenAiReceptionist({
   let pendingCallerFragment = '';
   let callerSpeechActive = false;
   let holdActive = false;
+  let holdDeadlineAt = 0;
   let receptionistPlaybackEndAt = 0;
   let currentPlayback = null;
   let work = Promise.resolve();
@@ -352,6 +354,11 @@ export function createOpenAiReceptionist({
     incompleteTurnTimer = null;
   }
 
+  function clearHoldState() {
+    holdActive = false;
+    holdDeadlineAt = 0;
+  }
+
   function rememberCallerFragment(value) {
     const fragment = cleanText(value);
     if (!fragment) return;
@@ -378,7 +385,7 @@ export function createOpenAiReceptionist({
         return;
       }
       pendingCallerFragment = '';
-      if (endHold) holdActive = false;
+      if (endHold) clearHoldState();
       requestSpeech(cleanText(text) || conversation.bareQuestion(), { yieldToCaller });
     }, effectiveDelayMs + playbackRemainingMs);
     incompleteTurnTimer.unref?.();
@@ -388,8 +395,19 @@ export function createOpenAiReceptionist({
     scheduleIncompleteTurnRecovery(text, delayMs, { yieldToCaller: true });
   }
 
-  function scheduleHoldRecovery() {
-    scheduleIncompleteTurnRecovery('Are you still there?', holdDelayMs, { endHold: true });
+  function scheduleHoldRecovery({ restart = false } = {}) {
+    const playbackRemainingMs = Math.max(0, receptionistPlaybackEndAt - Date.now());
+    if (restart || !holdDeadlineAt) {
+      holdDeadlineAt = Date.now() + playbackRemainingMs + holdDelayMs;
+    }
+    const remainingMs = Math.max(
+      50,
+      holdDeadlineAt - Date.now() - playbackRemainingMs,
+    );
+    scheduleIncompleteTurnRecovery('Are you still there?', remainingMs, {
+      endHold: true,
+      yieldToCaller: true,
+    });
   }
 
   function scheduleCallerSilenceRecovery(delayMs = recoveryDelayMs) {
@@ -548,7 +566,7 @@ export function createOpenAiReceptionist({
     const speech = cleanText(text);
     if (!speech || closed) return false;
     clearIncompleteTurnRecovery();
-    holdActive = false;
+    if (after !== 'hold') clearHoldState();
     const tokenOverride = Number.isFinite(maxOutputTokens)
       ? { max_output_tokens: Math.max(64, Math.min(4_096, Math.round(maxOutputTokens))) }
       : {};
@@ -601,7 +619,10 @@ export function createOpenAiReceptionist({
         ? 4_096
         : controls.analysisMaxOutputTokens,
       instructions: buildTurnAnalysisInstructions({
-        state: conversation.snapshot(),
+        state: {
+          ...conversation.snapshot(),
+          holdActive,
+        },
         callerTranscript: turn.text,
         context,
       }),
@@ -638,11 +659,17 @@ export function createOpenAiReceptionist({
         };
         pendingCallerFragment = '';
       }
+      if (holdActive && isHoldResume(turn.text)) {
+        clearHoldState();
+        requestSpeech(conversation.bareQuestion(), { turn });
+        return;
+      }
       const preflight = conversation.preflight(turn.text);
       if (preflight.type === 'hold') {
         pendingCallerFragment = '';
         holdActive = true;
-        scheduleHoldRecovery();
+        holdDeadlineAt = 0;
+        requestSpeech('Okay, waiting.', { after: 'hold', turn });
         return;
       }
       if (preflight.type === 'wait') {
@@ -651,7 +678,7 @@ export function createOpenAiReceptionist({
         continue;
       }
       if (preflight.type === 'speak') {
-        holdActive = false;
+        clearHoldState();
         requestSpeech(preflight.text, { turn });
         return;
       }
@@ -727,23 +754,23 @@ export function createOpenAiReceptionist({
       return;
     }
     if (action.type === 'speak') {
-      holdActive = false;
+      clearHoldState();
       requestSpeech(action.text, { turn });
       return;
     }
     if (action.type === 'prepare') {
-      holdActive = false;
+      clearHoldState();
       requestPreparation(turn);
       return;
     }
     if (action.type === 'submit') {
-      holdActive = false;
+      clearHoldState();
       finalizing = true;
       requestSpeech(SUBMISSION_START_RESPONSE, { after: 'submit', turn });
       return;
     }
     if (action.type === 'end') {
-      holdActive = false;
+      clearHoldState();
       finalizing = true;
       requestSpeech(action.text, { after: 'goodbye', turn });
       return;
@@ -888,6 +915,11 @@ export function createOpenAiReceptionist({
       return true;
     }
 
+    if (purpose?.after === 'hold') {
+      scheduleHoldRecovery({ restart: true });
+      return true;
+    }
+
     if (purpose?.after === 'goodbye' || purpose?.after === 'complete') {
       if (purpose.after === 'complete') onGoodbyeComplete?.();
       else requestGoodbye();
@@ -926,6 +958,11 @@ export function createOpenAiReceptionist({
     }
     if (purpose.after === 'complete') {
       onGoodbyeComplete?.();
+      return;
+    }
+    if (purpose.after === 'hold') {
+      dispatchCallerTurn();
+      if (holdActive) scheduleHoldRecovery({ restart: true });
       return;
     }
     dispatchCallerTurn();

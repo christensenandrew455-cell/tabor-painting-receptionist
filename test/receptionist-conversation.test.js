@@ -318,7 +318,37 @@ test('project scope captured earlier stays in notes while the caller is asked on
 
   assert.match(action.text, /Do you have any additional notes and\/or business questions\?/i);
   assert.match(action.text, /business questions/i);
-  assert.deepEqual(conversation.snapshot().notes, ['The two upstairs rooms need painting.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint two upstairs rooms.']);
+});
+
+test('code owns service-note wording and rejects a bad analyzer paraphrase without going silent', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const action = analyzedTurn(
+    conversation,
+    'I think I need a couple of rooms painted.',
+    {
+      service_status: 'complete',
+      project_note: 'Needs rooms changed.',
+      fields: { service: 'Interior Painting' },
+    },
+  );
+
+  assert.equal(action.type, 'speak');
+  assert.match(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().values.service, 'Interior Painting');
+  assert.deepEqual(conversation.snapshot().notes, ['Paint a couple of rooms.']);
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /changed/i);
+});
+
+test('a contradictory complete-service analysis asks for clarification instead of staying silent', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const action = analyzedTurn(conversation, 'I need a couple of rooms done.', {
+    service_status: 'complete',
+  });
+
+  assert.equal(action.type, 'speak');
+  assert.match(action.text, /tell me a little more about the work/i);
+  assert.equal(conversation.snapshot().pendingField, 'service');
 });
 
 test('valid intake answers outrank a false business-question label and extra details become notes', () => {
@@ -569,7 +599,7 @@ test('an invented project detail cannot enter notes even when the analyzer retur
     fields: { service: 'Exterior Painting' },
   });
   assert.equal(conversation.snapshot().values.service, 'Exterior Painting');
-  assert.deepEqual(conversation.snapshot().notes, ['Paint the exterior of my house.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the exterior of the house.']);
   assert.doesNotMatch(conversation.snapshot().notes.join(' '), /detached garage/i);
 });
 

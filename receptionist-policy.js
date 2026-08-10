@@ -141,8 +141,18 @@ export function isConversationRepairRequest(value) {
 export function isHoldRequest(value) {
   const text = normalizedCallerText(value);
   if (!text) return false;
-  return /^(?:please\s+)?(?:wait|hold on|hang on)(?:\s+(?:a|one|just one)?\s*(?:second|sec|moment|minute))?(?:\s+please)?$/.test(text)
-    || /^(?:please\s+)?(?:give me|just|one)\s+(?:a\s+|one\s+)?(?:second|sec|moment|minute)(?:\s+please)?$/.test(text);
+  return /^(?:please\s+)?(?:just\s+)?(?:wait|hold on|hang on|hold up)(?:\s+(?:(?:for|like)\s+)?(?:a|one|just one)?\s*(?:second|sec|moment|minute))?(?:\s+(?:wait|hold on|hang on))?(?:\s+please)?$/.test(text)
+    || /^(?:can|could|would) you (?:please\s+)?(?:just\s+)?(?:wait|hold on|hang on)(?:\s+(?:(?:for|like)\s+)?(?:a|one|just one)?\s*(?:second|sec|moment|minute))?(?:\s+please)?$/.test(text)
+    || /^(?:please\s+)?(?:just\s+)?(?:give me|i need|let me have|let me take)\s+(?:like\s+)?(?:a\s+|one\s+)?(?:second|sec|moment|minute)(?:\s+please)?$/.test(text)
+    || /^(?:please\s+)?(?:just\s+)?(?:a|one)\s+(?:second|sec|moment|minute)(?:\s+please)?$/.test(text)
+    || /^let me (?:think|check|look|find (?:that|it))(?:\s+for\s+(?:a|one)\s+(?:second|sec|moment|minute))?$/.test(text);
+}
+
+export function isHoldResume(value) {
+  const text = normalizedCallerText(value);
+  if (!text) return false;
+  return /^(?:okay\s+|ok\s+|yeah\s+|yes\s+)?(?:i(?:'m| am)\s+)?(?:back|ready|ready now)$/.test(text)
+    || /^(?:okay\s+|ok\s+)?(?:go ahead|i(?:'m| am) good now|we can continue|let's continue)$/.test(text);
 }
 
 export function isExplicitCorrectionRequest(value) {

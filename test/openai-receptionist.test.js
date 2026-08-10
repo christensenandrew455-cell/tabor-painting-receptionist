@@ -571,9 +571,15 @@ test('a hold request waits longer and then asks whether the caller is still ther
     });
     const before = responseCreates(h.socket).length;
     caller(h.socket, 'Hold on one second.', 'caller-hold');
-    assert.equal(responseCreates(h.socket).length, before);
-    await wait(80);
     assert.equal(responseCreates(h.socket).length, before + 1);
+    assert.match(latestResponse(h.socket).response.instructions, /Okay, waiting\./);
+    await finishSpeech(h.socket, {
+      responseId: 'hold-acknowledgement',
+      transcript: 'Okay, waiting.',
+    });
+    const afterAcknowledgement = responseCreates(h.socket).length;
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, afterAcknowledgement + 1);
     assert.match(latestResponse(h.socket).response.instructions, /Are you still there\?/);
   } finally {
     h.restore();
@@ -588,10 +594,87 @@ test('speaking before the hold timeout resumes analysis without a still-there pr
       transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     caller(h.socket, 'Wait a second.', 'caller-hold-before-answer');
+    assert.match(latestResponse(h.socket).response.instructions, /Okay, waiting\./);
+    await finishSpeech(h.socket, {
+      responseId: 'resume-hold-acknowledgement',
+      transcript: 'Okay, waiting.',
+    });
     const beforeAnswer = responseCreates(h.socket).length;
     caller(h.socket, 'I need exterior painting.', 'caller-answer-after-hold');
     assert.equal(responseCreates(h.socket).length, beforeAnswer + 1);
     assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.match(latestResponse(h.socket).response.instructions, /"holdActive":true/);
+    await finishAnalysis(h.socket, {
+      responseId: 'resume-hold-analysis',
+      args: analysis({
+        service_status: 'complete',
+        fields: { service: 'Exterior Painting' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+    await wait(140);
+    assert.equal(
+      responseCreates(h.socket).some((event) => /Are you still there/i.test(event.response?.instructions || '')),
+      false,
+    );
+  } finally {
+    h.restore();
+  }
+});
+
+test('unrelated speech during a hold changes no field and preserves the original hold deadline', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20, holdRecoveryMs: 100 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'background-hold-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    caller(h.socket, 'Wait one second, hold on.', 'background-hold-request');
+    await finishSpeech(h.socket, {
+      responseId: 'background-hold-acknowledgement',
+      transcript: 'Okay, waiting.',
+    });
+
+    await wait(40);
+    caller(h.socket, 'Where did I put that tape?', 'background-hold-speech');
+    const analysisRequest = latestResponse(h.socket);
+    assert.equal(analysisRequest.response.tool_choice.name, 'analyze_caller_turn');
+    assert.match(analysisRequest.response.instructions, /"holdActive":true/);
+    await finishAnalysis(h.socket, {
+      responseId: 'background-hold-analysis',
+      args: analysis({ turn_status: 'background_speech' }),
+    });
+    const afterBackgroundAnalysis = responseCreates(h.socket).length;
+    assert.equal(h.receptionist.snapshot().state.pendingField, 'service');
+
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, afterBackgroundAnalysis + 1);
+    assert.match(latestResponse(h.socket).response.instructions, /Are you still there\?/);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a standalone return from hold immediately repeats the pending question', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 20, holdRecoveryMs: 100 });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'return-hold-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    caller(h.socket, 'Give me a moment.', 'return-hold-request');
+    await finishSpeech(h.socket, {
+      responseId: 'return-hold-acknowledgement',
+      transcript: 'Okay, waiting.',
+    });
+
+    const beforeReturn = responseCreates(h.socket).length;
+    caller(h.socket, "Okay, I'm ready.", 'return-from-hold');
+    assert.equal(responseCreates(h.socket).length, beforeReturn + 1);
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /What kind of work are you looking to have done\?/,
+    );
     await wait(140);
     assert.equal(
       responseCreates(h.socket).some((event) => /Are you still there/i.test(event.response?.instructions || '')),
