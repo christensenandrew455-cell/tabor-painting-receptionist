@@ -12,6 +12,7 @@ import {
   isClearNegative,
   isExplicitCorrectionRequest,
   isHoldRequest,
+  isHoldResume,
   looksLikeBusinessQuestion,
   looksLikeUnfinishedThought,
   requestedFieldExplanation,
@@ -134,10 +135,27 @@ test('recognizes introduced names without treating action phrases as names', () 
 });
 
 test('recognizes hold requests without swallowing an answer that follows one', () => {
-  for (const value of ['Wait.', 'Hold on one second.', 'Hang on a minute.', 'Give me a moment.']) {
+  for (const value of [
+    'Wait.',
+    'Wait one second, hold on.',
+    'Hold on one second.',
+    'Hang on a minute.',
+    'Give me a moment.',
+    'Just give me like a second.',
+    'Can you wait a second?',
+    'Let me check.',
+  ]) {
     assert.equal(isHoldRequest(value), true, value);
   }
   assert.equal(isHoldRequest('Wait—my name is Jordan Smith.'), false);
+  assert.equal(isHoldRequest('Wait, use Tuesday at 2 instead.'), false);
+});
+
+test('recognizes a standalone return from hold without swallowing the answer itself', () => {
+  for (const value of ["I'm back.", 'Okay, ready.', 'Ready now.', 'Go ahead.']) {
+    assert.equal(isHoldResume(value), true, value);
+  }
+  assert.equal(isHoldResume("I'm back, my name is Jordan Smith."), false);
 });
 
 test('recognizes explicit corrections without treating backchannels as corrections', () => {
