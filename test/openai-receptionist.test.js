@@ -290,6 +290,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
 
 test('prompt has one state owner and a short, explicit knowledge boundary', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
+  assert.match(prompt, /only objective is to help the caller complete one service estimate request/i);
   assert.match(prompt, /server owns the intake state, question order, validation, confirmation, submission, and hangup/i);
   assert.match(prompt, /ordinary general knowledge only to understand natural speech/i);
   assert.match(prompt, /only when the supplied business information explicitly supports/i);
