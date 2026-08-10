@@ -356,6 +356,33 @@ test('valid intake answers outrank a false business-question label and extra det
   ]);
 });
 
+test('business-question fallback is disabled before notes and the pending estimate question repeats', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = 'How do you remember?';
+  let action = analyzedTurn(conversation, transcript, {
+    business_answer_status: 'unanswerable',
+    business_question: transcript,
+    business_question_type: 'other',
+  });
+
+  assert.equal(action.text, 'What kind of work are you looking to have done?');
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.deepEqual(conversation.snapshot().notes, []);
+  assert.equal(conversation.snapshot().pendingField, 'service');
+
+  action = analyzedTurn(conversation, 'Uh, get my basement painted.', {
+    service_status: 'complete',
+    business_answer_status: 'unanswerable',
+    business_question: 'Get my basement painted.',
+    business_question_type: 'other',
+    fields: { service: 'Interior Painting' },
+  });
+  assert.match(action.text, /what name should I use/i);
+  assert.doesNotMatch(action.text, /I don't know that/i);
+  assert.equal(conversation.snapshot().values.service, 'Interior Painting');
+  assert.deepEqual(conversation.snapshot().notes, ['Get my basement painted.']);
+});
+
 test('useful service-step scope is retained even when the analyzer omits project_note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(
@@ -481,15 +508,27 @@ test('a question-shaped date request records only a preference and never claims 
 
 test('estimate-window questions use app constraints without promising an open appointment', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', { fields: { name: 'Jordan Smith' } });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
   const action = analyzedTurn(conversation, 'When are you able to do estimates?', {
     business_answer_status: 'unanswerable',
+    business_question: 'When are you able to do estimates?',
+    business_question_type: 'estimate_request_window',
   });
 
   assert.match(action.text, /accepts estimate requests/i);
   assert.match(action.text, /9:00 AM to 4:00 PM/i);
   assert.match(action.text, /business will confirm the appointment/i);
   assert.doesNotMatch(action.text, /available/i);
-  assert.match(action.text, /what kind of work/i);
+  assert.match(action.text, /day or date/i);
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.deepEqual(conversation.snapshot().notes, []);
 });
 
@@ -657,13 +696,15 @@ test('a project statement with a conversational question tag remains a note', ()
 
 test('an indirect business question is still recognized without a question mark', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
   const transcript = 'I was wondering what days you are open';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'answerable',
     business_support: 'Monday through Friday',
   });
   assert.match(action.text, /business information, Monday through Friday/i);
-  assert.match(action.text, /what kind of work/i);
+  assert.match(action.text, /other notes or business questions/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
 test('the analyzer can identify a business question by meaning without a keyword-shaped sentence', () => {
@@ -760,30 +801,33 @@ test('service and callback questions use supplied data while only an unknown dur
 
 test('a grounded business question is answered and the pending field remains pending', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
   const transcript = 'What days are you open?';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'answerable',
     business_support: 'Monday through Friday',
   });
   assert.match(action.text, /business information, Monday through Friday/i);
-  assert.match(action.text, /what kind of work/i);
-  assert.equal(conversation.snapshot().pendingField, 'service');
+  assert.match(action.text, /other notes or business questions/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
   assert.equal(conversation.snapshot().notes.length, 0);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
   const transcript = 'How long does it take to paint a shed?';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'unanswerable',
   });
   assert.match(action.text, /I don't know that/i);
-  assert.match(action.text, /what kind of work/i);
+  assert.match(action.text, /other notes or business questions/i);
   assert.deepEqual(conversation.snapshot().notes, [transcript]);
 });
 
 test('a claimed business answer without exact supplied support is rejected', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
   const transcript = 'Do you guarantee the work?';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'answerable',

@@ -149,7 +149,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
           'estimate_request_window',
           'other',
         ],
-        description: 'The semantic information request: how many services are offered, which services are offered, how long the business takes to respond after an estimate request is submitted, the allowed estimate-request days/times, another actual request for information, or none. An answer to the pending intake question, a caller name, an address, a schedule preference, or a project detail is always none—even if it is indirect, unfamiliar, or spoken with question-like intonation. Classify meaning rather than matching exact words, and tolerate transcription mistakes in the business name.',
+        description: 'The semantic information request: how many services are offered, which services are offered, how long the business takes to respond after an estimate request is submitted, the allowed estimate-request days/times, another actual request for information, or none. Populate this only while notes are pending, except estimate_request_window may be used while schedule is pending. During service, name, address, or consent collection this must be none. An answer to the pending intake question or a project detail is always none—even if it is indirect, unfamiliar, or spoken with question-like intonation. Classify meaning rather than matching exact words, and tolerate transcription mistakes in the business name.',
       },
       business_support: {
         type: 'string',
@@ -567,7 +567,8 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
     'The caller should describe the work naturally. A direct category such as “interior painting” and an indirect description such as “repaint my whole basement” are both service answers when they map to a supplied service. Map that description only to the supplied service list; never assume a painting, HVAC, plumbing, electrical, automotive, carpentry, or other trade that was not supplied for this business.',
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
-    'Classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Set business_question_type to service_count for the number of offered services, service_list for which services are offered, lead_response_time for how long the business takes to reply after submission, estimate_request_window for accepted estimate-request days/times, and other only for another actual information request. Never use other merely because an intake answer is unfamiliar. Tolerate transcription mistakes in the business name.',
+    'Only classify business questions while AUTHORITATIVE_CALL_STATE.pendingField is notes, except an estimate-request-window question may be classified while schedule is pending. During service, name, address, or consent collection, keep business_answer_status=not_a_question, business_question empty, and business_question_type=none; focus only on the pending estimate field and extra project details. The server separately handles identity, field-reason, hold, and conversation-repair controls.',
+    'When notes are pending, classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Set business_question_type to service_count for the number of offered services, service_list for which services are offered, lead_response_time for how long the business takes to reply after submission, estimate_request_window for accepted estimate-request days/times, and other only for another actual information request. Never use other merely because an intake answer is unfamiliar. Tolerate transcription mistakes in the business name.',
     'Put a concise standalone request in business_question using only substantive caller words. Remove fillers and lead-ins such as “yeah,” “um,” “like,” “I was wondering,” and “I just asked,” without changing what the caller wants to know. Do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
     'Set project_note only for extra caller-provided information useful to the business. Preserve scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step—for example, the whole basement needs painting or the project is at the large blue house. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech only when the caller is clearly talking to someone else and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first.',
@@ -817,6 +818,8 @@ export function createReceptionistConversation({ context }) {
       || ((typedQuestion || looksLikeBusinessQuestion(transcript)) ? transcript : ''),
     );
     if (!question) return { prefix: '', hadQuestion: false };
+    const estimateWindowQuestion = analysis.business_question_type === 'estimate_request_window'
+      || isEstimateWindowQuestion(transcript);
     if (
       pendingField() === 'service'
       && analysis.service_status === 'complete'
@@ -825,7 +828,11 @@ export function createReceptionistConversation({ context }) {
     ) {
       return { prefix: '', hadQuestion: false };
     }
-    if (scheduleTurn && !isScheduleRequestQuestion(transcript) && !typedQuestion) {
+    if (
+      scheduleTurn
+      && !isScheduleRequestQuestion(transcript)
+      && !estimateWindowQuestion
+    ) {
       return { prefix: '', hadQuestion: false };
     }
     if (scheduleTurn && isScheduleRequestQuestion(transcript)) {
@@ -844,7 +851,7 @@ export function createReceptionistConversation({ context }) {
     }
     const deterministicAnswer = deterministicBusinessAnswer(analysis, context);
     if (deterministicAnswer) return { prefix: deterministicAnswer, hadQuestion: true };
-    if (isEstimateWindowQuestion(transcript)) {
+    if (estimateWindowQuestion) {
       const answer = estimateWindowSpeech(context);
       if (answer) return { prefix: answer, hadQuestion: true };
     }
@@ -1008,11 +1015,18 @@ export function createReceptionistConversation({ context }) {
     const projectDetailOverridesQuestion = projectDetail
       && !businessQuestionIsDistinctFromProjectNote(analysis, transcript, projectDetail);
     const scheduleRequestQuestion = scheduleTurn && isScheduleRequestQuestion(transcript);
-    const shouldHandleBusinessQuestion = scheduleRequestQuestion || (
+    const scheduleWindowQuestion = before === 'schedule'
+      && (
+        analysis.business_question_type === 'estimate_request_window'
+        || isEstimateWindowQuestion(transcript)
+      );
+    const shouldHandleBusinessQuestion = scheduleRequestQuestion
+      || scheduleWindowQuestion
+      || (before === 'notes' && (
       !callerFinishedNotesBeforeCorrection
       && !hasIntakeAnswer
       && !projectDetailOverridesQuestion
-    );
+      ));
     const question = shouldHandleBusinessQuestion
       ? businessQuestionResult(analysis, transcript, dateCandidate, {
         scheduleTurn,
@@ -1142,7 +1156,9 @@ export function createReceptionistConversation({ context }) {
       return { type: 'speak', text: joinSpeech(question.prefix, 'Could you tell me a little more about the work you need done?') };
     }
     if (!changed && !projectNoteAdded && !question.hadQuestion) {
-      return { type: 'wait', preserve: false };
+      return looksLikeBusinessQuestion(transcript)
+        ? { type: 'speak', text: bareQuestion(before) }
+        : { type: 'wait', preserve: false };
     }
 
     const next = after === before ? bareQuestion(after) : advancingQuestion(after);
