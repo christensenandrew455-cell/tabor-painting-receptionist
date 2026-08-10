@@ -216,7 +216,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
   assert.deepEqual(event.session.audio.input.turn_detection, {
     type: 'semantic_vad',
-    eagerness: 'high',
+    eagerness: 'medium',
     create_response: false,
     interrupt_response: false,
   });
@@ -269,7 +269,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
   try {
     await finishSpeech(h.socket, {
       responseId: 'greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
 
     caller(h.socket, 'I need the exterior of my house painted.', 'caller-service');
@@ -322,7 +322,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.match(latestResponse(h.socket).response.instructions, /additional notes/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-notes',
-      transcript: 'Okay, sounds good. Do you have any additional notes?',
+      transcript: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
     });
 
     caller(h.socket, 'No.', 'caller-notes');
@@ -353,11 +353,11 @@ test('a complete call collects, confirms, submits once, reports success, and end
       responseId: 'analysis-summary',
       args: analysis({ summary_confirmation: 'yes' }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /sending the estimate request in now/i);
+    assert.match(latestResponse(h.socket).response.instructions, /submitting your estimate request now/i);
     assert.equal(deliveries.length, 0);
     await finishSpeech(h.socket, {
       responseId: 'pre-submit',
-      transcript: "Okay, thanks for confirming. I'm sending the estimate request in now.",
+      transcript: "I'm submitting your estimate request now.",
     });
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].payload.service, 'Exterior Painting');
@@ -390,17 +390,20 @@ test('a complete call collects, confirms, submits once, reports success, and end
   }
 });
 
-test('filler creates no model response and does not advance the call', async () => {
+test('a greeting-only caller turn cannot advance the work question', async () => {
   const h = await createHarness();
   try {
     await finishSpeech(h.socket, {
       responseId: 'filler-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     const before = responseCreates(h.socket).length;
-    caller(h.socket, 'Oh.', 'caller-filler');
+    caller(h.socket, 'Hey.', 'caller-filler');
     assert.equal(responseCreates(h.socket).length, before);
     assert.equal(h.receptionist.snapshot().state.pendingField, 'service');
+    caller(h.socket, 'I was looking to get the exterior of my house painted.', 'caller-service-after-hello');
+    assert.equal(responseCreates(h.socket).length, before + 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
   } finally {
     h.restore();
   }
@@ -411,14 +414,14 @@ test('an abandoned filler turn gets a delayed prompt instead of indefinite silen
   try {
     await finishSpeech(h.socket, {
       responseId: 'recovery-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     const before = responseCreates(h.socket).length;
     caller(h.socket, 'Um...', 'caller-abandoned-filler');
     assert.equal(responseCreates(h.socket).length, before);
     await wait(80);
     assert.equal(responseCreates(h.socket).length, before + 1);
-    assert.match(latestResponse(h.socket).response.instructions, /What kind of work do you need done/);
+    assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/);
   } finally {
     h.restore();
   }
@@ -429,13 +432,13 @@ test('ordinary caller silence repeats only the pending question', async () => {
   try {
     await finishSpeech(h.socket, {
       responseId: 'silent-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     const before = responseCreates(h.socket).length;
     await wait(80);
     assert.equal(responseCreates(h.socket).length, before + 1);
     const instruction = latestResponse(h.socket).response.instructions;
-    assert.match(instruction, /What kind of work do you need done\?/);
+    assert.match(instruction, /What kind of work are you looking to have done\?/);
     assert.doesNotMatch(instruction, /thank you for calling/i);
   } finally {
     h.restore();
@@ -447,7 +450,7 @@ test('the silence timer does not begin before generated receptionist audio can f
   try {
     await finishSpeech(h.socket, {
       responseId: 'playback-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
       audio: Buffer.alloc(8_000).toString('base64'),
     });
     const before = responseCreates(h.socket).length;
@@ -485,7 +488,7 @@ test('an empty transcription during the greeting cannot create a duplicate openi
     await wait(100);
     assert.equal(responseCreates(h.socket).length, before + 1);
     const instruction = latestResponse(h.socket).response.instructions;
-    assert.match(instruction, /What kind of work do you need done\?/);
+    assert.match(instruction, /What kind of work are you looking to have done\?/);
     assert.doesNotMatch(instruction, /didn't catch|thank you for calling/i);
   } finally {
     h.restore();
@@ -497,7 +500,7 @@ test('a hold request waits longer and then asks whether the caller is still ther
   try {
     await finishSpeech(h.socket, {
       responseId: 'hold-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     const before = responseCreates(h.socket).length;
     caller(h.socket, 'Hold on one second.', 'caller-hold');
@@ -515,7 +518,7 @@ test('speaking before the hold timeout resumes analysis without a still-there pr
   try {
     await finishSpeech(h.socket, {
       responseId: 'resume-hold-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     caller(h.socket, 'Wait a second.', 'caller-hold-before-answer');
     const beforeAnswer = responseCreates(h.socket).length;
@@ -537,7 +540,7 @@ test('a split caller sentence is recombined even when the first analysis already
   try {
     await finishSpeech(h.socket, {
       responseId: 'split-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     caller(h.socket, 'I need', 'caller-split-one');
     await finishAnalysis(h.socket, {
@@ -559,7 +562,7 @@ test('transcription failure produces a useful retry prompt instead of silence', 
   try {
     await finishSpeech(h.socket, {
       responseId: 'transcription-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
       audio: '',
     });
     const before = responseCreates(h.socket).length;
@@ -683,7 +686,7 @@ test('a missing analysis tool call retries and then asks the pending question in
   try {
     await finishSpeech(h.socket, {
       responseId: 'retry-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     caller(h.socket, 'I need exterior painting.', 'caller-retry');
     await finishAnalysis(h.socket, {
@@ -697,7 +700,7 @@ test('a missing analysis tool call retries and then asks the pending question in
       args: analysis(),
       includeTool: false,
     });
-    assert.match(latestResponse(h.socket).response.instructions, /What kind of work do you need done/);
+    assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/);
   } finally {
     h.restore();
   }
@@ -708,7 +711,7 @@ test('latency telemetry separates analysis from first-audio generation', async (
   try {
     await finishSpeech(h.socket, {
       responseId: 'latency-greeting',
-      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work do you need done?',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
     });
     caller(h.socket, 'Exterior painting.', 'caller-latency');
     await finishAnalysis(h.socket, {

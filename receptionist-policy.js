@@ -9,20 +9,25 @@ export const INTAKE_FIELD_ORDER = Object.freeze([
   'consent',
 ]);
 
-export const SERVICE_QUESTION = 'What kind of work do you need done?';
+export const SERVICE_QUESTION = 'What kind of work are you looking to have done?';
 export const NAME_QUESTION = 'What name should I use for the estimate request?';
 export const PROJECT_ADDRESS_QUESTION = "What's the full project address?";
 export const SCHEDULE_QUESTION = 'What day or date would you prefer for the estimate, and what time works best?';
-export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes?';
-export const MORE_NOTES_PROMPT = 'Do you have any other notes?';
-export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What additional notes do you have?';
+export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes and/or business questions?';
+export const MORE_NOTES_PROMPT = 'Do you have any other notes or business questions?';
+export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What notes or business questions would you like me to add?';
 export const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that. I'll add that question to the notes.";
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
-export const SUBMISSION_START_RESPONSE = "Okay, thanks for confirming. I'm sending the estimate request in now.";
+export const SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.";
 export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your estimate request has been submitted.";
 export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
 
 const STANDALONE_BACKCHANNELS = new Set([
+  'hello',
+  'hey',
+  'hey there',
+  'hi',
+  'hi there',
   'oh',
   'okay',
   'ok',
@@ -97,15 +102,19 @@ export function classifyCallerTranscript(value) {
 }
 
 export function isClearAffirmative(value) {
-  return /^(?:yes|yeah|yep|yup|ja|si|sí|sim|oui|correct|right|that(?:'s| is) right)\b/i.test(cleanText(value));
+  const text = normalizedCallerText(value)
+    .replace(/^(?:(?:actually|okay|ok|oh|so|uh+|um+|well)\s+)+/, '');
+  return /^(?:yes|yeah|yep|yup|ja|si|sí|sim|oui|correct|right|that(?:'s| is) right)\b/i.test(text);
 }
 
 export function isClearNegative(value) {
-  const text = normalizedCallerText(value);
+  const text = normalizedCallerText(value)
+    .replace(/^(?:(?:actually|okay|ok|oh|so|uh+|um+|well)\s+)+/, '');
   return /^(?:no|nope|nah|none|nothing|nie|não|nao|non|nein)\b/.test(text)
     || /\b(?:do not|don't|dont) have any\b/.test(text)
     || /\bno (?:more )?(?:notes|questions)\b/.test(text)
     || /\bnothing (?:else|to add)\b/.test(text)
+    || /\b(?:actually )?no i (?:do not|don't|dont)$/.test(text)
     || /^(?:that'?s all|that'?s it|i'?m good|no more)$/i.test(text);
 }
 
@@ -234,9 +243,14 @@ export function callerVolunteeredName(value) {
 export function hasUsableServiceAnswer(value, context = {}) {
   const text = cleanText(value);
   const normalized = normalizedCallerText(text);
+  const requestShapedQuestion = /^(?:can|could|would) (?:you|the business|they)\s+(?!tell|explain|say|give)\S+/i.test(normalized);
+  const hasServiceSignal = PROJECT_INTENT_PATTERN.test(text)
+    || ACTION_FORM_PATTERN.test(text)
+    || resemblesSuppliedService(text, context);
   if (classifyCallerTranscript(text) !== 'meaningful' || isStandaloneBackchannel(text)) return false;
   if (isConversationRepairRequest(text) || isClearAffirmative(text) || isClearNegative(text)) return false;
-  if (looksLikeBusinessQuestion(text) || ADDRESS_PATTERN.test(text) || SCHEDULE_PATTERN.test(text)) return false;
+  if (looksLikeBusinessQuestion(text) && !requestShapedQuestion) return false;
+  if ((ADDRESS_PATTERN.test(text) || SCHEDULE_PATTERN.test(text)) && !hasServiceSignal) return false;
   if (
     callerVolunteeredName(text)
     && !PROJECT_INTENT_PATTERN.test(text)
@@ -245,6 +259,34 @@ export function hasUsableServiceAnswer(value, context = {}) {
   ) return false;
   if (NON_SERVICE_ANSWERS.has(normalized)) return false;
   return normalized.split(' ').some((token) => token.length >= 2);
+}
+
+export function fullAddressFromCallerText(value) {
+  const text = cleanText(value);
+  const street = text.match(ADDRESS_PATTERN);
+  if (!street || street.index === undefined) return '';
+
+  const candidate = text
+    .slice(street.index)
+    .replace(/\s+(?:that(?:'s| is) (?:all|it)|thanks?)\s*[.!?]*$/i, '')
+    .replace(/[.!?]+$/g, '')
+    .trim();
+  const remainder = candidate.slice(street[0].length)
+    .replace(/^\s*(?:,|\bin\b)\s*/i, '')
+    .trim();
+  const locationWords = remainder.match(/[\p{L}][\p{L}.'’-]*/gu) || [];
+  if (locationWords.length < 2) return '';
+  return candidate;
+}
+
+export function looksLikeUnfinishedThought(value) {
+  const raw = cleanText(value);
+  const text = normalizedCallerText(raw);
+  if (!text) return false;
+  if (/\.{2,}\s*$/.test(raw)) return true;
+  if (/^(?:can|could|would) you$/.test(text)) return true;
+  if (/\b(?:and|because|but|can|could|if|or|so|the|to|would)\s*$/.test(text)) return true;
+  return /\b(?:i (?:was|am|'m) wondering if|can you|could you|would you)\s+(?:the business|you|you guys|they)?\s*$/.test(text);
 }
 
 function hasExplicitNameCue(value) {
