@@ -856,13 +856,11 @@ test('analysis uses a larger token budget and safely handles repeated output-lim
     await nextTurn();
     await nextTurn();
 
-    assert.match(latestResponse(h.socket).response.instructions, /I don't know that/i);
-    assert.match(latestResponse(h.socket).response.instructions, /add that question to the notes/i);
-    assert.match(latestResponse(h.socket).response.instructions, /What kind of work are you looking to have done/i);
-    assert.deepEqual(
-      h.receptionist.snapshot().state.notes,
-      ['How long will it take for the job to get done?'],
-    );
+    const recoveryInstructions = latestResponse(h.socket).response.instructions;
+    assert.doesNotMatch(recoveryInstructions, /I don't know that/i);
+    assert.doesNotMatch(recoveryInstructions, /add that question to the notes/i);
+    assert.match(recoveryInstructions, /What kind of work are you looking to have done/i);
+    assert.deepEqual(h.receptionist.snapshot().state.notes, []);
     assert.equal(h.errors.length, 2);
     assert.match(h.errors[0].message, /max_output_tokens/i);
   } finally {
