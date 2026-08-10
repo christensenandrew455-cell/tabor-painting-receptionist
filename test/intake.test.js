@@ -59,6 +59,13 @@ test('accepts a spoken day of the month and resolves its next occurrence', () =>
   });
   assert.equal(date.exactDate, '2026-09-08');
   assert.equal(date.spokenDate, 'Tuesday, September 8, 2026');
+
+  const ordinal = resolveRequestedDate('the 10th', {
+    now: new Date('2026-08-09T16:00:00.000Z'),
+    timeZone: 'America/New_York',
+  });
+  assert.equal(ordinal.exactDate, '2026-08-10');
+  assert.equal(ordinal.spokenDate, 'Monday, August 10, 2026');
 });
 
 test('requires AM or PM for an ambiguous time', () => {
@@ -81,7 +88,7 @@ test('infers a bare hour when only one meridiem fits the estimate window', () =>
 });
 
 test('normalizes conversational names and maps natural service wording without a trade rule', () => {
-  assert.equal(normalizeCallerName('Andrew Christensen works well.'), 'Andrew Christensen');
+  assert.equal(normalizeCallerName('Jordan Smith works well.'), 'Jordan Smith');
   assert.equal(
     matchService('I need the exterior of my house painted.', CONTEXT.services),
     'Exterior Painting',

@@ -17,11 +17,11 @@ The receptionist follows one server-owned intake sequence for every configured b
 
 One conversation controller owns all completed fields and the current step. The language model interprets the caller's natural speech, but it cannot reorder the flow, reopen a completed field, prepare a summary, submit a request, or end the call. If the caller volunteers several details together, all grounded details are retained and the receptionist asks only for the next missing field.
 
-General language understanding is used for names, addresses, dates, times, corrections, unfinished thoughts, and matching requested work to the business's supplied services. Business, trade, price, duration, method, policy, and availability answers must have an exact supporting fact in ARC-provided business information. The server speaks that supplied fact. If no support exists, the receptionist says it does not know, saves the caller's actual question once in the notes, and resumes the same intake step.
+General language understanding is used for names, addresses, dates, times, corrections, unfinished thoughts, and matching requested work to the business's supplied services. Business, trade, price, duration, method, and policy answers must have an exact supporting fact in ARC-provided business information. The receptionist may explain ARC-supplied estimate-request days and hours, but it never claims that a specific appointment is available; it records the caller's preference for the business to confirm. If no supported answer exists, the receptionist says it does not know, saves the caller's actual question once in the notes, and resumes the same intake step.
 
 Notes and business questions are separate meanings. A project detail ending in a conversational phrase such as “you know what I mean?” remains a note. After a note is acknowledged, later turns do not repeat or paraphrase it. Empty notes are omitted from the final readback.
 
-The server normalizes relative dates such as `Tuesday` in the business timezone and rejects requests outside ARC-supplied estimate days or start-time ranges. A bare hour such as `1` is inferred as AM or PM only when exactly one interpretation fits that range; otherwise the receptionist asks which one the caller means.
+The server normalizes relative dates such as `Tuesday` and ordinal days such as `the 10th` in the business timezone and rejects requests outside ARC-supplied estimate days or start-time ranges. A bare hour such as `1` is inferred as AM or PM only when exactly one interpretation fits that range; otherwise the receptionist asks which one the caller means.
 
 After notes and standalone contact consent are complete, the server prepares the final readback. Contact consent cannot double as summary confirmation. The caller must separately confirm the complete readback before submission. The receptionist then says it is submitting, performs one idempotent ARC write, reports success or failure, says goodbye, waits for the audio playback mark, and hangs up. There is no post-submission question mode.
 
@@ -29,7 +29,7 @@ After notes and standalone contact consent are complete, the server prepares the
 
 Incoming audio uses far-field noise reduction and high-eagerness semantic voice activity detection. OpenAI does not automatically create or interrupt responses: caller turns are analyzed by the server-controlled flow, and caller speech never cancels receptionist audio. Speech captured while the receptionist is talking is queued and handled after that response finishes.
 
-The implementation does not generate a response and then delete or suppress it. Meaningful caller turns first use one forced, silent analysis tool call; the controller then requests only the exact next spoken turn. Split caller phrases are recombined even if the first analysis has finished. Reactions and unfinished thoughts do not advance a field, and an abandoned fragment receives a delayed re-prompt instead of leaving the line silent. Missing tool calls, failed transcription, and failed speech responses also have bounded recovery paths.
+The implementation does not generate a response and then delete or suppress it. Meaningful caller turns first use one forced, silent analysis tool call; the controller then requests only the exact next spoken turn. Split caller phrases are recombined even if the first analysis has finished. Reactions, background speech, and unfinished thoughts do not advance a field. After five seconds without a caller response, the receptionist repeats only the pending question. A caller who says “hold on” gets 30 seconds before the receptionist asks whether they are still there; speaking sooner cancels that timer. Missing tool calls, failed transcription, and failed speech responses also have bounded recovery paths.
 
 ## Cost controls
 
@@ -80,7 +80,8 @@ OPENAI_REALTIME_MODEL          # defaults to gpt-realtime-2.1-mini
 OPENAI_VOICE                   # defaults to marin
 OPENAI_TRANSCRIPTION_MODEL     # defaults to gpt-4o-mini-transcribe
 OPENAI_TRANSCRIPTION_LANGUAGE  # defaults to en
-OPENAI_INCOMPLETE_TURN_RECOVERY_MS # defaults to 1800
+OPENAI_CALLER_SILENCE_REPROMPT_MS # defaults to 5000
+OPENAI_HOLD_REPROMPT_MS          # defaults to 30000
 BUSINESS_TIME_ZONE             # fallback only; defaults to America/New_York
 OPENAI_MAX_OUTPUT_TOKENS       # defaults to 800
 OPENAI_CONTEXT_TOKEN_LIMIT     # defaults to 2500
