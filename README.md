@@ -10,7 +10,7 @@ The receptionist follows one server-owned intake sequence for every configured b
 2. Caller name
 3. Full project address
 4. Preferred estimate day or date and time
-5. Notes or questions for the business
+5. Additional notes
 6. Standalone consent to be contacted
 7. Final readback and separate caller confirmation
 8. Submission result, goodbye, and hangup

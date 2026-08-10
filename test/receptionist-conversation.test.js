@@ -122,7 +122,7 @@ test('one authoritative state advances through the required field order exactly 
   action = analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
   });
-  assert.match(action.text, /notes or questions/i);
+  assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
 
   action = analyzedTurn(conversation, 'No.', { notes_complete: true });
@@ -153,7 +153,7 @@ test('conversation repair repeats only the genuinely pending question', () => {
   completeThroughSchedule(conversation);
   const action = analyzedTurn(conversation, 'What was the question?');
   assert.equal(action.type, 'speak');
-  assert.equal(action.text, 'Do you have any notes or questions for the business?');
+  assert.equal(action.text, 'Do you have any additional notes?');
   assert.equal(conversation.snapshot().notes.length, 0);
 });
 
@@ -171,8 +171,31 @@ test('several caller-provided fields in one turn are retained without skipping t
       preferred_time: '2',
     },
   });
-  assert.match(action.text, /notes or questions/i);
+  assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('project scope captured earlier stays in notes while the caller is asked only for additional notes', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need my whole basement painted.', {
+    service_status: 'complete',
+    project_note: 'The whole basement needs painting.',
+    fields: { service: 'Interior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  const action = analyzedTurn(conversation, 'Tuesday at 2.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '2' },
+  });
+
+  assert.match(action.text, /Do you have any additional notes\?/i);
+  assert.doesNotMatch(action.text, /questions for the business/i);
+  assert.deepEqual(conversation.snapshot().notes, ['The whole basement needs painting.']);
 });
 
 test('partial addresses stay pending and later fragments combine without invented geography', () => {
@@ -220,7 +243,7 @@ test('a grounded project phrase still cannot be mislabeled as the caller name', 
 test('bare hours are accepted for every day when business hours resolve AM or PM', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   const action = completeThroughSchedule(conversation);
-  assert.match(action.text, /notes or questions/i);
+  assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredTime, '1');
 });
 
@@ -256,7 +279,7 @@ test('a project statement with a conversational question tag remains a note', ()
     business_answer_status: 'answerable',
     business_support: 'Monday through Friday',
   });
-  assert.match(action.text, /other notes or questions/i);
+  assert.match(action.text, /other notes/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.doesNotMatch(action.text, /business information/i);
   assert.deepEqual(conversation.snapshot().notes, [note]);
@@ -315,7 +338,7 @@ test('notes cannot be skipped until the caller explicitly completes that step', 
     project_note: 'The back wall has peeling paint.',
     contact_consent: 'yes',
   });
-  assert.match(action.text, /other notes or questions/i);
+  assert.match(action.text, /other notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
 
   action = analyzedTurn(conversation, 'No more.', { notes_complete: true });
@@ -335,7 +358,7 @@ test('an explicit mid-call correction updates a locked field without changing th
   });
   assert.equal(conversation.snapshot().values.address, '117 Lancaster Road, Berlin, Massachusetts');
   assert.equal(conversation.snapshot().pendingField, 'notes');
-  assert.match(action.text, /notes or questions/i);
+  assert.match(action.text, /additional notes/i);
 });
 
 test('contact permission cannot confirm the final summary', () => {
