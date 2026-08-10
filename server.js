@@ -4,6 +4,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildArcRuntimeForward } from './arc-runtime.js';
 import { createBusinessContext } from './business-context.js';
+import { buildCallUsageRecord, reportCallUsage } from './call-usage.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -210,6 +211,9 @@ async function beginCall(body, id, runtimeForward = {}) {
     goodbyeTimer: null,
     hangupRequested: false,
     endReason: '',
+    connected: false,
+    connectedAt: null,
+    leadSaved: false,
     openAiUsage: null,
     transcript: [],
   };
@@ -221,12 +225,16 @@ async function beginCall(body, id, runtimeForward = {}) {
 
     call.context = createBusinessContext(call.runtime);
     await telnyxCommand(id, 'answer');
+    if (call.ended || calls.get(id) !== call) return;
     await telnyxCommand(id, 'streaming_start', {
       stream_url: `${MEDIA_STREAM_URL}?callControlId=${encodeURIComponent(id)}`,
       stream_track: 'inbound_track',
       stream_bidirectional_mode: 'rtp',
       stream_bidirectional_codec: 'PCMU',
     });
+    if (call.ended || calls.get(id) !== call) return;
+    call.connected = true;
+    call.connectedAt = new Date();
     call.status = 'streaming';
     call.costLimitTimer = setTimeout(() => {
       stopForCostLimit(call, 'duration-limit');
@@ -281,6 +289,21 @@ function endCall(id, reason = 'hangup') {
       reason: finalReason,
       ...call.openAiUsage,
     }));
+  }
+  if (call.connected && call.connectedAt) {
+    const usageRecord = buildCallUsageRecord({
+      callId: call.id,
+      startedAt: call.connectedAt,
+      endedAt: new Date(),
+      leadSaved: call.leadSaved,
+      endReason: finalReason,
+      timeZone: call.context?.timeZone || call.runtime?.profile?.timeZone || 'UTC',
+    });
+    void reportCallUsage({
+      usageUrl: call.runtime?.usageUrl,
+      usageKey: call.runtime?.usageKey,
+      record: usageRecord,
+    }).catch((error) => console.error('[Call usage report failed]', error.message));
   }
 }
 
@@ -405,7 +428,10 @@ wss.on('connection', (telnyx, request) => {
       deliver: (payload, options) => sendArcData(call.runtime, payload, options),
       onAudio: (payload) => sendTelnyx({ event: 'media', media: { payload } }),
       onPlaybackClear: () => sendTelnyx({ event: 'clear' }),
-      onSubmitted: () => { call.status = 'submitted'; },
+      onSubmitted: () => {
+        call.status = 'submitted';
+        call.leadSaved = true;
+      },
       onReady: () => {
         if (call.status === 'streaming') call.status = 'active';
       },

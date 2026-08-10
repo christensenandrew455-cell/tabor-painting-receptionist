@@ -46,6 +46,8 @@ When Telnyx reports the call ended, Railway logs one `[Call OpenAI usage]` recor
 
 Railway also logs each completed caller and receptionist utterance as `[Call transcript line]`, then logs the full ordered call as `[Call transcript]` when the call ends. Caller lines are automatic speech-recognition transcripts; receptionist lines are the generated audio transcripts. These logs contain caller-provided personal information such as names and addresses, so access to Railway logs should stay restricted.
 
+When a connected media stream ends, Railway also sends one idempotent usage record to the private `usageUrl` supplied by ARK. Timing starts only after Telnyx confirms the AI media stream started, so failed startup attempts are not billed. The record includes the call identifier, timestamps, duration, outcome, and whether an estimate request was saved. It does not include the caller's phone number, name, address, transcript, or project details. The connection credential is sent in a request header rather than the URL. Temporary delivery failures are retried three times, and ARK deduplicates repeat delivery by call ID.
+
 For each substantive caller turn, Railway logs `[Call latency]` with speech-stop-to-transcript time, speech-stop-to-first-audio time, caller-transcript-to-first-audio time, silent analysis time, and speech-generation time. These measurements separate transcription delay from model analysis and audio generation.
 
 ## Call flow
