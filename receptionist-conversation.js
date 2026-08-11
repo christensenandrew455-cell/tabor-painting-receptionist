@@ -307,9 +307,11 @@ function cleanedProjectNoteSentence(value) {
   let note = cleanText(value)
     .replace(/^(?:(?:i'm|i am) sorry[,;.! ]*)/i, '')
     .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like|actually|basically)[,;.! ]+)+/i, '')
+    .replace(/^(?:i|we)[,; ]+(?:(?:yeah|yes|yep|well|uh+|um+)[,; ]+)+(?:i|we)\s+/i, '')
     .replace(/^(?:i|we)\s+(?:think|guess|suppose|believe|figure)(?:\s+that)?\s+/i, '')
     .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?thinking\s+(?:about\s+)?(?:getting|having)?\s*/i, '')
     .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+see\s+if\s+(?:i|we)\s+could\s+(?:get|have)\s+/i, '')
+    .replace(/^(?:i|we)(?:'m| am|'re| are)\s+(?:just\s+)?looking\s+to\s+(?:get|have)[,; ]*/i, '')
     .replace(/^(?:i|we)(?:'m| am|'re| are)\s+(?:gonna|going to)\s+(?:need|want)(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?[,; ]+/i, '')
@@ -317,6 +319,8 @@ function cleanedProjectNoteSentence(value) {
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '')
     .replace(/^(?:get|have)\s+(?=(?:my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
     .replace(/^(?:like)[,; ]+/i, '')
+    .replace(/^(?:i|we)\s+(?=accidentally\b)/i, '')
+    .replace(/[,; ]+(?:if\s+)?(?:i|we)(?:'m| am|'re| are)\s+(?:gonna\s+|going\s+to\s+)?be\s+honest(?:\s+with\s+you)?[.!?]*$/i, '.')
     .trim();
   if (!note) return '';
 
@@ -624,7 +628,8 @@ function conciseBusinessQuestion(value) {
   if (repeatedRestatement) question = repeatedRestatement[1];
   question = question
     .replace(/\s*,\s*like\s*,?\s*/gi, ' ')
-    .replace(/^how\s+long\s+it\s+takes\b/i, 'how long does it take');
+    .replace(/^how\s+long\s+it\s+takes\b/i, 'how long does it take')
+    .replace(/^how\s+long\s+(.+?)\s+will\s+take\b/i, 'how long will $1 take');
   question = `${question[0].toUpperCase()}${question.slice(1)}`;
   if (/^(?:how|what|when|where|why|who|which|do|does|did|is|are|can|could|would|will|should|may|has|have)\b/i.test(question)) {
     return `${question.replace(/[.?!]+$/g, '')}?`;
@@ -1252,6 +1257,9 @@ export function createReceptionistConversation({ context }) {
     const hasIntakeAnswer = analysisSuppliesIntakeAnswer(analysis, before);
     const projectDetailOverridesQuestion = projectDetail
       && !businessQuestionIsDistinctFromProjectNote(analysis, transcript, projectDetail);
+    const clearNotesBusinessQuestion = before === 'notes'
+      && looksLikeBusinessQuestion(transcript)
+      && !looksLikeUnfinishedThought(transcript);
     const scheduleRequestQuestion = scheduleTurn && isScheduleRequestQuestion(transcript);
     const hasDirectSchedulePreference = Boolean(
       analysis.fields.preferred_date
@@ -1271,8 +1279,10 @@ export function createReceptionistConversation({ context }) {
       || scheduleWindowQuestion
       || (before === 'notes' && (
       !callerFinishedNotesBeforeCorrection
-      && !hasIntakeAnswer
-      && !projectDetailOverridesQuestion
+      && (
+        clearNotesBusinessQuestion
+        || (!hasIntakeAnswer && !projectDetailOverridesQuestion)
+      )
       ));
     const question = shouldHandleBusinessQuestion
       ? businessQuestionResult(analysis, transcript, dateCandidate, {
@@ -1297,7 +1307,9 @@ export function createReceptionistConversation({ context }) {
       const scheduleWasCorrected = collectingCorrection === 'schedule' && correctionResult.changed;
       const callerFinishedNotes = analysis.notes_complete
         || (!scheduleWasCorrected && isClearNegative(transcript));
-      const noteAdded = scheduleWasCorrected || callerFinishedNotes
+      const noteAdded = scheduleWasCorrected
+        || callerFinishedNotes
+        || (question.hadQuestion && projectDetailOverridesQuestion)
         ? false
         : addGroundedProjectNote(analysis.project_note, transcript, dateCandidate);
       const correctionPrefix = scheduleWasCorrected && !question.prefix
