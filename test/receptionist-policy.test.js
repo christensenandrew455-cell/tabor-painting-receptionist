@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   INTAKE_FIELD_ORDER,
+  addressPartsFromCallerText,
   callerVolunteeredName,
   classifyCallerTranscript,
   fullAddressFromCallerHistory,
@@ -61,6 +62,30 @@ test('reactions, greetings, and non-answers cannot complete the service field', 
   assert.equal(classifyCallerTranscript('Oh.'), 'filler');
 });
 
+test('a requested supplied service remains a usable answer when the caller also asks if it is offered', () => {
+  const context = {
+    services: [
+      { name: 'Surface Refinishing', description: 'Refinishing and protective coating for outdoor surfaces' },
+    ],
+  };
+  assert.equal(
+    hasUsableServiceAnswer(
+      'The new outdoor surface needs a protective coating. Do you offer surface refinishing?',
+      context,
+    ),
+    true,
+  );
+  assert.equal(hasUsableServiceAnswer('What services do you offer?', context), false);
+  assert.equal(
+    hasUsableServiceAnswer(
+      'My porch is weathered and needs to be sealed. Can you handle that?',
+      context,
+      { confirmedService: 'Surface Refinishing' },
+    ),
+    true,
+  );
+});
+
 test('recognizes a complete spoken project address without relying on model extraction', () => {
   assert.equal(
     fullAddressFromCallerText('I just said, 197 Lancaster Road, Berlin, Massachusetts.'),
@@ -113,6 +138,21 @@ test('reconstructs split addresses from caller turns without keeping a bad trans
       'Hudson, Massachusetts.',
     ]),
     '25 Oak Avenue, Hudson, Massachusetts',
+  );
+});
+
+test('extracts only caller-spoken address components for partial-address recovery', () => {
+  assert.deepEqual(
+    addressPartsFromCallerText('82 Harbor Drive. Fairview'),
+    { street: '82 Harbor Drive', locality: 'Fairview', state: '' },
+  );
+  assert.deepEqual(
+    addressPartsFromCallerText('Fairview, Oregon.'),
+    { street: '', locality: 'Fairview', state: 'Oregon' },
+  );
+  assert.deepEqual(
+    addressPartsFromCallerText('Oregon.'),
+    { street: '', locality: '', state: 'Oregon' },
   );
 });
 
