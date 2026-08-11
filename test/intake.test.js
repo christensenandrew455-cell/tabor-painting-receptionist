@@ -87,6 +87,13 @@ test('infers a bare hour when only one meridiem fits the estimate window', () =>
   );
 });
 
+test('a bare hour outside both meridiems asks for the listed estimate window directly', () => {
+  assert.throws(
+    () => normalizeRequestedTime('6', CONTEXT),
+    /outside the business's estimate hours.*9:00 AM through 4:00 PM/i,
+  );
+});
+
 test('normalizes conversational names and maps natural service wording without a trade rule', () => {
   assert.equal(normalizeCallerName('Jordan Smith works well.'), 'Jordan Smith');
   assert.equal(

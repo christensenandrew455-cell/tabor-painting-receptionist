@@ -19,6 +19,7 @@ import {
   UNKNOWN_BUSINESS_QUESTION_RESPONSE,
   classifyCallerTranscript,
   contactConsentQuestion,
+  fullAddressFromCallerHistory,
   fullAddressFromCallerText,
   hasUsableNameAnswer,
   hasUsableServiceAnswer,
@@ -33,6 +34,7 @@ import {
   looksLikeUnfinishedThought,
   requestedFieldExplanation,
   spokenBusinessName,
+  streetAddressFromCallerText,
 } from './receptionist-policy.js';
 
 const FIELD_NAMES = Object.freeze([
@@ -752,6 +754,8 @@ export function createReceptionistConversation({ context }) {
   let consentGranted = false;
   let phase = 'collecting';
   let preparedSummary = null;
+  let partialAddressStreet = '';
+  let addressLocalityAsked = false;
 
   function pendingField() {
     if (phase === 'summary') return 'summary';
@@ -768,7 +772,11 @@ export function createReceptionistConversation({ context }) {
   function bareQuestion(field = pendingField()) {
     if (field === 'service') return SERVICE_QUESTION;
     if (field === 'name') return NAME_QUESTION;
-    if (field === 'address') return PROJECT_ADDRESS_QUESTION;
+    if (field === 'address') {
+      return partialAddressStreet
+        ? 'What city or town and state is that in?'
+        : PROJECT_ADDRESS_QUESTION;
+    }
     if (field === 'schedule') {
       if (values.preferredDate && !values.preferredTime) return 'What time would work best for the estimate?';
       if (!values.preferredDate && values.preferredTime) return 'What day or date would you prefer for the estimate?';
@@ -900,6 +908,8 @@ export function createReceptionistConversation({ context }) {
           throw Object.assign(new Error('The full address was not grounded in caller speech.'), { field: 'address' });
         }
         values.address = completeAddress;
+        partialAddressStreet = '';
+        addressLocalityAsked = false;
         changed = true;
       } catch (fieldError) {
         error ||= fieldError;
@@ -1078,31 +1088,45 @@ export function createReceptionistConversation({ context }) {
 
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
+    const collectingAddress = pendingField() === 'address';
+    const addressTurn = collectingAddress
+      || analysis.correction_field === 'address';
+    const directCallerAddress = addressTurn ? fullAddressFromCallerText(transcript) : '';
+    const transcriptStreet = addressTurn ? streetAddressFromCallerText(transcript) : '';
+    if (transcriptStreet && !directCallerAddress) {
+      partialAddressStreet = transcriptStreet;
+      analysis.address_status = 'partial';
+      if (!fullAddressFromCallerText(analysis.fields.address)) {
+        analysis.fields.address = '';
+      }
+    }
+    const historyAddress = collectingAddress
+      ? fullAddressFromCallerHistory(callerTranscripts)
+      : '';
     const completeAnalyzedAddress = fullAddressFromCallerText(analysis.fields.address);
-    const hasGroundedAnalyzedAddress = analysis.address_status === 'complete'
+    const groundedAnalyzedAddress = analysis.address_status === 'complete'
       && Boolean(completeAnalyzedAddress)
-      && isGroundedInCallerEvidence(completeAnalyzedAddress, callerTranscripts);
-    if (hasGroundedAnalyzedAddress) analysis.fields.address = completeAnalyzedAddress;
-    const addressFallback = !hasGroundedAnalyzedAddress && (
-      pendingField() === 'address'
-      || analysis.correction_field === 'address'
-    ) ? fullAddressFromCallerText(transcript) : '';
-    if (addressFallback) {
-      analysis.fields.address = addressFallback;
+      && isGroundedInCallerEvidence(completeAnalyzedAddress, callerTranscripts)
+      ? completeAnalyzedAddress
+      : '';
+    const completeAddress = directCallerAddress
+      || historyAddress
+      || (partialAddressStreet ? '' : groundedAnalyzedAddress);
+    if (completeAddress) {
+      analysis.fields.address = completeAddress;
       analysis.address_status = 'complete';
-      if (['unfinished', 'unintelligible', 'conversation_repair'].includes(analysis.turn_status)) {
+      if ([
+        'unfinished',
+        'unintelligible',
+        'conversation_repair',
+        'background_speech',
+      ].includes(analysis.turn_status)) {
         analysis.turn_status = 'complete';
       }
     } else if (
-      hasGroundedAnalyzedAddress
-      && ['unfinished', 'unintelligible', 'conversation_repair'].includes(analysis.turn_status)
-    ) {
-      analysis.turn_status = 'complete';
-    } else if (
-      !hasGroundedAnalyzedAddress
-      && analysis.address_status === 'complete'
+      analysis.address_status === 'complete'
       && analysis.fields.address
-      && (pendingField() === 'address' || analysis.correction_field === 'address')
+      && addressTurn
     ) {
       analysis.fields.address = '';
       analysis.address_status = 'partial';
@@ -1311,8 +1335,12 @@ export function createReceptionistConversation({ context }) {
 
     const changed = correctionResult.changed || applied.changed;
     const after = pendingField();
-    if (!changed && analysis.address_status === 'partial' && before === 'address') {
-      return { type: 'speak', text: joinSpeech(question.prefix, 'What city or town and state is that in?') };
+    if (!changed && before === 'address' && partialAddressStreet) {
+      if (!addressLocalityAsked) {
+        addressLocalityAsked = true;
+        return { type: 'speak', text: joinSpeech(question.prefix, bareQuestion('address')) };
+      }
+      return { type: 'wait', preserve: true };
     }
     if (!changed && analysis.service_status === 'not_offered' && before === 'service') {
       const choices = serviceNames(context);
@@ -1366,7 +1394,11 @@ export function createReceptionistConversation({ context }) {
     const field = cleanText(error?.field);
     if (field === 'service') values.service = '';
     if (field === 'name') values.name = '';
-    if (field === 'address') values.address = '';
+    if (field === 'address') {
+      values.address = '';
+      partialAddressStreet = '';
+      addressLocalityAsked = false;
+    }
     if (field === 'preferred_date') values.preferredDate = '';
     if (field === 'preferred_time') values.preferredTime = '';
     if (field === 'additional_notes_asked') notesComplete = false;
@@ -1391,6 +1423,7 @@ export function createReceptionistConversation({ context }) {
         consent: consentGranted,
       },
       values: { ...values },
+      partialAddress: partialAddressStreet,
       notes: [...notes],
       notesAsked,
       consentAsked,

@@ -4,6 +4,7 @@ import {
   INTAKE_FIELD_ORDER,
   callerVolunteeredName,
   classifyCallerTranscript,
+  fullAddressFromCallerHistory,
   fullAddressFromCallerText,
   hasUsableNameAnswer,
   hasUsableServiceAnswer,
@@ -65,7 +66,54 @@ test('recognizes a complete spoken project address without relying on model extr
     fullAddressFromCallerText('I just said, 197 Lancaster Road, Berlin, Massachusetts.'),
     '197 Lancaster Road, Berlin, Massachusetts',
   );
+  assert.equal(
+    fullAddressFromCallerText(
+      '197 Lancaster Road in Berlin, Massachusetts. It is the big blue house.',
+    ),
+    '197 Lancaster Road in Berlin, Massachusetts',
+  );
+  assert.equal(
+    fullAddressFromCallerText('123 Georgia Avenue, Washington, DC.'),
+    '123 Georgia Avenue, Washington, DC',
+  );
+  assert.equal(
+    fullAddressFromCallerText(
+      '197 Lancaster Road, Berlin, Massachusetts. The owner currently lives in New York.',
+    ),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
   assert.equal(fullAddressFromCallerText('197 Lancaster Road.'), '');
+});
+
+test('reconstructs split addresses from caller turns without keeping a bad transcription', () => {
+  assert.equal(
+    fullAddressFromCallerHistory([
+      "That'd be 197 Lancaster Road.",
+      'Brown University.',
+      'Berlin, Massachusetts.',
+    ]),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(
+    fullAddressFromCallerHistory([
+      '197 Lancaster Road.',
+      'Berlin',
+      'Massachusetts',
+    ]),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(
+    fullAddressFromCallerHistory(['197 Lancaster Road.', 'Brown University.']),
+    '',
+  );
+  assert.equal(
+    fullAddressFromCallerHistory([
+      '197 Lancaster Road, Berlin, Massachusetts.',
+      'No, change the address to 25 Oak Avenue.',
+      'Hudson, Massachusetts.',
+    ]),
+    '25 Oak Avenue, Hudson, Massachusetts',
+  );
 });
 
 test('recognizes trailing question fragments as unfinished thoughts', () => {

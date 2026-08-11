@@ -214,7 +214,8 @@ function inferTimeFromEstimateHours(hour, minute, context = {}) {
     && (!latest || candidate.minutes <= latest.minutes)
   ));
 
-  return candidates.length === 1 ? candidates[0].hour : null;
+  if (candidates.length === 1) return candidates[0].hour;
+  return candidates.length ? null : false;
 }
 
 export function normalizeRequestedTime(value, context = {}) {
@@ -242,6 +243,17 @@ export function normalizeRequestedTime(value, context = {}) {
   const meridiem = match[3];
   if (!meridiem && hour >= 1 && hour <= 12) {
     const inferredHour = inferTimeFromEstimateHours(hour, minute, context);
+    if (inferredHour === false) {
+      const earliest = businessEstimateTime(context.earliestEstimateStart);
+      const latest = businessEstimateTime(context.latestEstimateStart);
+      const allowedHours = earliest && latest
+        ? `${earliest.display} through ${latest.display}`
+        : (earliest ? `${earliest.display} or later` : `${latest.display} or earlier`);
+      fail(
+        `That time is outside the business's estimate hours. Ask for ${allowedHours}.`,
+        'preferred_time',
+      );
+    }
     if (inferredHour === null) {
       fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
     }

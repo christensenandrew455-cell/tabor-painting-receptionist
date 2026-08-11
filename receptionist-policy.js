@@ -74,6 +74,37 @@ const NAME_BLOCKERS = new Set([
   'to', 'for', 'from', 'with', 'without', 'under', 'over', 'inside', 'outside',
 ]);
 const ADDRESS_PATTERN = /\b\d{1,6}\s+[\p{L}\p{N}.'’ -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/iu;
+const US_STATE_NAMES = Object.freeze([
+  'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
+  'connecticut', 'delaware', 'florida', 'georgia', 'hawaii', 'idaho',
+  'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine',
+  'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi',
+  'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey',
+  'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio',
+  'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina',
+  'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia',
+  'washington', 'west virginia', 'wisconsin', 'wyoming',
+  'district of columbia',
+]);
+const US_STATE_ABBREVIATIONS = Object.freeze([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID',
+  'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
+  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK',
+  'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV',
+  'WI', 'WY', 'DC',
+]);
+const US_STATE_NAME_PATTERN_SOURCE = US_STATE_NAMES
+  .map((state) => state.replace(/ /g, '\\s+'))
+  .join('|');
+const US_STATE_ABBREVIATION_PATTERN_SOURCE = US_STATE_ABBREVIATIONS.join('|');
+const US_STATE_NAME_END_PATTERN = new RegExp(
+  `\\b(${US_STATE_NAME_PATTERN_SOURCE})[.!?]*$`,
+  'i',
+);
+const US_STATE_ABBREVIATION_END_PATTERN = new RegExp(
+  `\\b(${US_STATE_ABBREVIATION_PATTERN_SOURCE})[.!?]*$`,
+);
+const LOCALITY_BLOCKERS = /\b(?:college|school|university)\b/i;
 const SCHEDULE_PATTERN = /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|today|tomorrow|morning|afternoon|evening|noon|midnight)\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?\b|\b(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
 
 export function normalizedCallerText(value) {
@@ -267,22 +298,117 @@ export function hasUsableServiceAnswer(value, context = {}) {
   return normalized.split(' ').some((token) => token.length >= 2);
 }
 
+function terminalStateMatch(value) {
+  const text = String(value ?? '');
+  return [US_STATE_NAME_END_PATTERN, US_STATE_ABBREVIATION_END_PATTERN]
+    .map((pattern) => text.match(pattern))
+    .filter((match) => match && match.index !== undefined)
+    .sort((left, right) => right.index - left.index)[0] || null;
+}
+
+function firstTerminalStateMatch(value) {
+  const text = String(value ?? '');
+  let searchFrom = 0;
+  for (const segment of text.split(/(?<=[.!?])\s+/)) {
+    const segmentStart = text.indexOf(segment, searchFrom);
+    searchFrom = Math.max(searchFrom, segmentStart + segment.length);
+    const state = terminalStateMatch(segment);
+    if (!state || state.index === undefined) continue;
+    state.index += Math.max(0, segmentStart);
+    return state;
+  }
+  return null;
+}
+
 export function fullAddressFromCallerText(value) {
   const text = cleanText(value);
   const street = text.match(ADDRESS_PATTERN);
   if (!street || street.index === undefined) return '';
 
-  const candidate = text
+  let candidate = text
     .slice(street.index)
     .replace(/\s+(?:that(?:'s| is) (?:all|it)|thanks?)\s*[.!?]*$/i, '')
     .replace(/[.!?]+$/g, '')
     .trim();
+  const afterStreet = candidate.slice(street[0].length);
+  const state = firstTerminalStateMatch(afterStreet);
+  if (state && state.index !== undefined) {
+    candidate = candidate
+      .slice(0, street[0].length + state.index + state[1].length)
+      .trim();
+  }
   const remainder = candidate.slice(street[0].length)
     .replace(/^\s*(?:,|\bin\b)\s*/i, '')
     .trim();
   const locationWords = remainder.match(/[\p{L}][\p{L}.'’-]*/gu) || [];
   if (locationWords.length < 2) return '';
   return candidate;
+}
+
+export function streetAddressFromCallerText(value) {
+  const street = cleanText(value).match(ADDRESS_PATTERN)?.[0];
+  return cleanText(street).replace(/[.!?]+$/g, '');
+}
+
+function lastSpokenSegment(value) {
+  return cleanText(value)
+    .split(/(?<=[.!?])\s+/)
+    .map((segment) => cleanText(segment))
+    .filter(Boolean)
+    .at(-1) || '';
+}
+
+function localityCandidate(value) {
+  const candidate = lastSpokenSegment(value)
+    .replace(/^(?:and\s+)?(?:it(?:'s| is| would be|'d be)|that(?:'s| is| would be|'d be)|the\s+(?:city|town)\s+is|in)\s+/i, '')
+    .replace(/^[,;:\s]+|[,;:.!?\s]+$/g, '')
+    .trim();
+  if (!candidate || /\d/.test(candidate) || LOCALITY_BLOCKERS.test(candidate)) return '';
+  const words = candidate.match(/[\p{L}][\p{L}.'’-]*/gu) || [];
+  if (!words.length || words.length > 5) return '';
+  if (cleanText(words.join(' ')).length !== cleanText(candidate).replace(/\s+/g, ' ').length) {
+    return '';
+  }
+  return candidate;
+}
+
+function localityAndStateFromTurns(value, previousValue = '') {
+  const segment = lastSpokenSegment(value);
+  const state = terminalStateMatch(segment);
+  if (!state || state.index === undefined) return '';
+
+  let beforeState = segment.slice(0, state.index)
+    .replace(/[,;:\s]+$/g, '')
+    .trim();
+  if (beforeState.includes(',')) beforeState = beforeState.split(',').at(-1).trim();
+  const city = localityCandidate(beforeState) || localityCandidate(previousValue);
+  if (!city) return '';
+  return `${city}, ${cleanText(state[1]).replace(/\s+/g, ' ')}`;
+}
+
+export function fullAddressFromCallerHistory(values = []) {
+  const turns = Array.isArray(values) ? values.map(cleanText).filter(Boolean) : [];
+  if (!turns.length) return '';
+
+  let street = '';
+  let streetIndex = -1;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    street = streetAddressFromCallerText(turns[index]);
+    if (street) {
+      streetIndex = index;
+      break;
+    }
+  }
+  if (!street) return '';
+  const direct = fullAddressFromCallerText(turns[streetIndex]);
+  if (direct) return direct;
+  if (streetIndex === turns.length - 1) return '';
+
+  for (let index = turns.length - 1; index > streetIndex; index -= 1) {
+    const locality = localityAndStateFromTurns(turns[index], turns[index - 1]);
+    if (locality) return `${street}, ${locality}`;
+  }
+  return '';
 }
 
 export function looksLikeUnfinishedThought(value) {
