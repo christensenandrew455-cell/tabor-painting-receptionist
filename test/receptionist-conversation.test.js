@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildSummaryRecoverySpeech,
   buildSummarySpeech,
+  buildTurnAnalysisInstructions,
   createReceptionistConversation,
   isGroundedInCallerEvidence,
 } from '../receptionist-conversation.js';
@@ -28,8 +29,13 @@ const CONTEXT = Object.freeze({
     { name: 'Interior Painting', description: 'Interior painting' },
     { name: 'Small Paint Repair', description: 'Small paint repair' },
   ],
+  businessInformation: [
+    { title: 'Business hours', info: 'Every day, 5 PM to 9 PM.' },
+  ],
   knowledgeJson: JSON.stringify({
-    businessHours: 'Monday through Friday',
+    businessInformation: [
+      { title: 'Business hours', info: 'Every day, 5 PM to 9 PM.' },
+    ],
     serviceAreas: ['Albany', 'Troy'],
   }),
 });
@@ -964,12 +970,12 @@ test('a project statement with a conversational question tag remains a note', ()
 test('an indirect business question is still recognized without a question mark', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
-  const transcript = 'I was wondering what days you are open';
+  const transcript = 'I was wondering what hours you are open';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'answerable',
-    business_support: 'Monday through Friday',
+    business_support: 'Every day, 5 PM to 9 PM.',
   });
-  assert.match(action.text, /business information, Monday through Friday/i);
+  assert.match(action.text, /business information, Every day, 5 PM to 9 PM/i);
   assert.match(action.text, /other notes or business questions/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
@@ -1213,18 +1219,32 @@ test('service-catalog answers use an unrelated business context without trade-sp
   assert.equal(conversation.snapshot().values.service, 'Drain Clearing');
 });
 
-test('a grounded business question is answered and the pending field remains pending', () => {
+test('an owner-supplied Title and Info fact answers a semantic business question', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
-  const transcript = 'What days are you open?';
+  const transcript = 'When could I stop by?';
   const action = analyzedTurn(conversation, transcript, {
     business_answer_status: 'answerable',
-    business_support: 'Monday through Friday',
+    business_question: 'When could I stop by?',
+    business_question_type: 'other',
+    business_support: 'Every day, 5 PM to 9 PM.',
   });
-  assert.match(action.text, /business information, Monday through Friday/i);
+  assert.match(action.text, /business information, Every day, 5 PM to 9 PM/i);
   assert.match(action.text, /other notes or business questions/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
   assert.equal(conversation.snapshot().notes.length, 0);
+});
+
+test('turn analysis receives owner-supplied Title and Info facts as semantic evidence', () => {
+  const instructions = buildTurnAnalysisInstructions({
+    state: { pendingField: 'notes' },
+    callerTranscript: 'When could I stop by?',
+    context: CONTEXT,
+  });
+
+  assert.match(instructions, /SUPPLIED_BUSINESS_INFORMATION=/);
+  assert.match(instructions, /Every day, 5 PM to 9 PM/);
+  assert.match(instructions, /mark it unanswerable/);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {
