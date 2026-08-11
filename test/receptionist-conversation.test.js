@@ -802,6 +802,55 @@ test('bare hours are accepted for every day when business hours resolve AM or PM
   assert.equal(conversation.snapshot().values.preferredTime, '1');
 });
 
+test('Tuesday at 3 advances when the analyzer drops the clearly spoken time', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+  });
+
+  const action = analyzedTurn(conversation, 'Tuesday at 3.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '' },
+  });
+
+  assert.match(action.text, /additional notes/i);
+  assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
+  assert.equal(conversation.snapshot().values.preferredTime, '3');
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('a bare time-only reply advances when the analyzer drops it after saving the date', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+  });
+
+  let action = analyzedTurn(conversation, 'Tuesday.', {
+    fields: { preferred_date: 'Tuesday' },
+  });
+  assert.equal(action.text, 'What time would work best for the estimate?');
+
+  action = analyzedTurn(conversation, '3.');
+  assert.match(action.text, /additional notes/i);
+  assert.equal(conversation.snapshot().values.preferredTime, '3');
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
 test('a bare hour outside the estimate window asks for a valid time without an AM-or-PM detour', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Interior painting.', {
