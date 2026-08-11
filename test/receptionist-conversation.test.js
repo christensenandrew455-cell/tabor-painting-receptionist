@@ -685,6 +685,41 @@ test('partial addresses stay pending and later fragments combine without invente
   assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
 });
 
+test('the logged address sequence ignores a bad fragment and accepts the later city and state', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Interior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Interior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+
+  let action = analyzedTurn(conversation, "That'd be 197 Lancaster Road.", {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road' },
+  });
+  assert.equal(action.text, 'What city or town and state is that in?');
+  assert.equal(conversation.snapshot().partialAddress, '197 Lancaster Road');
+
+  action = analyzedTurn(conversation, 'Brown University.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Brown University' },
+  });
+  assert.deepEqual(action, { type: 'wait', preserve: true });
+  assert.equal(conversation.snapshot().values.address, '');
+
+  action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
+    turn_status: 'background_speech',
+  });
+  assert.match(action.text, /day or date/i);
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(conversation.snapshot().partialAddress, '');
+});
+
 test('the supplied split-address call waits for locality, avoids schedule repetition, and saves a concise note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
 
@@ -765,6 +800,30 @@ test('bare hours are accepted for every day when business hours resolve AM or PM
   const action = completeThroughSchedule(conversation);
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredTime, '1');
+});
+
+test('a bare hour outside the estimate window asks for a valid time without an AM-or-PM detour', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Interior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Interior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+
+  const action = analyzedTurn(conversation, 'Next Monday at 6.', {
+    fields: { preferred_date: 'Next Monday', preferred_time: '6' },
+  });
+  assert.match(action.text, /9:00 AM through 4:00 PM/i);
+  assert.match(action.text, /what time in that range/i);
+  assert.doesNotMatch(action.text, /AM or PM/i);
+  assert.equal(conversation.snapshot().values.preferredDate, 'Next Monday');
+  assert.equal(conversation.snapshot().values.preferredTime, '');
 });
 
 test('an unavailable day stays pending with a useful replacement question', () => {
