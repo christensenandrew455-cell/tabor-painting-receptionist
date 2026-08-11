@@ -444,10 +444,13 @@ test('a complete call collects, confirms, submits once, reports success, and end
       responseId: 'success',
       transcript: "You're all set. Your estimate request has been submitted.",
     });
-    assert.match(latestResponse(h.socket).response.instructions, /Thank you for calling Tabor Painting/i);
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /Thank you for filling out an estimate request\. Have a good day\./i,
+    );
     await finishSpeech(h.socket, {
       responseId: 'goodbye',
-      transcript: 'Thank you for calling Tabor Painting. Have a good day.',
+      transcript: 'Thank you for filling out an estimate request. Have a good day.',
     });
 
     assert.deepEqual(h.goodbye, [true]);
