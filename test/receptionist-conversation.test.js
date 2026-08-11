@@ -144,6 +144,20 @@ test('one authoritative state advances through the required field order exactly 
   });
 });
 
+test('a natural supplied-service request is accepted even when it ends as an availability question', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const transcript = "I just got a new deck, and the crew didn't stain it, so I need wood staining done. Do you offer that?";
+  const action = analyzedTurn(conversation, transcript, {
+    service_status: 'complete',
+    project_note: 'Stain the new deck.',
+    fields: { service: 'Wood Staining' },
+  });
+
+  assert.match(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().values.service, 'Wood Staining');
+  assert.deepEqual(conversation.snapshot().notes, ['Stain the new deck.']);
+});
+
 test('a reaction or unfinished thought stays silent and cannot complete service', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   assert.deepEqual(analyzedTurn(conversation, 'Oh.'), { type: 'wait', preserve: false });
@@ -318,7 +332,7 @@ test('project scope captured earlier stays in notes while the caller is asked on
 
   assert.match(action.text, /Do you have any additional notes and\/or business questions\?/i);
   assert.match(action.text, /business questions/i);
-  assert.deepEqual(conversation.snapshot().notes, ['Paint two upstairs rooms.']);
+  assert.deepEqual(conversation.snapshot().notes, ['Paint the two upstairs rooms.']);
 });
 
 test('code owns service-note wording and rejects a bad analyzer paraphrase without going silent', () => {
@@ -683,6 +697,38 @@ test('partial addresses stay pending and later fragments combine without invente
   });
   assert.match(action.text, /day or date/i);
   assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
+});
+
+test('a supplied town is retained and only the missing state is requested', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Wood staining.', {
+    service_status: 'complete',
+    fields: { service: 'Wood Staining' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+
+  let action = analyzedTurn(conversation, '197 Lancaster Road. Berlin', {
+    address_status: 'partial',
+    fields: { address: '197 Lancaster Road, Berlin' },
+  });
+  assert.equal(action.text, 'What state is Berlin in?');
+  assert.deepEqual(conversation.snapshot().partialAddressParts, {
+    street: '197 Lancaster Road',
+    locality: 'Berlin',
+    state: '',
+  });
+
+  action = analyzedTurn(conversation, 'Earlon, Massachusetts.', {
+    address_status: 'partial',
+    address_parts: { street: '', locality: 'Earlon', state: 'Massachusetts' },
+  });
+  assert.match(action.text, /day or date/i);
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
 });
 
 test('the logged address sequence ignores a bad fragment and accepts the later city and state', () => {
@@ -1097,6 +1143,74 @@ test('service and callback questions use supplied data while only an unknown dur
   assert.match(action.text, /Small Paint Repair/);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.deepEqual(conversation.snapshot().notes, ['How long would it take to paint one room?']);
+});
+
+test('misclassified questions about other services fall back to the dynamic supplied catalog', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Wood staining.', {
+    service_status: 'complete',
+    fields: { service: 'Wood Staining' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  analyzedTurn(conversation, 'Friday at 3.', {
+    fields: { preferred_date: 'Friday', preferred_time: '3' },
+  });
+
+  let action = analyzedTurn(conversation, 'Yeah, how many other services do you guys offer?', {
+    correction_field: 'notes',
+    business_question_type: 'other',
+  });
+  assert.match(action.text, /Tabor Painting lists three other services/i);
+  assert.doesNotMatch(action.text, /I don't know/i);
+  assert.deepEqual(conversation.snapshot().notes, []);
+
+  action = analyzedTurn(conversation, 'What other services are available?', {
+    business_answer_status: 'unanswerable',
+    business_question: 'What other services are available?',
+    business_question_type: 'remaining_service_list',
+  });
+  assert.match(action.text, /Exterior Painting/);
+  assert.match(action.text, /Interior Painting/);
+  assert.match(action.text, /Small Paint Repair/);
+  assert.doesNotMatch(action.text, /Wood Staining/);
+  assert.deepEqual(conversation.snapshot().notes, []);
+});
+
+test('service-catalog answers use an unrelated business context without trade-specific rules', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'Northside Home Services',
+    services: [
+      { name: 'Drain Clearing', description: 'Clear blocked household drains' },
+      { name: 'Water Heater Repair', description: 'Diagnose and repair water heaters' },
+      { name: 'Sewer Camera Inspection', description: 'Inspect sewer lines by camera' },
+    ],
+  };
+  const conversation = createReceptionistConversation({ context });
+
+  let action = analyzedTurn(conversation, 'Which services do you provide?', {
+    business_answer_status: 'unanswerable',
+    business_question: 'Which services do you provide?',
+    business_question_type: 'service_list',
+  });
+  assert.match(action.text, /Drain Clearing/);
+  assert.match(action.text, /Water Heater Repair/);
+  assert.match(action.text, /Sewer Camera Inspection/);
+  assert.match(action.text, /kind of work/i);
+
+  action = analyzedTurn(conversation, "The kitchen sink won't empty. Can you take care of it?", {
+    service_status: 'complete',
+    project_note: 'The kitchen sink will not empty.',
+    fields: { service: 'Drain Clearing' },
+  });
+  assert.match(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().values.service, 'Drain Clearing');
 });
 
 test('a grounded business question is answered and the pending field remains pending', () => {
