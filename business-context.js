@@ -2,7 +2,7 @@ const SENSITIVE_KEY = /(authorization|credential|password|secret|token|api[_-]?k
 const CONNECTION_KEY = /^(intakeUrl|mediaWebSocketUrl|runtimeUrl|usageUrl|webSocketUrl)$/i;
 const RECEPTIONIST_CONTROL_KEY = /^(?:(?:ai[\s_-]*)?receptionist(?:[\s_-]*name)?|ai[\s_-]*voice|voice)$/i;
 const PRIVATE_BUSINESS_DATA_KEY = /(?:phone|telephone|email)$/i;
-const OBSOLETE_BUSINESS_FACT_KEY = /^(about|extraInformation)$/i;
+const OBSOLETE_BUSINESS_FACT_KEY = /^(about|extraInformation|businessHours|hours)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
 const WEEKDAY_NAMES = Object.freeze([
   'sunday',
@@ -148,6 +148,48 @@ export function normalizeServices(value) {
   return [...unique.values()].slice(0, 100);
 }
 
+function businessInformationEntry(value, fallbackTitle = '') {
+  if (typeof value === 'string') {
+    const title = cleanText(fallbackTitle).slice(0, 120);
+    const info = cleanText(value).slice(0, 1_000);
+    return title && info ? { title, info } : null;
+  }
+
+  const item = objectValue(value);
+  const title = cleanText(item.title || item.name || item.label || fallbackTitle).slice(0, 120);
+  const info = cleanText(
+    item.info || item.information || item.details || item.description || item.value,
+  ).slice(0, 1_000);
+  return title && info ? { title, info } : null;
+}
+
+export function normalizeBusinessInformation(value) {
+  const entries = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const entry = businessInformationEntry(item);
+      if (entry) entries.push(entry);
+    }
+  } else if (value && typeof value === 'object') {
+    const directEntry = businessInformationEntry(value);
+    if (directEntry) {
+      entries.push(directEntry);
+    } else {
+      for (const [title, info] of Object.entries(value)) {
+        const entry = businessInformationEntry(info, title);
+        if (entry) entries.push(entry);
+      }
+    }
+  }
+
+  const unique = new Map();
+  for (const entry of entries) {
+    const key = `${entry.title}\u0000${entry.info}`.toLocaleLowerCase('en-US');
+    if (!unique.has(key)) unique.set(key, entry);
+  }
+  return [...unique.values()].slice(0, 50);
+}
+
 function sanitizeKnowledge(value, depth = 0) {
   if (depth > 6 || value === null || value === undefined) return undefined;
   if (typeof value === 'string') return cleanText(value).slice(0, 4_000);
@@ -168,6 +210,11 @@ function sanitizeKnowledge(value, depth = 0) {
       || PRIVATE_BUSINESS_DATA_KEY.test(key)
       || OBSOLETE_BUSINESS_FACT_KEY.test(key)
     ) continue;
+    if (/^businessInformation$/i.test(key)) {
+      const businessInformation = normalizeBusinessInformation(child);
+      if (businessInformation.length) result.businessInformation = businessInformation;
+      continue;
+    }
     const sanitized = sanitizeKnowledge(child, depth + 1);
     if (sanitized !== undefined) result[key] = sanitized;
   }
@@ -188,8 +235,6 @@ function publicRuntimeData(runtime, services) {
   const topLevelFields = [
     'businessName',
     'ownerName',
-    'businessHours',
-    'hours',
     'timeZone',
     'estimateDays',
     'estimateWeekdays',
@@ -197,6 +242,7 @@ function publicRuntimeData(runtime, services) {
     'latestEstimateStart',
     'businessBase',
     'serviceAreas',
+    'businessInformation',
   ];
   for (const field of topLevelFields) {
     if (runtime[field] !== undefined) selected[field] = runtime[field];
@@ -220,6 +266,15 @@ export function createBusinessContext(runtime = {}) {
     ?? valueAt(normalizedRuntime, 'config.services')
     ?? normalizedRuntime.services;
   const services = normalizeServices(serviceSource);
+  const businessInformation = normalizeBusinessInformation(
+    valueAt(normalizedRuntime, 'profile.businessInformation')
+      ?? valueAt(normalizedRuntime, 'business.businessInformation')
+      ?? valueAt(normalizedRuntime, 'businessInfo.businessInformation')
+      ?? valueAt(normalizedRuntime, 'website.businessInformation')
+      ?? valueAt(normalizedRuntime, 'knowledge.businessInformation')
+      ?? valueAt(normalizedRuntime, 'config.businessInformation')
+      ?? normalizedRuntime.businessInformation,
+  );
 
   const businessName = firstText(normalizedRuntime, [
     'profile.businessName',
@@ -288,6 +343,9 @@ export function createBusinessContext(runtime = {}) {
     latestEstimateStart,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),
+    businessInformation: Object.freeze(
+      businessInformation.map((item) => Object.freeze({ ...item })),
+    ),
     knowledgeJson,
   });
 }

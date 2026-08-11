@@ -20,6 +20,10 @@ test('removes private business contact and obsolete facts from model knowledge',
       about: 'Profile facts',
       extraInformation: 'Profile extra facts',
       businessHours: 'Monday through Friday, 9 AM to 5 PM',
+      hours: 'Weekends, 10 AM to 2 PM',
+      businessInformation: [
+        { title: 'Warranty', info: 'One year on labor.' },
+      ],
       serviceAreas: ['Worcester, Massachusetts'],
       services: {
         plumbing: 'Plumbing',
@@ -29,10 +33,13 @@ test('removes private business contact and obsolete facts from model knowledge',
 
   assert.equal(context.businessName, 'Example Service');
   assert.deepEqual(context.services.map((service) => service.name), ['plumbing']);
-  assert.match(context.knowledgeJson, /businessHours/);
+  assert.deepEqual(context.businessInformation, [
+    { title: 'Warranty', info: 'One year on labor.' },
+  ]);
+  assert.match(context.knowledgeJson, /One year on labor/);
   assert.match(context.knowledgeJson, /serviceAreas/);
   assert.doesNotMatch(context.knowledgeJson, /5555550123|5555550999/);
   assert.doesNotMatch(context.knowledgeJson, /private@example\.com|alerts@example\.com/);
   assert.doesNotMatch(context.knowledgeJson, /Old freeform facts|Profile facts|extra facts/);
-  assert.doesNotMatch(context.knowledgeJson, /businessPhone|businessEmail|contactPhone|notificationEmail|"about"|extraInformation/);
+  assert.doesNotMatch(context.knowledgeJson, /businessPhone|businessEmail|contactPhone|notificationEmail|"about"|extraInformation|businessHours|"hours"/);
 });

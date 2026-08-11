@@ -138,14 +138,19 @@ The ARC response can place public business information in `profile`, `business`,
       "Interior Painting": "Walls, ceilings, trim, and cabinets",
       "Exterior Painting": "Siding, trim, decks, and fences"
     },
-    "businessHours": "Monday through Friday, 8 AM to 5 PM",
+    "businessInformation": [
+      {
+        "title": "Warranty",
+        "info": "One year on labor."
+      }
+    ],
     "faqs": []
   },
   "intakeUrl": "https://ark-websites-ocm-xi.vercel.app/api/intake?clientId=CLIENT_ID&key=PRIVATE_CONNECTION_KEY&source=CLIENT_ID-receptionist"
 }
 ```
 
-Tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
+Estimate weekdays and start times are optional. When they are absent, the receptionist records the caller's preferred date and time without claiming that the preference falls inside an owner-configured scheduling window. Owner-supplied Title/Info items are available for grounded business-question answers. Legacy business-hours fields, tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
 
 ## ARC estimate payload
 

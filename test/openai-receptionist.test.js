@@ -18,7 +18,10 @@ const CONTEXT = Object.freeze({
     { name: 'Exterior Painting', description: 'Exterior painting' },
     { name: 'Interior Painting', description: 'Interior painting' },
   ],
-  knowledgeJson: '{"businessHours":"Monday through Friday"}',
+  businessInformation: [
+    { title: 'Warranty', info: 'One year on labor.' },
+  ],
+  knowledgeJson: '{"businessInformation":[{"title":"Warranty","info":"One year on labor."}]}',
 });
 
 class FakeWebSocket extends EventEmitter {
@@ -299,6 +302,8 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /server owns the intake state, question order, validation, confirmation, submission, and hangup/i);
   assert.match(prompt, /ordinary general knowledge only to understand natural speech/i);
   assert.match(prompt, /only when the supplied business information explicitly supports/i);
+  assert.match(prompt, /owner-supplied Title\/Info item/i);
+  assert.match(prompt, /One year on labor/i);
   assert.match(prompt, /never claim that a particular date or time is available/i);
   assert.match(prompt, /AI receptionist working for Tabor Painting, managed by ARC Client Center/i);
   assert.match(prompt, /call it once without speaking/i);

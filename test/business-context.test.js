@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBusinessContext, normalizeServices } from '../business-context.js';
+import {
+  createBusinessContext,
+  normalizeBusinessInformation,
+  normalizeServices,
+} from '../business-context.js';
 
 test('normalizes website services from an object map', () => {
   assert.deepEqual(normalizeServices({
@@ -9,6 +13,17 @@ test('normalizes website services from an object map', () => {
   }), [
     { name: 'Interior Painting', description: 'Walls and trim' },
     { name: 'Exterior Painting', description: 'Siding and decks' },
+  ]);
+});
+
+test('normalizes owner-supplied Title and Info items without inventing values', () => {
+  assert.deepEqual(normalizeBusinessInformation([
+    { title: ' Warranty ', info: ' One year on labor. ' },
+    { title: 'Warranty', info: 'One year on labor.' },
+    { title: '', info: 'Missing title' },
+    { title: 'Missing info', info: '' },
+  ]), [
+    { title: 'Warranty', info: 'One year on labor.' },
   ]);
 });
 
@@ -26,6 +41,9 @@ test('builds business context while removing connection secrets', () => {
       earliestEstimateStart: '09:00',
       latestEstimateStart: '16:00',
       services: [{ name: 'Cabinet Painting', description: 'Kitchen cabinets' }],
+      businessInformation: [
+        { title: 'Warranty', info: 'One year on labor.' },
+      ],
       apiKey: 'also-private',
       faq: [{ question: 'Do you paint cabinets?', answer: 'Yes.' }],
     },
@@ -46,6 +64,10 @@ test('builds business context while removing connection secrets', () => {
   assert.deepEqual(context.services, [
     { name: 'Cabinet Painting', description: 'Kitchen cabinets' },
   ]);
+  assert.deepEqual(context.businessInformation, [
+    { title: 'Warranty', info: 'One year on labor.' },
+  ]);
+  assert.match(context.knowledgeJson, /One year on labor/);
   assert.match(context.knowledgeJson, /Do you paint cabinets/);
   assert.doesNotMatch(context.knowledgeJson, /never-show-this-token/);
   assert.doesNotMatch(context.knowledgeJson, /also-private/);
@@ -70,6 +92,20 @@ test('normalizes textual estimate-day ranges from ARC', () => {
     'thursday',
     'friday',
   ]);
+});
+
+test('keeps estimate availability empty when the owner does not configure it', () => {
+  const context = createBusinessContext({
+    profile: {
+      businessName: 'Optional Schedule Services',
+      timeZone: 'America/New_York',
+      services: ['General Repair'],
+    },
+  });
+
+  assert.deepEqual(context.estimateWeekdays, []);
+  assert.equal(context.earliestEstimateStart, '');
+  assert.equal(context.latestEstimateStart, '');
 });
 
 test('accepts ARC profile data supplied as a JSON string', () => {

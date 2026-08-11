@@ -155,7 +155,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       business_answer_status: {
         type: 'string',
         enum: ['not_a_question', 'answerable', 'unanswerable'],
-        description: 'Use not_a_question whenever the caller is supplying an intake answer or project detail rather than seeking information. Use answerable only when the caller is actually asking for information and the supplied business information explicitly supports the answer.',
+        description: 'Use not_a_question whenever the caller is supplying an intake answer or project detail rather than seeking information. Use answerable only when the caller is actually asking for information and the supplied services, estimate-request window, or a supplied Title/Info business-information item explicitly supports the answer.',
       },
       business_question: {
         type: 'string',
@@ -177,7 +177,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       business_support: {
         type: 'string',
-        description: 'The shortest exact value or sentence copied from supplied business information that answers the question. Empty unless answerable.',
+        description: 'The shortest exact value or sentence copied from supplied business information that answers the question. For a Title/Info item, copy the exact supporting Info value without prepending its Title. Empty unless answerable.',
       },
     },
     required: [
@@ -603,6 +603,7 @@ function businessReference(context = {}) {
     (context.estimateWeekdays || []).join(' '),
     cleanText(context.earliestEstimateStart),
     cleanText(context.latestEstimateStart),
+    JSON.stringify(context.businessInformation || []),
     cleanText(context.knowledgeJson),
   ].filter(Boolean).join(' | ');
 }
@@ -812,9 +813,11 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Write project_note as a concise owner-facing action or condition statement, not a transcript. Fix broken grammar, remove filler and repeated ideas, and preserve all useful scope, location, quantity, condition, material, color, access directions, landmarks, or appearance details stated during any intake step. Prefer the caller\'s exact concrete nouns and work action, rearranging them rather than replacing them with synonyms such as changed, serviced, or repaired unless the caller actually used that meaning. Do not repeat the structured service category, caller name, street address, preferred date/time, consent, or summary confirmation in project_note. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech when the caller is talking to someone else or making an unrelated self-directed remark and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first. When AUTHORITATIVE_CALL_STATE.holdActive is true, be especially strict: unrelated speech remains background_speech and only a relevant answer, correction, business question, or explicit statement that the caller is ready ends the hold.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
+    'The supplied Title/Info business-information items are authoritative business facts. If one directly supports a caller question, mark it answerable and copy the shortest exact supporting Info value into business_support. If no supplied fact answers the question, mark it unanswerable.',
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
     `LATEST_CALLER_TRANSCRIPT=${JSON.stringify(cleanText(callerTranscript))}`,
     `SUPPLIED_SERVICES=${JSON.stringify(suppliedServices)}`,
+    `SUPPLIED_BUSINESS_INFORMATION=${JSON.stringify(context.businessInformation || [])}`,
     `ESTIMATE_REQUEST_WINDOW=${JSON.stringify({
       weekdays: context.estimateWeekdays || [],
       earliestStart: context.earliestEstimateStart || '',
