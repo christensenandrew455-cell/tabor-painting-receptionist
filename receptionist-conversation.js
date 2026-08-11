@@ -386,6 +386,19 @@ export function isProjectNoteGroundedInCallerEvidence(note, callerTranscript) {
 
 const MONTH_PATTERN = 'january|february|march|april|may|june|july|august|september|october|november|december';
 const WEEKDAY_PATTERN = 'sunday|monday|tuesday|wednesday|thursday|friday|saturday';
+const SPOKEN_HOUR_PATTERN = 'one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve';
+const CLOCK_TIME_PATTERN = `(?:[01]?\\d|2[0-3])(?::[0-5]\\d)?|${SPOKEN_HOUR_PATTERN}|noon|midnight`;
+
+function normalizedTimePhrase(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[’]/g, "'")
+    .replace(/\b([ap])\s*\.\s*m\.?/g, '$1m')
+    .replace(/(\d)\s*:\s*(\d)/g, '$1:$2')
+    .replace(/[^\p{L}\p{N}':]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function requestedDateCandidate(value, context = {}) {
   const text = cleanText(value);
@@ -418,6 +431,36 @@ function requestedDateCandidate(value, context = {}) {
     }
   }
   return '';
+}
+
+function requestedTimeCandidate(value, { dateCandidate = '', allowBare = false } = {}) {
+  const text = normalizedTimePhrase(value);
+  if (!text) return '';
+
+  const explicit = text.match(new RegExp(
+    `\\b(?:at|around|about)\\s+(${CLOCK_TIME_PATTERN})(?:\\s+o'?clock)?(?:\\s*(am|pm))?\\b`,
+    'i',
+  ));
+  if (explicit) return cleanText(`${explicit[1]} ${explicit[2] || ''}`);
+
+  const meridiem = text.match(new RegExp(
+    `\\b(${CLOCK_TIME_PATTERN})(?:\\s+o'?clock)?\\s*(am|pm)\\b`,
+    'i',
+  ));
+  if (meridiem) return cleanText(`${meridiem[1]} ${meridiem[2]}`);
+
+  const oClock = text.match(new RegExp(`\\b(${CLOCK_TIME_PATTERN})\\s+o'?clock\\b`, 'i'));
+  if (oClock) return cleanText(oClock[1]);
+  if (!allowBare) return '';
+
+  let remainder = text;
+  const dateText = normalizedTimePhrase(dateCandidate);
+  if (dateText) remainder = cleanText(remainder.replace(dateText, ' '));
+  const bare = remainder.match(new RegExp(
+    `^(?:(?:i said|i meant|i mean|make it|it is|it's|at|around|about|probably|maybe|okay|ok|uh|um)\\s+)*(${CLOCK_TIME_PATTERN})(?:\\s+o'?clock)?(?:\\s*(am|pm))?$`,
+    'i',
+  ));
+  return bare ? cleanText(`${bare[1]} ${bare[2] || ''}`) : '';
 }
 
 function isScheduleOnlyProjectNote(note, dateCandidate) {
@@ -684,6 +727,7 @@ export function buildTurnAnalysisInstructions({ state, callerTranscript, context
     'Use general language understanding for names, addresses, dates, times, corrections, and obvious service matching.',
     'Decision priority: first interpret the turn as an answer to the pending estimate field; second extract any extra project detail into project_note; only then classify a separate request for information as a business question. A valid intake answer or useful project statement is not an unknown business question.',
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
+    'When schedule is pending, retain both parts of a combined answer: “Tuesday at 3” means preferred_date is “Tuesday” and preferred_time is “3”. Keep a bare spoken hour without adding AM or PM; the server resolves it from the supplied estimate-request window when only one interpretation fits.',
     'The caller should describe the work naturally. A direct category such as “interior painting” and an indirect description such as “repaint my whole basement” are both service answers when they map to a supplied service. Map that description only to the supplied service list; never assume a painting, HVAC, plumbing, electrical, automotive, carpentry, or other trade that was not supplied for this business.',
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
     'Only classify business questions while AUTHORITATIVE_CALL_STATE.pendingField is notes, except an estimate-request-window question may be classified while schedule is pending. During service, name, address, or consent collection, keep business_answer_status=not_a_question, business_question empty, and business_question_type=none; focus only on the pending estimate field and extra project details. The server separately handles identity, field-reason, hold, and conversation-repair controls.',
@@ -1146,6 +1190,14 @@ export function createReceptionistConversation({ context }) {
       return { type: 'speak', text: bareQuestion() };
     }
     const detectedDate = requestedDateCandidate(transcript, context);
+    const detectedTime = requestedTimeCandidate(transcript, {
+      dateCandidate: detectedDate,
+      allowBare: Boolean(values.preferredDate || detectedDate) && (
+        pendingField() === 'schedule'
+        || analysis.correction_field === 'schedule'
+        || isExplicitCorrectionRequest(transcript)
+      ),
+    });
     if (
       isExplicitCorrectionRequest(transcript)
       && (
@@ -1165,6 +1217,17 @@ export function createReceptionistConversation({ context }) {
     const dateCandidate = shouldCaptureDetectedDate ? detectedDate : '';
     if (dateCandidate && !analysis.fields.preferred_date) {
       analysis.fields.preferred_date = dateCandidate;
+    }
+    const shouldCaptureDetectedTime = detectedTime && (
+      pendingField() === 'schedule'
+      || analysis.correction_field === 'schedule'
+      || Boolean(dateCandidate)
+    );
+    if (
+      shouldCaptureDetectedTime
+      && !isGroundedInCallerEvidence(analysis.fields.preferred_time, [transcript])
+    ) {
+      analysis.fields.preferred_time = detectedTime;
     }
     if (phase === 'summary') return applySummaryAnalysis(analysis, transcript);
     if (phase !== 'collecting') return { type: 'wait' };
