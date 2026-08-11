@@ -244,6 +244,18 @@ function exactSpeechInstruction(text) {
   return `Say exactly this text and nothing else: ${JSON.stringify(cleanText(text))}`;
 }
 
+function retryQuestionFromSpeech(value, fallback = '') {
+  const speech = cleanText(value);
+  if (!speech.endsWith('?')) return cleanText(fallback);
+  const searchEnd = Math.max(0, speech.length - 2);
+  const boundary = Math.max(
+    speech.lastIndexOf('. ', searchEnd),
+    speech.lastIndexOf('! ', searchEnd),
+    speech.lastIndexOf('? ', searchEnd),
+  );
+  return cleanText(speech.slice(boundary < 0 ? 0 : boundary + 2));
+}
+
 function createSafetyIdentifier(runtime = {}, callControlId = '') {
   const identity = cleanText(runtime?.clientId || runtime?.businessId || runtime?.id || callControlId);
   if (!identity) return 'anonymous-receptionist-call';
@@ -302,6 +314,8 @@ export function createOpenAiReceptionist({
   const activeResponseIds = new Set();
   const assistantTranscriptDeltas = new Map();
   const emittedTranscriptKeys = new Set();
+  const pendingCallerTranscriptions = new Set();
+  const deferredAnalysisCompletions = [];
   const conversation = createReceptionistConversation({ context });
   const intake = createIntakeManager({
     context,
@@ -328,6 +342,7 @@ export function createOpenAiReceptionist({
   let holdDeadlineAt = 0;
   let receptionistPlaybackEndAt = 0;
   let currentPlayback = null;
+  let analysisCompletionQueued = false;
   let work = Promise.resolve();
   let usageSummary = {
     model,
@@ -352,6 +367,29 @@ export function createOpenAiReceptionist({
   function clearIncompleteTurnRecovery() {
     if (incompleteTurnTimer) clearTimeout(incompleteTurnTimer);
     incompleteTurnTimer = null;
+  }
+
+  function callerTurnKey(event = {}) {
+    return cleanText(event.item_id) || 'pending-caller-turn';
+  }
+
+  function markCallerTranscriptionPending(event = {}) {
+    pendingCallerTranscriptions.add(callerTurnKey(event));
+  }
+
+  function markCallerTranscriptionComplete(event = {}) {
+    pendingCallerTranscriptions.delete(callerTurnKey(event));
+  }
+
+  function flushDeferredAnalysis() {
+    if (
+      callerSpeechActive
+      || pendingCallerTranscriptions.size
+      || !deferredAnalysisCompletions.length
+    ) return false;
+    const deferred = deferredAnalysisCompletions.shift();
+    handleAnalysisResponse(deferred.purpose, deferred.response);
+    return true;
   }
 
   function clearHoldState() {
@@ -380,7 +418,12 @@ export function createOpenAiReceptionist({
     incompleteTurnTimer = setTimeout(() => {
       incompleteTurnTimer = null;
       if (closed || endingCall || finalizing || submitted) return;
-      if (callerSpeechActive || !canCreateResponse() || pendingCallerTurns.length) {
+      if (
+        callerSpeechActive
+        || pendingCallerTranscriptions.size
+        || !canCreateResponse()
+        || pendingCallerTurns.length
+      ) {
         scheduleIncompleteTurnRecovery(text, 250, { endHold, yieldToCaller });
         return;
       }
@@ -410,10 +453,15 @@ export function createOpenAiReceptionist({
     });
   }
 
-  function scheduleCallerSilenceRecovery(delayMs = recoveryDelayMs) {
-    if (callerSpeechActive || pendingCallerTurns.length || !canCreateResponse()) return;
+  function scheduleCallerSilenceRecovery(delayMs = recoveryDelayMs, text = '') {
+    if (
+      callerSpeechActive
+      || pendingCallerTranscriptions.size
+      || pendingCallerTurns.length
+      || !canCreateResponse()
+    ) return;
     if (holdActive) scheduleHoldRecovery();
-    else scheduleQuestionRepeat(conversation.bareQuestion(), delayMs);
+    else scheduleQuestionRepeat(cleanText(text) || conversation.bareQuestion(), delayMs);
   }
 
   function sendSessionUpdate() {
@@ -585,6 +633,7 @@ export function createOpenAiReceptionist({
       maxOutputTokens: tokenOverride.max_output_tokens || null,
       failureSpeech: cleanText(failureSpeech),
       yieldToCaller: Boolean(yieldToCaller),
+      retrySpeech: retryQuestionFromSpeech(speech, conversation.bareQuestion()),
     });
   }
 
@@ -941,6 +990,13 @@ export function createOpenAiReceptionist({
     }
     if (recoverFailedResponse(purpose, event.response || {})) return;
     if (purpose.kind === 'analysis') {
+      if (callerSpeechActive || pendingCallerTranscriptions.size) {
+        deferredAnalysisCompletions.push({
+          purpose,
+          response: event.response || {},
+        });
+        return;
+      }
       handleAnalysisResponse(purpose, event.response || {});
       return;
     }
@@ -970,7 +1026,7 @@ export function createOpenAiReceptionist({
       ? purpose.firstAudioAt + Math.ceil((purpose.audioBytes / PCMU_BYTES_PER_SECOND) * 1_000)
       : Date.now();
     receptionistPlaybackEndAt = Math.max(receptionistPlaybackEndAt, estimatedPlaybackEndAt);
-    scheduleCallerSilenceRecovery(recoveryDelayMs);
+    scheduleCallerSilenceRecovery(recoveryDelayMs, purpose.retrySpeech);
   }
 
   openai.on('open', () => {
@@ -1015,19 +1071,24 @@ export function createOpenAiReceptionist({
     }
     if (event.type === 'input_audio_buffer.speech_stopped') {
       callerSpeechActive = false;
+      markCallerTranscriptionPending(event);
       lastSpeechStoppedAt = Date.now();
       return;
     }
     if (event.type === 'input_audio_buffer.speech_started') {
       callerSpeechActive = true;
+      markCallerTranscriptionPending(event);
       clearIncompleteTurnRecovery();
       interruptRetryForCallerSpeech();
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.failed') {
+      callerSpeechActive = false;
+      markCallerTranscriptionComplete(event);
       reportError(new Error(
         event.error?.message || 'Caller audio transcription failed.',
       ));
+      if (flushDeferredAnalysis() || analysisCompletionQueued) return;
       const retry = receptionistIsSpeakingOrPlaying()
         ? conversation.bareQuestion()
         : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
@@ -1038,8 +1099,11 @@ export function createOpenAiReceptionist({
       return;
     }
     if (event.type === 'conversation.item.input_audio_transcription.completed') {
+      callerSpeechActive = false;
+      markCallerTranscriptionComplete(event);
       const callerTranscript = cleanText(event.transcript);
       if (!callerTranscript) {
+        if (flushDeferredAnalysis() || analysisCompletionQueued) return;
         const retry = receptionistIsSpeakingOrPlaying()
           ? conversation.bareQuestion()
           : `${UNCLEAR_CALLER_RESPONSE} ${conversation.bareQuestion()}`;
@@ -1052,7 +1116,7 @@ export function createOpenAiReceptionist({
       conversation.recordCallerTranscript(callerTranscript);
       emitTranscript('caller', callerTranscript, { itemId: cleanText(event.item_id) });
       queueCallerTurn(callerTranscript, event.item_id);
-      dispatchCallerTurn();
+      if (!flushDeferredAnalysis() && !analysisCompletionQueued) dispatchCallerTurn();
       return;
     }
     if (event.type === 'response.created') {
@@ -1152,9 +1216,13 @@ export function createOpenAiReceptionist({
       captureResponseTranscripts(event.response);
       usageSummary = addResponseUsage(usageSummary, event.response?.usage, model);
       if (event.response?.usage) onUsage?.({ ...usageSummary });
+      if (purpose?.kind === 'analysis') analysisCompletionQueued = true;
       work = work
         .then(() => handleResponseComplete(event, purpose))
-        .catch(reportError);
+        .catch(reportError)
+        .finally(() => {
+          if (purpose?.kind === 'analysis') analysisCompletionQueued = false;
+        });
     }
   });
 
@@ -1184,6 +1252,8 @@ export function createOpenAiReceptionist({
       pendingAudio.length = 0;
       pendingCallerTurns.length = 0;
       pendingResponsePurposes.length = 0;
+      deferredAnalysisCompletions.length = 0;
+      pendingCallerTranscriptions.clear();
       responseRequestPurposes.clear();
       pendingCallerFragment = '';
       try { openai.close(); } catch {}
