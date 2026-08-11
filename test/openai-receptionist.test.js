@@ -156,7 +156,12 @@ async function finishAnalysis(socket, {
   await nextTurn();
 }
 
-async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs } = {}) {
+async function createHarness({
+  context = CONTEXT,
+  deliver,
+  incompleteTurnRecoveryMs,
+  holdRecoveryMs,
+} = {}) {
   const previousApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
   const audio = [];
@@ -167,7 +172,7 @@ async function createHarness({ deliver, incompleteTurnRecoveryMs, holdRecoveryMs
   const latencies = [];
   const playbackClears = [];
   const receptionist = createOpenAiReceptionist({
-    context: CONTEXT,
+    context,
     runtime: { clientId: 'client-123' },
     callControlId: 'call-123',
     callerPhone: '+15555550123',
@@ -929,6 +934,184 @@ test('a timed question repeat yields immediately when the caller answers', async
     assert.deepEqual(h.receptionist.snapshot().state.notes, [
       'Paint the whole outside of the house.',
     ]);
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a newer caller turn supersedes stale analysis before the receptionist can repeat', async () => {
+  const h = await createHarness();
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'stale-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    caller(h.socket, 'I need my living room painted.', 'stale-service');
+    await finishAnalysis(h.socket, {
+      responseId: 'stale-service-analysis',
+      args: analysis({
+        service_status: 'complete',
+        project_note: 'Paint the living room.',
+        fields: { service: 'Interior Painting' },
+      }),
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'stale-name-question',
+      transcript: 'Okay, what name should I use for the estimate request?',
+    });
+    caller(h.socket, 'Andrew Christensen.', 'stale-name');
+    await finishAnalysis(h.socket, {
+      responseId: 'stale-name-analysis',
+      args: analysis({ fields: { name: 'Andrew Christensen' } }),
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'stale-address-question',
+      transcript: "Thanks. What's the full project address?",
+    });
+    caller(h.socket, "That'd be 197 Lancaster Road.", 'stale-street');
+    await finishAnalysis(h.socket, {
+      responseId: 'stale-street-analysis',
+      args: analysis({
+        address_status: 'partial',
+        fields: { address: '197 Lancaster Road' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /city or town and state/i);
+    await finishSpeech(h.socket, {
+      responseId: 'stale-locality-question',
+      transcript: 'What city or town and state is that in?',
+    });
+
+    caller(h.socket, 'Brown University.', 'stale-bad-locality');
+    h.socket.receive({
+      type: 'response.created',
+      response: { id: 'stale-bad-locality-analysis' },
+    });
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'stale-good-locality',
+    });
+    h.socket.receive({
+      type: 'input_audio_buffer.speech_stopped',
+      item_id: 'stale-good-locality',
+    });
+    const beforeOldAnalysisFinishes = responseCreates(h.socket).length;
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'stale-bad-locality-analysis',
+        output: [{
+          id: 'stale-bad-locality-call-item',
+          type: 'function_call',
+          name: 'analyze_caller_turn',
+          call_id: 'stale-bad-locality-call',
+          arguments: JSON.stringify(analysis({ address_status: 'partial' })),
+        }],
+      },
+    });
+    await nextTurn();
+    await nextTurn();
+    assert.equal(responseCreates(h.socket).length, beforeOldAnalysisFinishes);
+
+    h.socket.receive({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'stale-good-locality',
+      transcript: 'Berlin, Massachusetts.',
+    });
+    await nextTurn();
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    await finishAnalysis(h.socket, {
+      responseId: 'stale-combined-locality-analysis',
+      args: analysis({ turn_status: 'background_speech' }),
+    });
+
+    assert.match(latestResponse(h.socket).response.instructions, /day or date/i);
+    assert.equal(
+      h.receptionist.snapshot().state.values.address,
+      '197 Lancaster Road, Berlin, Massachusetts',
+    );
+    assert.equal(
+      responseCreates(h.socket).filter((event) => /city or town and state/i.test(
+        event.response?.instructions || '',
+      )).length,
+      1,
+    );
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
+test('silence repeats the AM-or-PM clarification instead of replacing it with a generic time question', async () => {
+  const h = await createHarness({
+    context: {
+      ...CONTEXT,
+      earliestEstimateStart: '00:00',
+      latestEstimateStart: '23:59',
+    },
+    incompleteTurnRecoveryMs: 20,
+  });
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'meridiem-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+    const steps = [
+      {
+        callerText: 'Interior painting.',
+        args: analysis({
+          service_status: 'complete',
+          fields: { service: 'Interior Painting' },
+        }),
+        speech: 'Okay, what name should I use for the estimate request?',
+      },
+      {
+        callerText: 'Andrew Christensen.',
+        args: analysis({ fields: { name: 'Andrew Christensen' } }),
+        speech: "Thanks. What's the full project address?",
+      },
+      {
+        callerText: '197 Lancaster Road, Berlin, Massachusetts.',
+        args: analysis({
+          address_status: 'complete',
+          fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+        }),
+        speech: 'Got it. What day or date would you prefer for the estimate, and what time works best?',
+      },
+    ];
+    for (const [index, step] of steps.entries()) {
+      caller(h.socket, step.callerText, `meridiem-caller-${index}`);
+      await finishAnalysis(h.socket, {
+        responseId: `meridiem-analysis-${index}`,
+        args: step.args,
+      });
+      await finishSpeech(h.socket, {
+        responseId: `meridiem-speech-${index}`,
+        transcript: step.speech,
+      });
+    }
+
+    caller(h.socket, 'Next Monday at 6.', 'meridiem-schedule');
+    await finishAnalysis(h.socket, {
+      responseId: 'meridiem-schedule-analysis',
+      args: analysis({
+        fields: { preferred_date: 'Next Monday', preferred_time: '6' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /Do you mean AM or PM\?/i);
+    await finishSpeech(h.socket, {
+      responseId: 'meridiem-clarification',
+      transcript: 'Do you mean AM or PM?',
+      audio: '',
+    });
+
+    const beforeRepeat = responseCreates(h.socket).length;
+    await wait(80);
+    assert.equal(responseCreates(h.socket).length, beforeRepeat + 1);
+    const retry = latestResponse(h.socket).response.instructions;
+    assert.match(retry, /Do you mean AM or PM\?/i);
+    assert.doesNotMatch(retry, /What time would work best/i);
     assert.equal(h.errors.length, 0);
   } finally {
     h.restore();
