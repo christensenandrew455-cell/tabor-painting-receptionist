@@ -277,16 +277,25 @@ export function callerVolunteeredName(value) {
   return nameShapedCandidate(candidate, { rejectActionForm: !isExplicitIntroduction });
 }
 
-export function hasUsableServiceAnswer(value, context = {}) {
+export function hasUsableServiceAnswer(value, context = {}, { confirmedService = '' } = {}) {
   const text = cleanText(value);
   const normalized = normalizedCallerText(text);
   const requestShapedQuestion = /^(?:can|could|would) (?:you|the business|they)\s+(?!tell|explain|say|give)\S+/i.test(normalized);
+  const matchesSuppliedService = resemblesSuppliedService(text, context);
+  const modelMappedToSuppliedService = Boolean(confirmedService) && (context.services || []).some(
+    (service) => normalizedCallerText(service?.name) === normalizedCallerText(confirmedService),
+  );
   const hasServiceSignal = PROJECT_INTENT_PATTERN.test(text)
     || ACTION_FORM_PATTERN.test(text)
-    || resemblesSuppliedService(text, context);
+    || matchesSuppliedService;
   if (classifyCallerTranscript(text) !== 'meaningful' || isStandaloneBackchannel(text)) return false;
   if (isConversationRepairRequest(text) || isClearAffirmative(text) || isClearNegative(text)) return false;
-  if (looksLikeBusinessQuestion(text) && !requestShapedQuestion) return false;
+  if (
+    looksLikeBusinessQuestion(text)
+    && !requestShapedQuestion
+    && !matchesSuppliedService
+    && !modelMappedToSuppliedService
+  ) return false;
   if ((ADDRESS_PATTERN.test(text) || SCHEDULE_PATTERN.test(text)) && !hasServiceSignal) return false;
   if (
     callerVolunteeredName(text)
@@ -332,11 +341,17 @@ export function fullAddressFromCallerText(value) {
     .trim();
   const afterStreet = candidate.slice(street[0].length);
   const state = firstTerminalStateMatch(afterStreet);
-  if (state && state.index !== undefined) {
-    candidate = candidate
-      .slice(0, street[0].length + state.index + state[1].length)
-      .trim();
-  }
+  if (!state || state.index === undefined) return '';
+  const localityText = afterStreet
+    .slice(0, state.index)
+    .replace(/^\s*(?:,|\bin\b)\s*/i, '')
+    .replace(/[,;:.!?\s]+$/g, '')
+    .trim();
+  const localityWords = localityText.match(/[\p{L}][\p{L}.'’-]*/gu) || [];
+  if (!localityWords.length || LOCALITY_BLOCKERS.test(localityText)) return '';
+  candidate = candidate
+    .slice(0, street[0].length + state.index + state[1].length)
+    .trim();
   const remainder = candidate.slice(street[0].length)
     .replace(/^\s*(?:,|\bin\b)\s*/i, '')
     .trim();
@@ -370,6 +385,43 @@ function localityCandidate(value) {
     return '';
   }
   return candidate;
+}
+
+export function addressPartsFromCallerText(value) {
+  const text = cleanText(value);
+  if (!text) return { street: '', locality: '', state: '' };
+
+  const streetMatch = text.match(ADDRESS_PATTERN);
+  const street = cleanText(streetMatch?.[0]).replace(/[.!?]+$/g, '');
+  let localitySource = text;
+  let state = '';
+
+  if (streetMatch && streetMatch.index !== undefined) {
+    const afterStreet = text.slice(streetMatch.index + streetMatch[0].length);
+    const stateMatch = firstTerminalStateMatch(afterStreet);
+    if (stateMatch && stateMatch.index !== undefined) {
+      state = cleanText(stateMatch[1]).replace(/\s+/g, ' ');
+      localitySource = afterStreet.slice(0, stateMatch.index);
+    } else {
+      localitySource = afterStreet;
+    }
+  } else {
+    const segment = lastSpokenSegment(text);
+    const stateMatch = terminalStateMatch(segment);
+    if (stateMatch && stateMatch.index !== undefined) {
+      state = cleanText(stateMatch[1]).replace(/\s+/g, ' ');
+      localitySource = segment.slice(0, stateMatch.index);
+    } else {
+      localitySource = segment;
+    }
+  }
+
+  const locality = localityCandidate(localitySource);
+  return {
+    street,
+    locality: normalizedCallerText(locality) === normalizedCallerText(state) ? '' : locality,
+    state,
+  };
 }
 
 function localityAndStateFromTurns(value, previousValue = '') {
