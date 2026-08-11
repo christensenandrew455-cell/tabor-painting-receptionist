@@ -939,7 +939,7 @@ test('the analyzer can identify a business question by meaning without a keyword
 
   assert.equal(
     action.text,
-    "I'm sorry, I don't know that. I'll add that question to the notes. Do you have any other notes or business questions?",
+    "I'm sorry, I don't know that one. I'll add it to the notes. Do you have any other notes or business questions?",
   );
   assert.deepEqual(conversation.snapshot().notes, [transcript]);
 });
@@ -971,7 +971,7 @@ test('notes-step duration questions from the supplied transcript are answered or
 
     assert.equal(
       action.text,
-      "I'm sorry, I don't know that. I'll add that question to the notes. Do you have any other notes or business questions?",
+      "I'm sorry, I don't know that one. I'll add it to the notes. Do you have any other notes or business questions?",
     );
     assert.deepEqual(conversation.snapshot().notes, [savedQuestion]);
     assert.equal(conversation.snapshot().pendingField, 'notes');
@@ -1015,6 +1015,41 @@ test('the latest supplied call becomes concise notes without preserving a hesita
   assert.deepEqual(conversation.snapshot().notes, [
     'Paint the whole outside of the house.',
     'How long will the job take?',
+  ]);
+});
+
+test('the supplied repair call simplifies its notes and handles a duration question despite a false notes correction', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  const serviceTurn = "Um, well, uh, I'm just looking to get, like, a hole in my wall fixed. I, yeah, I accidentally punched it, if I'm gonna be honest with you.";
+  analyzedTurn(conversation, serviceTurn, {
+    service_status: 'complete',
+    project_note: "Fix I'm just looking to get, like, a hole in the wall. I, yeah, I accidentally punched it, if I'm gonna be honest with you.",
+    fields: { service: 'Small Paint Repair' },
+  });
+  analyzedTurn(conversation, 'Andrew works fine.', {
+    fields: { name: 'Andrew' },
+  });
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  analyzedTurn(conversation, 'Next Thursday at 3.', {
+    fields: { preferred_date: 'Next Thursday', preferred_time: '3' },
+  });
+
+  const question = 'Yeah, I was wondering how long the patch will take?';
+  const action = analyzedTurn(conversation, question, {
+    correction_field: 'notes',
+    project_note: 'How long the patch will take?',
+  });
+
+  assert.equal(
+    action.text,
+    "I'm sorry, I don't know that one. I'll add it to the notes. Do you have any other notes or business questions?",
+  );
+  assert.deepEqual(conversation.snapshot().notes, [
+    'Fix a hole in the wall. Accidentally punched it.',
+    'How long will the patch take?',
   ]);
 });
 
