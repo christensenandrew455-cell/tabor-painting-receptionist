@@ -651,9 +651,8 @@ export function createOpenAiReceptionist({
     if (endingCall || closed) return;
     endingCall = true;
     clearIncompleteTurnRecovery();
-    const businessName = spokenBusinessName(context.businessName);
     requestSpeech(
-      `Thank you for calling ${businessName}. Have a good day.`,
+      'Thank you for filling out an estimate request. Have a good day.',
       { after: 'complete' },
     );
   }
