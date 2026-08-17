@@ -96,7 +96,7 @@ PORT
 ```
 
 For the current ARK OCM integration, set `RECEPTIONIST_CONFIG_URL` to
-`https://ark-websites-ocm-xi.vercel.app/api/receptionist/runtime`. Leave
+`https://ark-websites-ocm.vercel.app/api/receptionist/runtime`. Leave
 `ARC_INTAKE_URL` unset: the runtime response supplies the correct private URL for the
 business matched to the called Telnyx number. ARC-provided settings take precedence
 over the optional intake URL and business timezone fallback. Voice is controlled only
@@ -146,7 +146,7 @@ The ARC response can place public business information in `profile`, `business`,
     ],
     "faqs": []
   },
-  "intakeUrl": "https://ark-websites-ocm-xi.vercel.app/api/intake?clientId=CLIENT_ID&key=PRIVATE_CONNECTION_KEY&source=CLIENT_ID-receptionist"
+  "intakeUrl": "https://ark-websites-ocm.vercel.app/api/intake?clientId=CLIENT_ID&key=PRIVATE_CONNECTION_KEY&source=CLIENT_ID-receptionist"
 }
 ```
 
