@@ -192,6 +192,40 @@ test('a clearly spoken full address advances even when the analyzer omits it', (
   assert.match(action.text, /day or date/i);
 });
 
+test('a city and state alone stay pending until a numbered street address is supplied', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+
+  let action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
+    address_status: 'complete',
+    address_parts: { street: '', locality: 'Berlin', state: 'Massachusetts' },
+    fields: { address: 'Berlin, Massachusetts' },
+  });
+
+  assert.equal(conversation.snapshot().values.address, '');
+  assert.equal(conversation.snapshot().pendingField, 'address');
+  assert.match(action.text, /street address/i);
+
+  action = analyzedTurn(conversation, '197 Lancaster Road.', {
+    address_status: 'partial',
+    address_parts: { street: '197 Lancaster Road', locality: '', state: '' },
+    fields: { address: '197 Lancaster Road' },
+  });
+
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.match(action.text, /day or date/i);
+});
+
 test('a grounded full address outranks a false unintelligible label', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'I need the exterior of my house painted.', {
@@ -285,6 +319,53 @@ test('a caller note is saved and acknowledged when the analyzer leaves project_n
     conversation.intakeArguments().additional_notes,
     'The side gate sticks, so please use the back gate.',
   );
+});
+
+test('an affirmative-prefixed note is saved immediately without an analyzer round trip', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  const action = conversation.captureObviousNote(
+    "Yeah, uh, the lawn's a little bumpy, so just tell them to look out, you know.",
+  );
+
+  assert.equal(action.type, 'speak');
+  assert.equal(
+    action.text,
+    'Okay, I put that down. Do you have any other notes or business questions?',
+  );
+  assert.deepEqual(conversation.snapshot().notes, [
+    "The lawn's a little bumpy, so just tell them to look out, you know.",
+  ]);
+});
+
+test('conversation-repair wording is never included in a saved note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  conversation.captureObviousNote("I already told you. The lawn's a little bumpy.");
+
+  assert.deepEqual(conversation.snapshot().notes, ["The lawn's a little bumpy."]);
+});
+
+test('a plain lawn-mowing request is not duplicated into project notes', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Lawn Mowing', description: 'Lawn mowing' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+
+  analyzedTurn(
+    conversation,
+    'I was wondering if I could get someone to come over here and mow my lawn.',
+    {
+      service_status: 'complete',
+      fields: { service: 'Lawn Mowing' },
+    },
+  );
+
+  assert.deepEqual(conversation.snapshot().notes, []);
+  assert.equal(conversation.snapshot().pendingField, 'name');
 });
 
 test('a grounded caller note replaces an analyzer note that was not supported by the call', () => {

@@ -253,11 +253,11 @@ function projectNoteTokens(value) {
 
 const SERVICE_NOTE_GENERIC_WORDS = new Set([
   'actually', 'am', 'are', 'basically', 'believe', 'can', 'could', 'done', 'figure',
-  'get', 'go', 'gonna', 'guess', 'help', 'hope', "i'm",
+  'come', 'get', 'go', 'gonna', 'guess', 'help', 'here', 'hope', "i'm",
   "i've", 'job',
-  'just', 'kind', 'like',
+  'if', 'just', 'kind', 'like',
   'look', 'maybe', 'need', 'okay', 'ok', 'please', 'probably', 'project', 'sorry',
-  'somebody', 'someone', 'sort', 'suppose', 'think', 'try', 'uh', 'um', 'want', 'well', 'work', 'yeah',
+  'over', 'somebody', 'someone', 'sort', 'suppose', 'think', 'try', 'uh', 'um', 'want', 'was', 'well', 'were', 'wonder', 'work', 'yeah',
   'yes', 'will', 'would', "we're", "we've",
 ]);
 
@@ -354,6 +354,7 @@ function cleanedProjectNoteSentence(value) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!note) return '';
+  if (/^(?:i (?:already|just) told you|as i (?:said|mentioned))\b/i.test(note)) return '';
 
   const priorWork = note.match(
     /^(?:i|we)\s+had\s+(.+?)\s+done\s+(.+?)\s+and\s+(?:i|we)\s+need(?:\s+it)?(?:\s+like)?\s+(.+?)[.!?]*$/i,
@@ -1035,12 +1036,39 @@ export function createReceptionistConversation({ context }) {
     if (
       analysis.business_answer_status !== 'not_a_question'
       || cleanText(analysis.business_question)
-      || isClearAffirmative(transcript)
       || isClearNegative(transcript)
       || looksLikeUnfinishedThought(transcript)
       || looksLikeBusinessQuestion(transcript)
     ) return '';
-    return groundedProjectNote(transcript, transcript, dateCandidate);
+    const statement = cleanText(transcript)
+      .replace(/^(?:(?:yes|yeah|yep|yup|okay|ok)\b[\s,;.!-]*)+/i, '')
+      .replace(/^(?:(?:um+|uh+|well|so|like)\b[\s,;.!-]*)+/i, '')
+      .replace(/^(?:(?:i (?:already|just) told you|as i (?:said|mentioned))\b[\s,;.!-]*)+/i, '')
+      .replace(/^(?:just\s+)?like\s+/i, '')
+      .trim();
+    if (!statement || isClearAffirmative(statement) || isClearNegative(statement)) return '';
+    return groundedProjectNote(statement, transcript, dateCandidate);
+  }
+
+  function captureObviousNote(transcript) {
+    if (
+      pendingField() !== 'notes'
+      || isExplicitCorrectionRequest(transcript)
+      || looksLikeUnfinishedThought(transcript)
+      || looksLikeBusinessQuestion(transcript)
+      || isClearNegative(transcript)
+    ) return null;
+    const projectDetail = notesTurnProjectDetail(safeAnalysis({}), transcript);
+    if (!projectDetail) return null;
+    const noteAdded = addNote(projectDetail);
+    notesAsked = true;
+    return {
+      type: 'speak',
+      text: joinSpeech(
+        noteAdded ? 'Okay, I put that down.' : 'Okay, I already have that down.',
+        MORE_NOTES_PROMPT,
+      ),
+    };
   }
 
   function addGroundedProjectNote(value, transcript, dateCandidate = '') {
@@ -1381,7 +1409,10 @@ export function createReceptionistConversation({ context }) {
         incomingAddressParts.street
         && (!partialAddressParts.street || mayReplaceAddressPart)
       ) {
-        if (normalized(partialAddressParts.street) !== normalized(incomingAddressParts.street)) {
+        if (
+          partialAddressParts.street
+          && normalized(partialAddressParts.street) !== normalized(incomingAddressParts.street)
+        ) {
           partialAddressParts.locality = '';
           partialAddressParts.state = '';
           addressPartsChanged = true;
@@ -1821,6 +1852,7 @@ export function createReceptionistConversation({ context }) {
   return Object.freeze({
     applyAnalysis,
     bareQuestion,
+    captureObviousNote,
     enterSummary,
     intakeArguments,
     preflight,

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { cleanText } from './business-context.js';
+import { fullAddressFromCallerText } from './receptionist-policy.js';
 
 const WEEKDAYS = Object.freeze({
   sunday: 0,
@@ -416,6 +417,20 @@ function requiredText(value, field, label, maxLength) {
   return text;
 }
 
+export function normalizeProjectAddress(value) {
+  const address = requiredText(value, 'address', 'the project address', 300)
+    .replace(/[.!]+$/g, '')
+    .trim();
+  const addressWithoutPostalCode = address.replace(/\s+\d{5}(?:-\d{4})?$/i, '').trim();
+  if (!fullAddressFromCallerText(addressWithoutPostalCode)) {
+    fail(
+      'Ask the caller for the full project address, including the street number, street name, city or town, and state.',
+      'address',
+    );
+  }
+  return address;
+}
+
 export function normalizeServiceRequestDraft(args = {}, context, now = new Date()) {
   if (args.additional_notes_asked !== true) {
     fail('Ask the caller whether they have any additional project notes before continuing.', 'additional_notes_asked');
@@ -436,7 +451,7 @@ export function normalizeServiceRequestDraft(args = {}, context, now = new Date(
   return Object.freeze({
     service: matchService(args.service, context.services),
     name: normalizeCallerName(args.name),
-    address: requiredText(args.address, 'address', 'the project address', 300),
+    address: normalizeProjectAddress(args.address),
     requestedDateInput: date.input,
     requestedDate: date.exactDate,
     requestedDateSpoken: date.spokenDate,
