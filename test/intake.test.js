@@ -4,6 +4,7 @@ import {
   createIntakeManager,
   matchService,
   normalizeCallerName,
+  normalizeProjectAddress,
   normalizeRequestedTime,
   resolveRequestedDate,
   sanitizeAdditionalNotes,
@@ -105,6 +106,25 @@ test('normalizes conversational names and maps natural service wording without a
   assert.equal(
     matchService('I need the exterior of my house painted.', CONTEXT.services),
     'Exterior Painting',
+  );
+});
+
+test('requires a full street address before preparing a service request', () => {
+  assert.throws(
+    () => normalizeProjectAddress('Berlin, Massachusetts'),
+    /street number, street name, city or town, and state/i,
+  );
+  assert.throws(
+    () => normalizeProjectAddress('Lancaster Road, Berlin, Massachusetts'),
+    /street number/i,
+  );
+  assert.equal(
+    normalizeProjectAddress('197 Lancaster Road, Berlin, Massachusetts'),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(
+    normalizeProjectAddress('123 Main Street, Albany, NY 12207'),
+    '123 Main Street, Albany, NY 12207',
   );
 });
 

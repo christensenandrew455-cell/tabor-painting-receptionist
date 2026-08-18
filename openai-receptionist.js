@@ -748,6 +748,11 @@ export function createOpenAiReceptionist({
         requestSpeech(preflight.text, { turn });
         return;
       }
+      const obviousNote = conversation.captureObviousNote(turn.text);
+      if (obviousNote) {
+        handleConversationAction(obviousNote, turn);
+        return;
+      }
       requestAnalysis(turn);
       return;
     }

@@ -409,6 +409,25 @@ test('a complete call collects, confirms, submits once, reports success, and end
       transcript: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
     });
 
+    const responsesBeforeNote = responseCreates(h.socket).length;
+    caller(
+      h.socket,
+      "Yeah, uh, the lawn's a little bumpy, so just tell them to look out, you know.",
+      'caller-note-detail',
+    );
+    assert.equal(responseCreates(h.socket).length, responsesBeforeNote + 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice, 'none');
+    assert.match(latestResponse(h.socket).response.instructions, /Okay, I put that down\./i);
+    assert.match(latestResponse(h.socket).response.instructions, /other notes or business questions/i);
+    assert.deepEqual(h.receptionist.snapshot().state.notes, [
+      'Paint the exterior of the house.',
+      "The lawn's a little bumpy, so just tell them to look out, you know.",
+    ]);
+    await finishSpeech(h.socket, {
+      responseId: 'acknowledge-note',
+      transcript: 'Okay, I put that down. Do you have any other notes or business questions?',
+    });
+
     caller(h.socket, 'No.', 'caller-notes');
     await finishAnalysis(h.socket, {
       responseId: 'analysis-notes',
@@ -427,10 +446,11 @@ test('a complete call collects, confirms, submits once, reports success, and end
     });
     assert.match(latestResponse(h.socket).response.instructions, /here's the summary/i);
     assert.match(latestResponse(h.socket).response.instructions, /Does that all sound right/i);
+    assert.match(latestResponse(h.socket).response.instructions, /lawn's a little bumpy/i);
     assert.equal(latestResponse(h.socket).response.max_output_tokens, 4_096);
     await finishSpeech(h.socket, {
       responseId: 'summary',
-      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: Paint the exterior of the house. The lawn's a little bumpy, so just tell them to look out, you know. Does that all sound right?",
     });
 
     caller(h.socket, 'Yes, that all sounds right.', 'caller-summary');
@@ -449,6 +469,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(deliveries[0].payload.name, 'Jordan Smith');
     assert.equal(deliveries[0].payload.address, '123 Main Street, Albany, New York');
     assert.equal(deliveries[0].payload.requestedTime, '2:00 PM');
+    assert.equal(
+      deliveries[0].payload.additionalNotes,
+      "Paint the exterior of the house. The lawn's a little bumpy, so just tell them to look out, you know.",
+    );
     assert.equal(deliveries[0].payload.summaryConfirmed, true);
     assert.equal(h.submitted.length, 1);
 

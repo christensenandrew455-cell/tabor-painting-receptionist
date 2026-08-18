@@ -466,9 +466,6 @@ wss.on('connection', (telnyx, request) => {
           callControlId: call.id,
           leadId: clean(websiteResponse.id),
           duplicate: websiteResponse.duplicate === true,
-          confirmationTextSent: websiteResponse.confirmationTextSent === true,
-          confirmationTextStatus: clean(websiteResponse.confirmationTextStatus),
-          confirmationTextError: clean(websiteResponse.confirmationTextError),
         }));
         return websiteResponse;
       },
