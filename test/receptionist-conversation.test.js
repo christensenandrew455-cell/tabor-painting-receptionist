@@ -47,6 +47,7 @@ function analysis(overrides = {}) {
     address_status: 'not_addressed',
     service_status: 'not_addressed',
     project_note: '',
+    notes_summary: '',
     notes_complete: false,
     contact_consent: 'not_answered',
     summary_confirmation: 'not_answered',
@@ -1522,7 +1523,8 @@ test('turn analysis receives owner-supplied Title and Info facts as semantic evi
   assert.match(instructions, /Every day, 5 PM to 9 PM/);
   assert.match(instructions, /mark it unanswerable/);
   assert.match(instructions, /only the requested service may be semantically mapped/i);
-  assert.match(instructions, /simplification is allowed only for project_note and business_question/i);
+  assert.match(instructions, /summarize the complete AUTHORITATIVE_CALL_STATE\.notes list/i);
+  assert.match(instructions, /saved unanswered business question/i);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {
