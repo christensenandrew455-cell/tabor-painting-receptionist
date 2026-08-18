@@ -5,7 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { buildArcRuntimeForward } from './arc-runtime.js';
 import { createBusinessContext } from './business-context.js';
 import { buildCallUsageRecord, reportCallUsage } from './call-usage.js';
-import { runtimeForCalledPhone } from './demo-runtime.js';
+import { isDemoRuntime, loadRuntimeForCalledPhone } from './demo-runtime.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
 import {
   addRiskAssessmentToServiceRequest,
@@ -147,6 +147,7 @@ function arcIntakeConnection(runtime = {}) {
 }
 
 async function sendArcData(runtime, payload, { idempotencyKey = '' } = {}) {
+  if (isDemoRuntime(runtime)) return { ok: true, demo: true };
   const connection = arcIntakeConnection(runtime);
   if (!connection.url) throw new Error('No ARC intake endpoint is configured.');
 
@@ -235,8 +236,9 @@ async function beginCall(body, id, runtimeForward = {}) {
   calls.set(id, call);
 
   try {
-    const loadedRuntime = await fetchArcRuntime({ event: body, ...runtimeForward });
-    call.runtime = runtimeForCalledPhone(loadedRuntime, call.calledPhone);
+    call.runtime = await loadRuntimeForCalledPhone(call.calledPhone, {
+      loadAccountRuntime: () => fetchArcRuntime({ event: body, ...runtimeForward }),
+    });
     if (call.ended || calls.get(id) !== call) return;
 
     call.context = createBusinessContext(call.runtime);
