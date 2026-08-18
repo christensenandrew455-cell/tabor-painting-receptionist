@@ -37,9 +37,11 @@ test('builds business context while removing connection secrets', () => {
       receptionistName: 'Taylor',
       aiVoice: 'alloy',
       timeZone: 'America/Chicago',
-      estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-      earliestEstimateStart: '09:00',
-      latestEstimateStart: '16:00',
+      serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+      earliestServiceRequestStart: '09:00',
+      latestServiceRequestStart: '16:00',
+      businessCounty: 'Worcester County',
+      serviceAreas: ['Worcester County', 'Middlesex County'],
       services: [{ name: 'Cabinet Painting', description: 'Kitchen cabinets' }],
       businessInformation: [
         { title: 'Warranty', info: 'One year on labor.' },
@@ -51,15 +53,17 @@ test('builds business context while removing connection secrets', () => {
 
   assert.equal(context.businessName, 'Tabor Painting');
   assert.equal(context.timeZone, 'America/Chicago');
-  assert.deepEqual(context.estimateWeekdays, [
+  assert.deepEqual(context.serviceRequestWeekdays, [
     'monday',
     'tuesday',
     'wednesday',
     'thursday',
     'friday',
   ]);
-  assert.equal(context.earliestEstimateStart, '09:00');
-  assert.equal(context.latestEstimateStart, '16:00');
+  assert.equal(context.earliestServiceRequestStart, '09:00');
+  assert.equal(context.latestServiceRequestStart, '16:00');
+  assert.equal(context.businessCounty, 'Worcester County');
+  assert.deepEqual(context.serviceAreas, ['Worcester County', 'Middlesex County']);
   assert.equal(context.clientId, 'client-123');
   assert.deepEqual(context.services, [
     { name: 'Cabinet Painting', description: 'Kitchen cabinets' },
@@ -78,14 +82,14 @@ test('builds business context while removing connection secrets', () => {
   assert.equal('voice' in context, false);
 });
 
-test('normalizes textual estimate-day ranges from ARC', () => {
+test('normalizes textual service-request day ranges from ARC', () => {
   const context = createBusinessContext({
     profile: {
-      estimateDays: 'Monday through Friday',
+      serviceRequestDays: 'Monday through Friday',
     },
   });
 
-  assert.deepEqual(context.estimateWeekdays, [
+  assert.deepEqual(context.serviceRequestWeekdays, [
     'monday',
     'tuesday',
     'wednesday',
@@ -94,7 +98,7 @@ test('normalizes textual estimate-day ranges from ARC', () => {
   ]);
 });
 
-test('keeps estimate availability empty when the owner does not configure it', () => {
+test('keeps service-request availability empty when the owner does not configure it', () => {
   const context = createBusinessContext({
     profile: {
       businessName: 'Optional Schedule Services',
@@ -103,9 +107,32 @@ test('keeps estimate availability empty when the owner does not configure it', (
     },
   });
 
-  assert.deepEqual(context.estimateWeekdays, []);
-  assert.equal(context.earliestEstimateStart, '');
-  assert.equal(context.latestEstimateStart, '');
+  assert.deepEqual(context.serviceRequestWeekdays, []);
+  assert.equal(context.earliestServiceRequestStart, '');
+  assert.equal(context.latestServiceRequestStart, '');
+});
+
+test('accepts legacy estimate scheduling fields without exposing their old names to the model', () => {
+  const context = createBusinessContext({
+    profile: {
+      estimateDays: 'Monday through Friday',
+      earliestEstimateStart: '09:00',
+      latestEstimateStart: '16:00',
+    },
+  });
+
+  assert.deepEqual(context.serviceRequestWeekdays, [
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+  ]);
+  assert.equal(context.earliestServiceRequestStart, '09:00');
+  assert.equal(context.latestServiceRequestStart, '16:00');
+  assert.match(context.knowledgeJson, /serviceRequestDays/);
+  assert.match(context.knowledgeJson, /earliestServiceRequestStart/);
+  assert.doesNotMatch(context.knowledgeJson, /estimateDays|earliestEstimateStart/);
 });
 
 test('accepts ARC profile data supplied as a JSON string', () => {

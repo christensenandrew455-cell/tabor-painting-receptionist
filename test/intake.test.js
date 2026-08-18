@@ -13,9 +13,9 @@ const NOW = new Date('2026-08-03T16:00:00.000Z');
 const CONTEXT = Object.freeze({
   clientId: 'client-123',
   timeZone: 'America/New_York',
-  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-  earliestEstimateStart: '09:00',
-  latestEstimateStart: '16:00',
+  serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestServiceRequestStart: '09:00',
+  latestServiceRequestStart: '16:00',
   services: [
     { name: 'Interior Painting', description: 'Walls and ceilings' },
     { name: 'Exterior Painting', description: 'Siding and trim' },
@@ -73,24 +73,30 @@ test('requires AM or PM for an ambiguous time', () => {
   assert.equal(normalizeRequestedTime('3:30 pm'), '3:30 PM');
 });
 
-test('infers a bare hour when only one meridiem fits the estimate window', () => {
-  assert.equal(normalizeRequestedTime('1', CONTEXT), '1:00 PM');
-  assert.equal(normalizeRequestedTime('9', CONTEXT), '9:00 AM');
-  assert.equal(normalizeRequestedTime('nine', CONTEXT), '9:00 AM');
+test('always requires AM or PM for a bare hour and understands spoken dayparts', () => {
+  assert.throws(() => normalizeRequestedTime('1', CONTEXT), /AM or PM/);
+  assert.throws(() => normalizeRequestedTime('9', CONTEXT), /AM or PM/);
+  assert.throws(() => normalizeRequestedTime('nine', CONTEXT), /AM or PM/);
   assert.equal(normalizeRequestedTime('nine am', CONTEXT), '9:00 AM');
-  assert.throws(
-    () => normalizeRequestedTime('3', {
-      earliestEstimateStart: '00:00',
-      latestEstimateStart: '23:59',
-    }),
-    /AM or PM/,
-  );
+  assert.equal(normalizeRequestedTime('7 in the morning', CONTEXT), '7:00 AM');
+  assert.equal(normalizeRequestedTime('7 in the afternoon', CONTEXT), '7:00 PM');
+  assert.equal(normalizeRequestedTime('7 in the evening', CONTEXT), '7:00 PM');
 });
 
-test('a bare hour outside both meridiems asks for the listed estimate window directly', () => {
+test('an explicit daypart outside the service-request window asks for a valid time', () => {
   assert.throws(
-    () => normalizeRequestedTime('6', CONTEXT),
-    /outside the business's estimate hours.*9:00 AM through 4:00 PM/i,
+    () => {
+      const time = normalizeRequestedTime('6 in the afternoon', CONTEXT);
+      const manager = createIntakeManager({
+        context: CONTEXT,
+        callControlId: 'call-123',
+        callerPhone: '+15555550123',
+        deliver: async () => ({ ok: true }),
+        now: () => NOW,
+      });
+      manager.prepare({ ...VALID_DRAFT, preferred_time: time });
+    },
+    /outside the business's service-request hours.*9:00 AM through 4:00 PM/i,
   );
 });
 
@@ -154,7 +160,7 @@ test('blocks preparation until notes and standalone consent gates are complete',
   );
 });
 
-test('rejects estimate dates and times outside the business availability', () => {
+test('rejects service-request dates and times outside the business availability', () => {
   const createManager = () => createIntakeManager({
     context: CONTEXT,
     callControlId: 'call-123',
@@ -165,14 +171,33 @@ test('rejects estimate dates and times outside the business availability', () =>
 
   assert.throws(
     () => createManager().prepare({ ...VALID_DRAFT, preferred_date: 'Sunday' }),
-    /outside the business's estimate days.*Monday.*Friday/i,
+    /outside the business's service-request days.*Monday.*Friday/i,
   );
   assert.throws(
     () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '5:00 PM' }),
-    /outside the business's estimate hours.*9:00 AM through 4:00 PM/i,
+    /outside the business's service-request hours.*9:00 AM through 4:00 PM/i,
   );
   assert.doesNotThrow(
     () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '4:00 PM' }),
+  );
+});
+
+test('an explicit AM time outside a custom window repeats the accepted hours', () => {
+  const manager = createIntakeManager({
+    context: {
+      ...CONTEXT,
+      earliestServiceRequestStart: '06:00',
+      latestServiceRequestStart: '19:00',
+    },
+    callControlId: 'call-123',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true }),
+    now: () => NOW,
+  });
+
+  assert.throws(
+    () => manager.prepare({ ...VALID_DRAFT, preferred_time: '1:00 AM' }),
+    /outside the business's service-request hours.*6:00 AM through 7:00 PM/i,
   );
 });
 
@@ -184,7 +209,7 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
     callerPhone: '+15555550123',
     deliver: async (payload, options) => {
       deliveries.push({ payload, options });
-      return { ok: true, estimateId: 'estimate-456' };
+      return { ok: true, serviceRequestId: 'service-request-456' };
     },
     now: () => NOW,
   });
@@ -221,7 +246,8 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(submitted.status, 'submitted');
   assert.equal(manager.phase, 'submitted');
   assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0].payload.type, 'estimate_request');
+  assert.equal(deliveries[0].payload.type, 'service_request');
+  assert.equal(deliveries[0].payload.requestType, 'service_request');
   assert.equal(deliveries[0].payload.service, 'Interior Painting');
   assert.equal(deliveries[0].payload.requestedDate, '2026-08-04');
   assert.equal(deliveries[0].payload.requestedTime, '3:30 PM');

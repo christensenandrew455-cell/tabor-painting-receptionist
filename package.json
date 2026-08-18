@@ -1,7 +1,7 @@
 {
   "name": "tabor-painting-receptionist",
   "version": "6.0.0",
-  "description": "Telnyx and OpenAI Realtime receptionist with ARC-backed business knowledge and confirmed estimate intake.",
+  "description": "Telnyx and OpenAI Realtime receptionist with ARC-backed business knowledge, service-request intake, and risk checks.",
   "main": "server.js",
   "type": "module",
   "scripts": {

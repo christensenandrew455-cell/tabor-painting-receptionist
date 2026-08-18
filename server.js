@@ -7,6 +7,10 @@ import { createBusinessContext } from './business-context.js';
 import { buildCallUsageRecord, reportCallUsage } from './call-usage.js';
 import { runtimeForCalledPhone } from './demo-runtime.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
+import {
+  addRiskAssessmentToServiceRequest,
+  lookupTelnyxPhoneNumber,
+} from './risk-assessment.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const TELNYX_API_BASE = 'https://api.telnyx.com/v2';
@@ -80,6 +84,14 @@ function callerPhone(body = {}) {
   return clean(phoneValue(
     body?.data?.payload?.from || body?.payload?.from || body?.start?.from || body?.from,
   ));
+}
+
+function phoneLookupForCall(call) {
+  if (!call) return null;
+  if (!call.phoneLookupPromise) {
+    call.phoneLookupPromise = lookupTelnyxPhoneNumber(call.callerPhone);
+  }
+  return call.phoneLookupPromise;
 }
 
 async function telnyxCommand(id, action, payload = {}) {
@@ -191,6 +203,7 @@ app.get('/health', (_req, res) => {
     hasTelnyxKey: Boolean(process.env.TELNYX_API_KEY),
     hasOpenAiKey: Boolean(process.env.OPENAI_API_KEY),
     hasArcRuntime: Boolean(ARC_RUNTIME_URL),
+    hasGoogleMapsKey: Boolean(clean(process.env.GOOGLE_MAPS_API_KEY)),
     maxCallDurationSeconds: MAX_CALL_DURATION_SECONDS,
     activeCalls: calls.size,
   });
@@ -217,6 +230,7 @@ async function beginCall(body, id, runtimeForward = {}) {
     leadSaved: false,
     openAiUsage: null,
     transcript: [],
+    phoneLookupPromise: null,
   };
   calls.set(id, call);
 
@@ -328,11 +342,19 @@ app.post('/voice-api-webhook', (req, res) => {
 
 app.post('/arc/send', async (req, res) => {
   try {
-    const id = clean(req.body?.callControlId);
+    const rawPayload = req.body?.payload ?? req.body;
+    const id = clean(req.body?.callControlId || rawPayload?.callControlId);
     const call = calls.get(id);
+    const payload = call
+      ? await addRiskAssessmentToServiceRequest({
+        payload: rawPayload,
+        context: call.context,
+        phoneLookupPromise: phoneLookupForCall(call),
+      })
+      : rawPayload;
     const data = await sendArcData(
       call?.runtime,
-      req.body?.payload ?? req.body,
+      payload,
       { idempotencyKey: clean(req.get('Idempotency-Key')) },
     );
     res.json({ ok: true, data });
@@ -427,7 +449,20 @@ wss.on('connection', (telnyx, request) => {
       runtime: call.runtime,
       callControlId: call.id,
       callerPhone: call.callerPhone,
-      deliver: (payload, options) => sendArcData(call.runtime, payload, options),
+      deliver: async (payload, options) => {
+        const assessedPayload = await addRiskAssessmentToServiceRequest({
+          payload,
+          context: call.context,
+          phoneLookupPromise: phoneLookupForCall(call),
+        });
+        console.log('[Service request risk]', JSON.stringify({
+          callControlId: call.id,
+          score: assessedPayload.riskScore,
+          level: assessedPayload.riskLevel,
+          factors: assessedPayload.riskFactors.map((item) => item.code),
+        }));
+        return sendArcData(call.runtime, assessedPayload, options);
+      },
       onAudio: (payload) => sendTelnyx({ event: 'media', media: { payload } }),
       onPlaybackClear: () => sendTelnyx({ event: 'clear' }),
       onSubmitted: () => {

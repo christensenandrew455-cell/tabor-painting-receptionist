@@ -11,9 +11,9 @@ const CONTEXT = Object.freeze({
   businessName: 'Tabor Painting',
   timeZone: 'America/New_York',
   clientId: 'client-123',
-  estimateWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-  earliestEstimateStart: '09:00',
-  latestEstimateStart: '16:00',
+  serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestServiceRequestStart: '09:00',
+  latestServiceRequestStart: '16:00',
   services: [
     { name: 'Exterior Painting', description: 'Exterior painting' },
     { name: 'Interior Painting', description: 'Interior painting' },
@@ -227,12 +227,12 @@ async function advanceHarnessToSummaryRequest(socket) {
         service_status: 'complete',
         fields: { service: 'Exterior Painting' },
       }),
-      speech: 'Okay, what name should I use for the estimate request?',
+      speech: 'Okay, what name should I use for the service request?',
     },
     {
       callerText: 'Jordan Smith.',
       args: analysis({ fields: { name: 'Jordan Smith' } }),
-      speech: "Thanks. What's the full project address?",
+      speech: "Thanks. What's the full address where the service is needed?",
     },
     {
       callerText: '123 Main Street, Albany, New York.',
@@ -240,7 +240,7 @@ async function advanceHarnessToSummaryRequest(socket) {
         address_status: 'complete',
         fields: { address: '123 Main Street, Albany, New York' },
       }),
-      speech: 'Got it. What day or date would you prefer for the estimate, and what time works best?',
+      speech: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
     },
     {
       callerText: 'Tuesday, August 11, 2099 at 2 PM.',
@@ -286,7 +286,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.output.voice, 'marin');
   assert.deepEqual(event.session.audio.input.transcription, {
     model: 'gpt-live-transcribe',
-    prompt: 'A telephone call collecting a service estimate request. Preserve names, United States addresses, dates, exact clock times, AM or PM, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning or afternoon, and short yes or no answers.',
     keywords: ['Tabor Painting', 'Exterior Painting', 'Interior Painting'],
     languages: ['en'],
   });
@@ -303,7 +303,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
 
 test('prompt has one state owner and a short, explicit knowledge boundary', () => {
   const prompt = buildReceptionistInstructions(CONTEXT);
-  assert.match(prompt, /only objective is to help the caller complete one service estimate request/i);
+  assert.match(prompt, /only objective is to help the caller complete one service request/i);
   assert.match(prompt, /server owns the intake state, question order, validation, confirmation, submission, and hangup/i);
   assert.match(prompt, /ordinary general knowledge only to understand natural speech/i);
   assert.match(prompt, /only when the supplied business information explicitly supports/i);
@@ -368,7 +368,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-name',
-      transcript: 'Okay, what name should I use for the estimate request?',
+      transcript: 'Okay, what name should I use for the service request?',
     });
 
     caller(h.socket, 'Jordan Smith.', 'caller-name');
@@ -376,10 +376,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
       responseId: 'analysis-name',
       args: analysis({ fields: { name: 'Jordan Smith' } }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /full project address/i);
+    assert.match(latestResponse(h.socket).response.instructions, /full address where the service is needed/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-address',
-      transcript: "Thanks. What's the full project address?",
+      transcript: "Thanks. What's the full address where the service is needed?",
     });
 
     caller(h.socket, '123 Main Street, Albany, New York.', 'caller-address');
@@ -393,7 +393,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.match(latestResponse(h.socket).response.instructions, /day or date/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-schedule',
-      transcript: 'Got it. What day or date would you prefer for the estimate, and what time works best?',
+      transcript: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
     });
 
     caller(h.socket, 'Tuesday, August 11, 2099 at 2 PM.', 'caller-schedule');
@@ -438,11 +438,11 @@ test('a complete call collects, confirms, submits once, reports success, and end
       responseId: 'analysis-summary',
       args: analysis({ summary_confirmation: 'yes' }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /submitting your estimate request now/i);
+    assert.match(latestResponse(h.socket).response.instructions, /submitting your service request now/i);
     assert.equal(deliveries.length, 0);
     await finishSpeech(h.socket, {
       responseId: 'pre-submit',
-      transcript: "I'm submitting your estimate request now.",
+      transcript: "I'm submitting your service request now.",
     });
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].payload.service, 'Exterior Painting');
@@ -455,15 +455,15 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.match(latestResponse(h.socket).response.instructions, /request has been submitted/i);
     await finishSpeech(h.socket, {
       responseId: 'success',
-      transcript: "You're all set. Your estimate request has been submitted.",
+      transcript: "You're all set. Your service request has been submitted.",
     });
     assert.match(
       latestResponse(h.socket).response.instructions,
-      /Thank you for filling out an estimate request\. Have a good day\./i,
+      /Thank you for filling out a service request\. Have a good day\./i,
     );
     await finishSpeech(h.socket, {
       responseId: 'goodbye',
-      transcript: 'Thank you for filling out an estimate request. Have a good day.',
+      transcript: 'Thank you for filling out a service request. Have a good day.',
     });
 
     assert.deepEqual(h.goodbye, [true]);
@@ -974,7 +974,7 @@ test('a newer caller turn supersedes stale analysis before the receptionist can 
     });
     await finishSpeech(h.socket, {
       responseId: 'stale-name-question',
-      transcript: 'Okay, what name should I use for the estimate request?',
+      transcript: 'Okay, what name should I use for the service request?',
     });
     caller(h.socket, 'Andrew Christensen.', 'stale-name');
     await finishAnalysis(h.socket, {
@@ -983,7 +983,7 @@ test('a newer caller turn supersedes stale analysis before the receptionist can 
     });
     await finishSpeech(h.socket, {
       responseId: 'stale-address-question',
-      transcript: "Thanks. What's the full project address?",
+      transcript: "Thanks. What's the full address where the service is needed?",
     });
     caller(h.socket, "That'd be 197 Lancaster Road.", 'stale-street');
     await finishAnalysis(h.socket, {
@@ -1063,8 +1063,8 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
   const h = await createHarness({
     context: {
       ...CONTEXT,
-      earliestEstimateStart: '00:00',
-      latestEstimateStart: '23:59',
+      earliestServiceRequestStart: '00:00',
+      latestServiceRequestStart: '23:59',
     },
     incompleteTurnRecoveryMs: 20,
   });
@@ -1080,12 +1080,12 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
           service_status: 'complete',
           fields: { service: 'Interior Painting' },
         }),
-        speech: 'Okay, what name should I use for the estimate request?',
+        speech: 'Okay, what name should I use for the service request?',
       },
       {
         callerText: 'Andrew Christensen.',
         args: analysis({ fields: { name: 'Andrew Christensen' } }),
-        speech: "Thanks. What's the full project address?",
+        speech: "Thanks. What's the full address where the service is needed?",
       },
       {
         callerText: '197 Lancaster Road, Berlin, Massachusetts.',
@@ -1093,7 +1093,7 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
           address_status: 'complete',
           fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
         }),
-        speech: 'Got it. What day or date would you prefer for the estimate, and what time works best?',
+        speech: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
       },
     ];
     for (const [index, step] of steps.entries()) {
@@ -1324,7 +1324,7 @@ test('latency telemetry separates analysis from first-audio generation', async (
     });
     await finishSpeech(h.socket, {
       responseId: 'speech-latency',
-      transcript: 'Okay, what name should I use for the estimate request?',
+      transcript: 'Okay, what name should I use for the service request?',
     });
     assert.equal(h.latencies.length >= 1, true);
     const metric = h.latencies.at(-1);
