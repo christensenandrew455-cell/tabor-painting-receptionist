@@ -33,6 +33,7 @@ import {
   isStandaloneBackchannel,
   looksLikeBusinessQuestion,
   looksLikeUnfinishedThought,
+  normalizeSpokenAddressNumber,
   requestedFieldExplanation,
   spokenBusinessName,
 } from './receptionist-policy.js';
@@ -200,7 +201,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
 });
 
 function normalized(value) {
-  return cleanText(value)
+  return normalizeSpokenAddressNumber(value)
     .toLowerCase()
     .replace(/[’]/g, "'")
     .replace(/\b([ap])\s*\.\s*m\.?/g, '$1m')
@@ -330,6 +331,8 @@ function projectActionSentence(action, objectValue) {
 function cleanedProjectNoteSentence(value) {
   let note = cleanText(value)
     .replace(/^(?:(?:i'm|i am) sorry[,;.! ]*)/i, '')
+    .replace(/^(?:i|we)\s+(?:do not|don't)\s+know[,;.! ]+/i, '')
+    .replace(/^(?:i|we)\s+(?:just\s+)?need\s+some[,;.! ]+/i, '')
     .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like|actually|basically)[,;.! ]+)+/i, '')
     .replace(/^(?:i|we)[,; ]+(?:(?:yeah|yes|yep|well|uh+|um+)[,; ]+)+(?:i|we)\s+/i, '')
     .replace(/^(?:i|we)\s+(?:think|guess|suppose|believe|figure)(?:\s+that)?\s+/i, '')
@@ -344,9 +347,23 @@ function cleanedProjectNoteSentence(value) {
     .replace(/^(?:get|have)\s+(?=(?:my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
     .replace(/^(?:like)[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?=accidentally\b)/i, '')
+    .replace(/\b(?:uh+|um+)\b[,;.! ]*/gi, '')
+    .replace(/\s*,?\s*whatever(?:\s+the\s+hell)?\s+they\s+call\s+it[.!?]*$/i, '')
     .replace(/[,; ]+(?:if\s+)?(?:i|we)(?:'m| am|'re| are)\s+(?:gonna\s+|going\s+to\s+)?be\s+honest(?:\s+with\s+you)?[.!?]*$/i, '.')
+    .replace(/\s+/g, ' ')
     .trim();
   if (!note) return '';
+
+  const priorWork = note.match(
+    /^(?:i|we)\s+had\s+(.+?)\s+done\s+(.+?)\s+and\s+(?:i|we)\s+need(?:\s+it)?(?:\s+like)?\s+(.+?)[.!?]*$/i,
+  );
+  if (priorWork) {
+    const project = cleanText(priorWork[1]);
+    const timing = cleanText(priorWork[2]);
+    const requestedWork = cleanText(priorWork[3]).replace(/^to\s+be\s+/i, '');
+    const sentence = `${project} done ${timing} needs to be ${requestedWork}`;
+    return `${sentence[0].toUpperCase()}${sentence.slice(1).replace(/[.!?]+$/g, '')}.`;
+  }
 
   const neededAction = note.match(PROJECT_NOTE_NEED_PATTERN);
   if (neededAction) {
@@ -406,10 +423,12 @@ function serviceTurnProjectNote(value, serviceName, context = {}) {
 }
 
 export function isProjectNoteGroundedInCallerEvidence(note, callerTranscript) {
-  const candidate = projectNoteTokens(note);
+  const candidate = [...new Set(projectNoteTokens(note))];
   if (!candidate.length) return false;
   const evidence = new Set(projectNoteTokens(callerTranscript));
-  return candidate.every((token) => evidence.has(token));
+  const matching = candidate.filter((token) => evidence.has(token));
+  return matching.length >= Math.min(2, candidate.length)
+    && matching.length / candidate.length >= 0.8;
 }
 
 const MONTH_PATTERN = 'january|february|march|april|may|june|july|august|september|october|november|december';
@@ -1535,7 +1554,7 @@ export function createReceptionistConversation({ context }) {
         text: joinSpeech(
           question.prefix,
           correctionPrefix,
-          noteAdded ? 'Okay.' : '',
+          noteAdded ? 'Okay, I put that down.' : '',
           followup,
         ),
       };
