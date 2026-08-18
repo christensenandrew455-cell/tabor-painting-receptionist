@@ -263,6 +263,44 @@ test('an unfinished notes question stays silent and is never stored as a note', 
   assert.deepEqual(conversation.snapshot().notes, []);
 });
 
+test('a caller note is saved and acknowledged when the analyzer leaves project_note blank', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  const action = analyzedTurn(
+    conversation,
+    'The side gate sticks, so please use the back gate.',
+  );
+
+  assert.equal(action.type, 'speak');
+  assert.match(action.text, /Okay, I put that down\./);
+  assert.match(action.text, /other notes or business questions/i);
+  assert.deepEqual(
+    conversation.snapshot().notes,
+    ['The side gate sticks, so please use the back gate.'],
+  );
+
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  assert.equal(
+    conversation.intakeArguments().additional_notes,
+    'The side gate sticks, so please use the back gate.',
+  );
+});
+
+test('a grounded caller note replaces an analyzer note that was not supported by the call', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  const action = analyzedTurn(
+    conversation,
+    'Please park beside the red shed.',
+    { project_note: 'Use the front entrance.' },
+  );
+
+  assert.match(action.text, /Okay, I put that down\./);
+  assert.deepEqual(conversation.snapshot().notes, ['Please park beside the red shed.']);
+});
+
 test('the supplied call transcript no longer skips fields, repeats the address, or stores an abandoned note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
 
