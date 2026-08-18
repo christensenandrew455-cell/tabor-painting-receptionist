@@ -110,6 +110,31 @@ test('recognizes a complete spoken project address without relying on model extr
   assert.equal(fullAddressFromCallerText('197 Lancaster Road.'), '');
 });
 
+test('recognizes a house number spoken as words in a complete project address', () => {
+  assert.equal(
+    fullAddressFromCallerText(
+      'Give one ninety seven Lancaster Road, Berlin, Massachusetts.',
+    ),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.deepEqual(
+    addressPartsFromCallerText(
+      'Give one ninety seven Lancaster Road, Berlin, Massachusetts.',
+    ),
+    {
+      street: '197 Lancaster Road',
+      locality: 'Berlin',
+      state: 'Massachusetts',
+    },
+  );
+  assert.equal(
+    fullAddressFromCallerText(
+      'I need one coat at 197 Lancaster Road, Berlin, Massachusetts.',
+    ),
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+});
+
 test('reconstructs split addresses from caller turns without keeping a bad transcription', () => {
   assert.equal(
     fullAddressFromCallerHistory([

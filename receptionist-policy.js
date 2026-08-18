@@ -73,7 +73,55 @@ const NAME_BLOCKERS = new Set([
   'a', 'an', 'the', 'my', 'our', 'your', 'their', 'this', 'that', 'it', 'not',
   'to', 'for', 'from', 'with', 'without', 'under', 'over', 'inside', 'outside',
 ]);
-const ADDRESS_PATTERN = /\b\d{1,6}\s+[\p{L}\p{N}.'’ -]+\b(?:street|st\.?|road|rd\.?|avenue|ave\.?|lane|ln\.?|drive|dr\.?|boulevard|blvd\.?|way|court|ct\.?|circle|place|pl\.?|parkway|pkwy\.?|highway|hwy\.?|route)\b/iu;
+const STREET_SUFFIX_PATTERN_SOURCE = 'street|st\\.?|road|rd\\.?|avenue|ave\\.?|lane|ln\\.?|drive|dr\\.?|boulevard|blvd\\.?|way|court|ct\\.?|circle|place|pl\\.?|parkway|pkwy\\.?|highway|hwy\\.?|route';
+const ADDRESS_PATTERN = new RegExp(
+  `\\b\\d{1,6}\\s+[\\p{L}\\p{N}.'’ -]+\\b(?:${STREET_SUFFIX_PATTERN_SOURCE})\\b`,
+  'iu',
+);
+const SPOKEN_HOUSE_NUMBER_VALUES = Object.freeze({
+  zero: 0,
+  oh: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+});
+const SPOKEN_HOUSE_NUMBER_TENS = Object.freeze({
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+});
+const SPOKEN_HOUSE_NUMBER_TOKEN_SOURCE = [
+  ...Object.keys(SPOKEN_HOUSE_NUMBER_VALUES),
+  ...Object.keys(SPOKEN_HOUSE_NUMBER_TENS),
+  'hundred',
+  'thousand',
+].join('|');
+const SPOKEN_HOUSE_NUMBER_PATTERN = new RegExp(
+  `\\b(?:${SPOKEN_HOUSE_NUMBER_TOKEN_SOURCE})(?:[\\s-]+(?:${SPOKEN_HOUSE_NUMBER_TOKEN_SOURCE})){0,7}\\b(?=\\s+([\\p{L}.'’ -]+?)\\s+(?:${STREET_SUFFIX_PATTERN_SOURCE})\\b)`,
+  'giu',
+);
+const SPOKEN_ADDRESS_STREET_NAME_BLOCKERS = /\b(?:at|for|in|of|on|the|to)\b/i;
 const US_STATE_NAMES = Object.freeze([
   'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
   'connecticut', 'delaware', 'florida', 'georgia', 'hawaii', 'idaho',
@@ -329,8 +377,69 @@ function firstTerminalStateMatch(value) {
   return null;
 }
 
+function parsedSpokenHouseNumber(value) {
+  const tokens = normalizedCallerText(value).split(' ').filter(Boolean);
+  if (!tokens.length) return '';
+
+  if (tokens.includes('hundred') || tokens.includes('thousand')) {
+    let total = 0;
+    let current = 0;
+    for (const token of tokens) {
+      if (token === 'hundred') {
+        current = (current || 1) * 100;
+      } else if (token === 'thousand') {
+        total += (current || 1) * 1_000;
+        current = 0;
+      } else if (SPOKEN_HOUSE_NUMBER_TENS[token] !== undefined) {
+        current += SPOKEN_HOUSE_NUMBER_TENS[token];
+      } else if (SPOKEN_HOUSE_NUMBER_VALUES[token] !== undefined) {
+        current += SPOKEN_HOUSE_NUMBER_VALUES[token];
+      } else {
+        return '';
+      }
+    }
+    const number = total + current;
+    return number >= 1 && number <= 999_999 ? String(number) : '';
+  }
+
+  const chunks = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (SPOKEN_HOUSE_NUMBER_TENS[token] !== undefined) {
+      let value = SPOKEN_HOUSE_NUMBER_TENS[token];
+      const next = tokens[index + 1];
+      if (
+        next
+        && SPOKEN_HOUSE_NUMBER_VALUES[next] >= 1
+        && SPOKEN_HOUSE_NUMBER_VALUES[next] <= 9
+      ) {
+        value += SPOKEN_HOUSE_NUMBER_VALUES[next];
+        index += 1;
+      }
+      chunks.push(String(value));
+      continue;
+    }
+    const value = SPOKEN_HOUSE_NUMBER_VALUES[token];
+    if (value === undefined) return '';
+    chunks.push(String(value));
+  }
+  const number = chunks.join('');
+  return /^\d{1,6}$/.test(number) && Number(number) >= 1 ? String(Number(number)) : '';
+}
+
+export function normalizeSpokenAddressNumber(value) {
+  return cleanText(value).replace(
+    SPOKEN_HOUSE_NUMBER_PATTERN,
+    (spoken, streetName) => (
+      SPOKEN_ADDRESS_STREET_NAME_BLOCKERS.test(streetName)
+        ? spoken
+        : (parsedSpokenHouseNumber(spoken) || spoken)
+    ),
+  );
+}
+
 export function fullAddressFromCallerText(value) {
-  const text = cleanText(value);
+  const text = normalizeSpokenAddressNumber(value);
   const street = text.match(ADDRESS_PATTERN);
   if (!street || street.index === undefined) return '';
 
@@ -361,7 +470,7 @@ export function fullAddressFromCallerText(value) {
 }
 
 export function streetAddressFromCallerText(value) {
-  const street = cleanText(value).match(ADDRESS_PATTERN)?.[0];
+  const street = normalizeSpokenAddressNumber(value).match(ADDRESS_PATTERN)?.[0];
   return cleanText(street).replace(/[.!?]+$/g, '');
 }
 
@@ -388,7 +497,7 @@ function localityCandidate(value) {
 }
 
 export function addressPartsFromCallerText(value) {
-  const text = cleanText(value);
+  const text = normalizeSpokenAddressNumber(value);
   if (!text) return { street: '', locality: '', state: '' };
 
   const streetMatch = text.match(ADDRESS_PATTERN);

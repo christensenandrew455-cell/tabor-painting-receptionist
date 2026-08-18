@@ -220,6 +220,36 @@ test('a grounded full address outranks a false unintelligible label', () => {
   );
 });
 
+test('the logged spoken-number address is accepted once without another address question', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Mulching', description: 'Mulch installation and refreshing' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+  analyzedTurn(conversation, 'I need mulching redone.', {
+    service_status: 'complete',
+    fields: { service: 'Mulching' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.');
+
+  const action = analyzedTurn(
+    conversation,
+    'Give one ninety seven Lancaster Road, Berlin, Massachusetts.',
+    {
+      address_status: 'complete',
+      fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+    },
+  );
+
+  assert.equal(
+    conversation.snapshot().values.address,
+    '197 Lancaster Road, Berlin, Massachusetts',
+  );
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.match(action.text, /day or date/i);
+  assert.doesNotMatch(action.text, /street address|full project address|what state/i);
+});
+
 test('an unfinished notes question stays silent and is never stored as a note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
@@ -1371,6 +1401,55 @@ test('a clear Nao completes the notes step even when analysis calls it unintelli
   assert.match(action.text, /consent to being contacted/i);
   assert.equal(conversation.snapshot().completed.notes, true);
   assert.equal(conversation.snapshot().pendingField, 'consent');
+});
+
+test('the logged split rubber-mulch note is summarized, acknowledged, and retained', () => {
+  const context = {
+    ...CONTEXT,
+    earliestEstimateStart: '08:00',
+    services: [{ name: 'Mulching', description: 'Mulch installation and refreshing' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+  const serviceTranscript = "I don't know, I just need some, uh I had mulching done last year and I need like redone or filled in, whatever the hell they call it.";
+  analyzedTurn(conversation, serviceTranscript, {
+    service_status: 'complete',
+    project_note: serviceTranscript,
+    fields: { service: 'Mulching' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.');
+  analyzedTurn(conversation, '197 Lancaster Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
+  });
+  analyzedTurn(conversation, 'Wednesday at 8 a.m.', {
+    fields: { preferred_date: 'Wednesday', preferred_time: '8 a.m.' },
+  });
+
+  const firstFragment = 'Mmm. Yeah. I so my note is um I want a, I want the the rubber mulch that they, that they sell at, I think they sell it at the Home Depot or something like that';
+  const unfinished = analyzedTurn(conversation, firstFragment, {
+    turn_status: 'unfinished',
+  });
+  assert.deepEqual(unfinished, { type: 'wait', preserve: true });
+
+  const fullNote = `${firstFragment} I already have two bags of it, so they could just use those two bags and then get some more and then do it like that. That'd be great`;
+  const action = analyzedTurn(conversation, fullNote, {
+    project_note: 'Use two existing bags of rubber mulch and get more from Home Depot.',
+  });
+
+  assert.equal(
+    action.text,
+    'Okay, I put that down. Do you have any other notes or business questions?',
+  );
+  assert.deepEqual(conversation.snapshot().notes, [
+    'Mulching done last year needs to be redone or filled in.',
+    'Use two existing bags of rubber mulch and get more from Home Depot.',
+  ]);
+
+  analyzedTurn(conversation, 'No, not anymore.', { notes_complete: true });
+  assert.equal(
+    conversation.intakeArguments().additional_notes,
+    'Mulching done last year needs to be redone or filled in. Use two existing bags of rubber mulch and get more from Home Depot.',
+  );
 });
 
 test('an explicit mid-call correction updates a locked field without changing the flow order', () => {
