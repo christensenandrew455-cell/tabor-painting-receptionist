@@ -50,6 +50,7 @@ test('accepts substantive service descriptions without hardcoding one trade', ()
     'A couple of rooms need work.',
     'My car has a dented passenger door that needs body work.',
     'I need a damaged stair railing rebuilt.',
+    'Yeah, I got about five mulch pits that need to be done.',
   ];
   for (const description of descriptions) {
     assert.equal(hasUsableServiceAnswer(description), true, description);

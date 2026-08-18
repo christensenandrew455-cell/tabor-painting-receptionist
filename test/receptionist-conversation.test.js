@@ -47,7 +47,6 @@ function analysis(overrides = {}) {
     address_status: 'not_addressed',
     service_status: 'not_addressed',
     project_note: '',
-    notes_summary: '',
     notes_complete: false,
     contact_consent: 'not_answered',
     summary_confirmation: 'not_answered',
@@ -322,12 +321,14 @@ test('a caller note is saved and acknowledged when the analyzer leaves project_n
   );
 });
 
-test('an affirmative-prefixed note is saved immediately without an analyzer round trip', () => {
+test('an affirmative-prefixed note is summarized before it is saved', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
 
-  const action = conversation.captureObviousNote(
+  const action = analyzedTurn(
+    conversation,
     "Yeah, uh, the lawn's a little bumpy, so just tell them to look out, you know.",
+    { project_note: 'The lawn is bumpy, so look out.' },
   );
 
   assert.equal(action.type, 'speak');
@@ -336,15 +337,66 @@ test('an affirmative-prefixed note is saved immediately without an analyzer roun
     'Okay, I put that down. Do you have any other notes or business questions?',
   );
   assert.deepEqual(conversation.snapshot().notes, [
-    "The lawn's a little bumpy, so just tell them to look out, you know.",
+    'The lawn is bumpy, so look out.',
   ]);
+});
+
+test('service scope and later notes stay summarized through readback and delivery data', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Mulching', description: 'Mulch installation and refreshing' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+
+  analyzedTurn(conversation, 'Yeah, I got about five mulch pits that need to be done.', {
+    service_status: 'complete',
+    project_note: 'Five mulch pits need to be done.',
+    fields: { service: 'Mulching' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', {
+    fields: { name: 'Jordan Smith' },
+  });
+  analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+  analyzedTurn(conversation, 'Tuesday at 1 PM.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '1 PM' },
+  });
+
+  const noteAction = analyzedTurn(
+    conversation,
+    'Yeah, I think I got a, I got like one big mulch pit and like one small mulch pit and one medium mulch pit.',
+    { project_note: 'Has one small mulch pit, one medium mulch pit, and one big mulch pit.' },
+  );
+  assert.match(noteAction.text, /Okay, I put that down\./);
+
+  const expectedNotes = 'Five mulch pits need to be done. Has one small mulch pit, one medium mulch pit, and one big mulch pit.';
+  assert.equal(conversation.intakeArguments().additional_notes, expectedNotes);
+  assert.doesNotMatch(conversation.intakeArguments().additional_notes, /\b(?:yeah|I got|like)\b/i);
+
+  analyzedTurn(conversation, 'No more.', { notes_complete: true });
+  const consent = analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
+  assert.equal(consent.type, 'prepare');
+  const readback = conversation.enterSummary({
+    name: 'Jordan Smith',
+    service: 'Mulching',
+    address: '123 Main Street, Albany, New York',
+    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+    notes: conversation.intakeArguments().additional_notes,
+  });
+  assert.match(readback, /Five mulch pits need to be done/);
+  assert.match(readback, /Has one small mulch pit, one medium mulch pit, and one big mulch pit/);
+  assert.doesNotMatch(readback, /\b(?:yeah|I got|like)\b/i);
 });
 
 test('conversation-repair wording is never included in a saved note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeThroughSchedule(conversation);
 
-  conversation.captureObviousNote("I already told you. The lawn's a little bumpy.");
+  analyzedTurn(conversation, "I already told you. The lawn's a little bumpy.", {
+    project_note: "The lawn's a little bumpy.",
+  });
 
   assert.deepEqual(conversation.snapshot().notes, ["The lawn's a little bumpy."]);
 });
@@ -1523,8 +1575,8 @@ test('turn analysis receives owner-supplied Title and Info facts as semantic evi
   assert.match(instructions, /Every day, 5 PM to 9 PM/);
   assert.match(instructions, /mark it unanswerable/);
   assert.match(instructions, /only the requested service may be semantically mapped/i);
-  assert.match(instructions, /summarize the complete AUTHORITATIVE_CALL_STATE\.notes list/i);
-  assert.match(instructions, /saved unanswered business question/i);
+  assert.match(instructions, /final text that will be saved, read back, and sent to the business/i);
+  assert.match(instructions, /Do not save a raw conversational sentence/i);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {

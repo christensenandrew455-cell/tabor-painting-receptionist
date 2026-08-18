@@ -116,7 +116,6 @@ function analysis(overrides = {}) {
     address_status: 'not_addressed',
     service_status: 'not_addressed',
     project_note: '',
-    notes_summary: '',
     notes_complete: false,
     contact_consent: 'not_answered',
     summary_confirmation: 'not_answered',
@@ -417,12 +416,16 @@ test('a complete call collects, confirms, submits once, reports success, and end
       'caller-note-detail',
     );
     assert.equal(responseCreates(h.socket).length, responsesBeforeNote + 1);
-    assert.equal(latestResponse(h.socket).response.tool_choice, 'none');
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    await finishAnalysis(h.socket, {
+      responseId: 'analysis-note-detail',
+      args: analysis({ project_note: 'The lawn is bumpy, so look out.' }),
+    });
     assert.match(latestResponse(h.socket).response.instructions, /Okay, I put that down\./i);
     assert.match(latestResponse(h.socket).response.instructions, /other notes or business questions/i);
     assert.deepEqual(h.receptionist.snapshot().state.notes, [
       'Paint the exterior of the house.',
-      "The lawn's a little bumpy, so just tell them to look out, you know.",
+      'The lawn is bumpy, so look out.',
     ]);
     await finishSpeech(h.socket, {
       responseId: 'acknowledge-note',
@@ -443,19 +446,16 @@ test('a complete call collects, confirms, submits once, reports success, and end
     caller(h.socket, 'Yes.', 'caller-consent');
     await finishAnalysis(h.socket, {
       responseId: 'analysis-consent',
-      args: analysis({
-        contact_consent: 'yes',
-        notes_summary: 'The lawn is bumpy, so caution is needed.',
-      }),
+      args: analysis({ contact_consent: 'yes' }),
     });
     assert.match(latestResponse(h.socket).response.instructions, /here's the summary/i);
     assert.match(latestResponse(h.socket).response.instructions, /Does that all sound right/i);
-    assert.match(latestResponse(h.socket).response.instructions, /The lawn is bumpy, so caution is needed/i);
+    assert.match(latestResponse(h.socket).response.instructions, /The lawn is bumpy, so look out/i);
     assert.doesNotMatch(latestResponse(h.socket).response.instructions, /just tell them to look out, you know/i);
     assert.equal(latestResponse(h.socket).response.max_output_tokens, 4_096);
     await finishSpeech(h.socket, {
       responseId: 'summary',
-      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: The lawn is bumpy, so caution is needed. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: Paint the exterior of the house. The lawn is bumpy, so look out. Does that all sound right?",
     });
 
     caller(h.socket, 'Yes, that all sounds right.', 'caller-summary');
@@ -476,7 +476,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(deliveries[0].payload.requestedTime, '2:00 PM');
     assert.equal(
       deliveries[0].payload.additionalNotes,
-      "Paint the exterior of the house. The lawn's a little bumpy, so just tell them to look out, you know.",
+      'Paint the exterior of the house. The lawn is bumpy, so look out.',
     );
     assert.equal(deliveries[0].payload.summaryConfirmed, true);
     assert.equal(h.submitted.length, 1);

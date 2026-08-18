@@ -353,7 +353,11 @@ export function hasUsableServiceAnswer(value, context = {}, { confirmedService =
     || ACTION_FORM_PATTERN.test(text)
     || matchesSuppliedService;
   if (classifyCallerTranscript(text) !== 'meaningful' || isStandaloneBackchannel(text)) return false;
-  if (isConversationRepairRequest(text) || isClearAffirmative(text) || isClearNegative(text)) return false;
+  if (
+    isConversationRepairRequest(text)
+    || (isClearAffirmative(text) && !hasServiceSignal)
+    || isClearNegative(text)
+  ) return false;
   if (
     looksLikeBusinessQuestion(text)
     && !requestShapedQuestion
