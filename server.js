@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { buildArcRuntimeForward } from './arc-runtime.js';
 import { createBusinessContext } from './business-context.js';
 import { buildCallUsageRecord, reportCallUsage } from './call-usage.js';
+import { runtimeForCalledPhone } from './demo-runtime.js';
 import { createOpenAiReceptionist } from './openai-receptionist.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -220,7 +221,8 @@ async function beginCall(body, id, runtimeForward = {}) {
   calls.set(id, call);
 
   try {
-    call.runtime = await fetchArcRuntime({ event: body, ...runtimeForward });
+    const loadedRuntime = await fetchArcRuntime({ event: body, ...runtimeForward });
+    call.runtime = runtimeForCalledPhone(loadedRuntime, call.calledPhone);
     if (call.ended || calls.get(id) !== call) return;
 
     call.context = createBusinessContext(call.runtime);
