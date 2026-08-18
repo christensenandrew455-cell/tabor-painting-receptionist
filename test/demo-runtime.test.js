@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_DEMO_PHONE_NUMBER,
   isDemoPhoneNumber,
+  isDemoRuntime,
+  loadRuntimeForCalledPhone,
   runtimeForCalledPhone,
 } from '../demo-runtime.js';
 
@@ -44,4 +46,37 @@ test('keeps demo business information separate from dynamic account fill-ins', (
   const account = runtimeForCalledPhone(dynamicRuntime, '+15555550123');
   assert.equal(account, dynamicRuntime);
   assert.equal(account.profile.businessName, 'Unrelated Dynamic Business');
+});
+
+test('loads the demo locally without requesting an ARC account', async () => {
+  let accountLoads = 0;
+  const demo = await loadRuntimeForCalledPhone('+17742316164', {
+    loadAccountRuntime: async () => {
+      accountLoads += 1;
+      throw new Error('No ARC account is connected to that phone number.');
+    },
+  });
+
+  assert.equal(accountLoads, 0);
+  assert.equal(isDemoRuntime(demo), true);
+  assert.equal(demo.calledPhone, '+17742316164');
+  assert.equal(demo.profile.businessName, 'Tabor Painting');
+});
+
+test('loads every non-demo number through the unchanged ARC account path', async () => {
+  const accountRuntime = {
+    clientId: 'regular-account',
+    profile: { businessName: 'Regular Business' },
+  };
+  let accountLoads = 0;
+  const loaded = await loadRuntimeForCalledPhone('+15555550123', {
+    loadAccountRuntime: async () => {
+      accountLoads += 1;
+      return accountRuntime;
+    },
+  });
+
+  assert.equal(accountLoads, 1);
+  assert.equal(loaded, accountRuntime);
+  assert.equal(isDemoRuntime(loaded), false);
 });

@@ -58,3 +58,23 @@ export function runtimeForCalledPhone(runtime = {}, calledPhone, options = {}) {
     },
   };
 }
+
+export function isDemoRuntime(runtime = {}) {
+  return runtime?.demo === true;
+}
+
+export async function loadRuntimeForCalledPhone(calledPhone, {
+  loadAccountRuntime,
+  demoPhoneNumber,
+} = {}) {
+  const demoRuntime = runtimeForCalledPhone(
+    {},
+    calledPhone,
+    { demoPhoneNumber },
+  );
+  if (isDemoRuntime(demoRuntime)) return demoRuntime;
+  if (typeof loadAccountRuntime !== 'function') {
+    throw new TypeError('loadAccountRuntime is required for non-demo calls.');
+  }
+  return loadAccountRuntime();
+}
