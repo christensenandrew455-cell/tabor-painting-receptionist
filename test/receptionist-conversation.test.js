@@ -847,6 +847,23 @@ test('a grounded project phrase still cannot be mislabeled as the caller name', 
   assert.match(action.text, /what name should I use/i);
 });
 
+test('a literal caller name advances even when analysis incorrectly calls it unintelligible', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'I need exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+
+  const action = analyzedTurn(conversation, 'Andrew Christensen.', {
+    turn_status: 'unintelligible',
+  });
+
+  assert.match(action.text, /full project address/i);
+  assert.doesNotMatch(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().values.name, 'Andrew Christensen');
+  assert.equal(conversation.snapshot().pendingField, 'address');
+});
+
 test('bare hours are accepted for every day when business hours resolve AM or PM', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   const action = completeThroughSchedule(conversation);
@@ -903,6 +920,58 @@ test('a bare time-only reply advances when the analyzer drops it after saving th
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
+test('a clearly spoken exact time wins over a false unintelligible analysis', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.');
+  analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+  });
+  analyzedTurn(conversation, 'Tuesday.', {
+    fields: { preferred_date: 'Tuesday' },
+  });
+
+  const action = analyzedTurn(conversation, '3 p.m.', {
+    turn_status: 'unintelligible',
+  });
+
+  assert.match(action.text, /additional notes/i);
+  assert.doesNotMatch(action.text, /didn't catch|what time would work best/i);
+  assert.equal(conversation.snapshot().values.preferredTime, '3 pm');
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('an exact time stays structured while a separate timing detail becomes a concise note', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.');
+  analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+  });
+
+  const action = analyzedTurn(
+    conversation,
+    'Next Monday at 9 a.m. You can come an hour earlier if you want.',
+    {
+      project_note: 'Can come an hour earlier.',
+      fields: { preferred_date: 'Next Monday', preferred_time: '9 a.m.' },
+    },
+  );
+
+  assert.match(action.text, /additional notes/i);
+  assert.equal(conversation.snapshot().values.preferredTime, '9 a.m.');
+  assert.deepEqual(conversation.snapshot().notes, ['Can come an hour earlier.']);
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /9\s*a\.?m/i);
+});
+
 test('a bare hour outside the estimate window asks for a valid time without an AM-or-PM detour', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Interior painting.', {
@@ -920,8 +989,10 @@ test('a bare hour outside the estimate window asks for a valid time without an A
   const action = analyzedTurn(conversation, 'Next Monday at 6.', {
     fields: { preferred_date: 'Next Monday', preferred_time: '6' },
   });
-  assert.match(action.text, /9:00 AM through 4:00 PM/i);
-  assert.match(action.text, /what time in that range/i);
+  assert.equal(
+    action.text,
+    "I'm sorry, I need a time between 9:00 AM and 4:00 PM. What time in that range would you prefer?",
+  );
   assert.doesNotMatch(action.text, /AM or PM/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'Next Monday');
   assert.equal(conversation.snapshot().values.preferredTime, '');
@@ -1245,6 +1316,8 @@ test('turn analysis receives owner-supplied Title and Info facts as semantic evi
   assert.match(instructions, /SUPPLIED_BUSINESS_INFORMATION=/);
   assert.match(instructions, /Every day, 5 PM to 9 PM/);
   assert.match(instructions, /mark it unanswerable/);
+  assert.match(instructions, /only the requested service may be semantically mapped/i);
+  assert.match(instructions, /simplification is allowed only for project_note and business_question/i);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {
@@ -1284,6 +1357,19 @@ test('notes cannot be skipped until the caller explicitly completes that step', 
   action = analyzedTurn(conversation, 'No more.', { notes_complete: true });
   assert.match(action.text, /consent to being contacted/i);
   assert.doesNotMatch(action.text, /thanks for the notes/i);
+  assert.equal(conversation.snapshot().pendingField, 'consent');
+});
+
+test('a clear Nao completes the notes step even when analysis calls it unintelligible', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  completeThroughSchedule(conversation);
+
+  const action = analyzedTurn(conversation, 'Nao.', {
+    turn_status: 'unintelligible',
+  });
+
+  assert.match(action.text, /consent to being contacted/i);
+  assert.equal(conversation.snapshot().completed.notes, true);
   assert.equal(conversation.snapshot().pendingField, 'consent');
 });
 

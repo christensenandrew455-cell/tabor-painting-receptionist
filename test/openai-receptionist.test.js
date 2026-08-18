@@ -284,7 +284,12 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.input.format.type, 'audio/pcmu');
   assert.equal(event.session.audio.output.format.type, 'audio/pcmu');
   assert.equal(event.session.audio.output.voice, 'marin');
-  assert.equal(event.session.audio.input.transcription.model, 'gpt-4o-mini-transcribe');
+  assert.deepEqual(event.session.audio.input.transcription, {
+    model: 'gpt-live-transcribe',
+    prompt: 'A telephone call collecting a service estimate request. Preserve names, United States addresses, dates, exact clock times, AM or PM, and short yes or no answers.',
+    keywords: ['Tabor Painting', 'Exterior Painting', 'Interior Painting'],
+    languages: ['en'],
+  });
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
   assert.deepEqual(event.session.audio.input.turn_detection, {
     type: 'semantic_vad',
@@ -308,6 +313,9 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /AI receptionist working for Tabor Painting, managed by ARC Client Center/i);
   assert.match(prompt, /call it once without speaking/i);
   assert.match(prompt, /only a question repeated after the caller-silence delay yields/i);
+  assert.match(prompt, /keep the caller's name, address, date, time, and yes\/no meaning literal/i);
+  assert.match(prompt, /simplify only owner-facing notes and business questions/i);
+  assert.match(prompt, /never duplicate the structured service, name, address, date, or time in notes/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
 });
 

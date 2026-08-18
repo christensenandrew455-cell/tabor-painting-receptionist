@@ -20,7 +20,7 @@ import {
 
 const DEFAULT_MODEL = 'gpt-realtime-2.1-mini';
 const DEFAULT_VOICE = 'marin';
-const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
+const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-live-transcribe';
 const MAX_PENDING_AUDIO_CHUNKS = 500;
 const PCMU_BYTES_PER_SECOND = 8_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 800;
@@ -125,6 +125,26 @@ function serviceGuide(context) {
     .join('\n');
 }
 
+function transcriptionConfiguration(context = {}) {
+  const model = cleanText(process.env.OPENAI_TRANSCRIPTION_MODEL)
+    || DEFAULT_TRANSCRIPTION_MODEL;
+  const language = cleanText(process.env.OPENAI_TRANSCRIPTION_LANGUAGE) || 'en';
+  if (!['gpt-live-transcribe', 'gpt-transcribe'].includes(model)) {
+    return { model, language };
+  }
+
+  const keywords = [
+    cleanText(context.businessName),
+    ...(context.services || []).map((service) => cleanText(service?.name)),
+  ].filter(Boolean).slice(0, 50);
+  return {
+    model,
+    prompt: 'A telephone call collecting a service estimate request. Preserve names, United States addresses, dates, exact clock times, AM or PM, and short yes or no answers.',
+    ...(keywords.length ? { keywords } : {}),
+    languages: [language],
+  };
+}
+
 export function buildReceptionistInstructions(context, { submitted = false } = {}) {
   const businessName = spokenBusinessName(context.businessName);
   return `
@@ -143,6 +163,7 @@ When analyze_caller_turn is forced, call it once without speaking. The tool is l
 Use ordinary general knowledge only to understand natural speech: names, addresses, dates, times, corrections, unfinished thoughts, and obvious service meaning.
 Caller-specific details must come from caller speech. Never copy a caller name, address, schedule, or project detail from business data.
 Treat a direct or indirect answer to the pending estimate question as an intake answer, not as an unknown business question.
+Only map the requested work to a supplied service category. Keep the caller's name, address, date, time, and yes/no meaning literal. Simplify only owner-facing notes and business questions.
 Keep useful extra project details as notes, but never duplicate the structured service, name, address, date, or time in notes.
 
 # Business knowledge boundary
@@ -193,11 +214,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
         input: {
           format: { type: 'audio/pcmu' },
           noise_reduction: { type: 'far_field' },
-          transcription: {
-            model: cleanText(process.env.OPENAI_TRANSCRIPTION_MODEL)
-              || DEFAULT_TRANSCRIPTION_MODEL,
-            language: cleanText(process.env.OPENAI_TRANSCRIPTION_LANGUAGE) || 'en',
-          },
+          transcription: transcriptionConfiguration(context),
           turn_detection: {
             type: 'semantic_vad',
             eagerness: 'medium',
