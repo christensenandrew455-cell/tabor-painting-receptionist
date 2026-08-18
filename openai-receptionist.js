@@ -139,7 +139,7 @@ function transcriptionConfiguration(context = {}) {
   ].filter(Boolean).slice(0, 50);
   return {
     model,
-    prompt: 'A telephone call collecting a service estimate request. Preserve names, United States addresses, dates, exact clock times, AM or PM, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning or afternoon, and short yes or no answers.',
     ...(keywords.length ? { keywords } : {}),
     languages: [language],
   };
@@ -150,7 +150,7 @@ export function buildReceptionistInstructions(context, { submitted = false } = {
   return `
 # Role
 You are the phone receptionist for ${businessName}.
-Your only objective is to help the caller complete one service estimate request. Sound friendly, attentive, concise, and natural.
+Your only objective is to help the caller complete one service request. Sound friendly, attentive, concise, and natural.
 Never introduce yourself with a personal name. If directly asked, say that you are an AI receptionist working for ${businessName}, managed by ARC Client Center.
 
 # Authoritative call control
@@ -162,17 +162,17 @@ When analyze_caller_turn is forced, call it once without speaking. The tool is l
 # Language understanding
 Use ordinary general knowledge only to understand natural speech: names, addresses, dates, times, corrections, unfinished thoughts, and obvious service meaning.
 Caller-specific details must come from caller speech. Never copy a caller name, address, schedule, or project detail from business data.
-Treat a direct or indirect answer to the pending estimate question as an intake answer, not as an unknown business question.
+Treat a direct or indirect answer to the pending service-request question as an intake answer, not as an unknown business question.
 Only map the requested work to a supplied service category. Keep the caller's name, address, date, time, and yes/no meaning literal. Simplify only owner-facing notes and business questions.
 Keep useful extra project details as notes, but never duplicate the structured service, name, address, date, or time in notes.
 
 # Business knowledge boundary
 The notes step invites additional project notes and business questions.
-Before the notes step, do not answer or save general business questions; continue collecting the pending estimate field. Estimate-window guidance may still be given while collecting the preferred schedule.
+Before the notes step, do not answer or save general business questions; continue collecting the pending service-request field. Service-request-window guidance may still be given while collecting the preferred schedule.
 Answer factual questions about the business, trade, project, price, duration, methods, policy, or availability only when the supplied business information explicitly supports the answer.
 Treat each owner-supplied Title/Info item in the business information as an authoritative fact, regardless of its subject or wording.
 If the supplied information does not contain the answer, classify the question as unanswerable. Never fill the gap with common industry knowledge or an assumption.
-Estimate-request days and hours are not proof that a specific appointment is open. Never claim that a particular date or time is available; record it only as the caller's preference for the business to confirm.
+Service-request days and hours are not proof that a specific date or time is open. Never claim that a particular date or time is available; record it only as the caller's preference for the business to confirm.
 
 # Turn taking
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
@@ -190,7 +190,7 @@ ${context.knowledgeJson}
 
 # Completion state
 ${submitted
-    ? 'The estimate request has been submitted. Say only the exact success or goodbye text requested by the server.'
+    ? 'The service request has been submitted. Say only the exact success or goodbye text requested by the server.'
     : 'The request is not submitted until the server completes the confirmed write.'}
 `;
 }
@@ -670,7 +670,7 @@ export function createOpenAiReceptionist({
     endingCall = true;
     clearIncompleteTurnRecovery();
     requestSpeech(
-      'Thank you for filling out an estimate request. Have a good day.',
+      'Thank you for filling out a service request. Have a good day.',
       { after: 'complete' },
     );
   }
@@ -778,7 +778,7 @@ export function createOpenAiReceptionist({
       return;
     }
     if (!result?.ok || !result.summary) {
-      const error = Object.assign(new Error(result?.error || 'The estimate summary could not be prepared.'), {
+      const error = Object.assign(new Error(result?.error || 'The service-request summary could not be prepared.'), {
         field: '',
       });
       requestSpeech(conversation.preparationFailed(error), { turn });
@@ -791,7 +791,7 @@ export function createOpenAiReceptionist({
     });
   }
 
-  async function submitEstimate(turn) {
+  async function submitServiceRequest(turn) {
     let result;
     try {
       result = await intake.submit({ caller_confirmed: true });
@@ -801,7 +801,7 @@ export function createOpenAiReceptionist({
       return;
     }
     if (!result?.ok) {
-      reportError(new Error(result?.error || 'Estimate submission failed.'));
+      reportError(new Error(result?.error || 'Service-request submission failed.'));
       requestSpeech(SUBMISSION_FAILURE_RESPONSE, { after: 'goodbye', turn });
       return;
     }
@@ -1022,7 +1022,7 @@ export function createOpenAiReceptionist({
       return;
     }
     if (purpose.after === 'submit') {
-      await submitEstimate(purpose.turn);
+      await submitServiceRequest(purpose.turn);
       return;
     }
     if (purpose.after === 'goodbye') {

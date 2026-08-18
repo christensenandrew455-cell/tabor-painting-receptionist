@@ -5,15 +5,15 @@ export const DEFAULT_DEMO_PHONE_NUMBER = '+17742316164';
 export const DEMO_PROFILE = Object.freeze({
   businessName: 'Tabor Painting',
   timeZone: 'America/New_York',
-  estimateWeekdays: Object.freeze([
+  serviceRequestWeekdays: Object.freeze([
     'monday',
     'tuesday',
     'wednesday',
     'thursday',
     'friday',
   ]),
-  earliestEstimateStart: '9:00 AM',
-  latestEstimateStart: '4:30 PM',
+  earliestServiceRequestStart: '9:00 AM',
+  latestServiceRequestStart: '4:30 PM',
   businessType: 'Painting company',
   serviceAreas: Object.freeze(['Massachusetts']),
   services: Object.freeze({
@@ -51,7 +51,7 @@ export function runtimeForCalledPhone(runtime = {}, calledPhone, options = {}) {
     calledPhone: normalizePhoneNumber(calledPhone),
     profile: {
       ...DEMO_PROFILE,
-      estimateWeekdays: [...DEMO_PROFILE.estimateWeekdays],
+      serviceRequestWeekdays: [...DEMO_PROFILE.serviceRequestWeekdays],
       serviceAreas: [...DEMO_PROFILE.serviceAreas],
       services: { ...DEMO_PROFILE.services },
       businessInformation: [...DEMO_PROFILE.businessInformation],

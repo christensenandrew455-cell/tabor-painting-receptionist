@@ -15,6 +15,7 @@ import {
   isExplicitCorrectionRequest,
   isHoldRequest,
   isHoldResume,
+  isRequiredInformationRefusal,
   looksLikeBusinessQuestion,
   looksLikeUnfinishedThought,
   requestedFieldExplanation,
@@ -314,4 +315,19 @@ test('recognizes AI identity questions and field-reason questions', () => {
   assert.equal(requestedFieldExplanation('Why do you need my consent?', 'consent'), 'consent');
   assert.equal(requestedFieldExplanation('Why?', 'notes'), 'notes');
   assert.equal(requestedFieldExplanation('Why are you closed on Sunday?', 'service'), '');
+});
+
+test('recognizes generic why questions and refusals for the pending required field', () => {
+  assert.equal(
+    requestedFieldExplanation('Why do I have to provide that?', 'address'),
+    'address',
+  );
+  assert.equal(
+    requestedFieldExplanation('Why are you asking me for that?', 'schedule'),
+    'schedule',
+  );
+  assert.equal(isRequiredInformationRefusal("I don't want to give that.", 'name'), true);
+  assert.equal(isRequiredInformationRefusal('I am not comfortable sharing that.', 'address'), true);
+  assert.equal(isRequiredInformationRefusal('I would rather not.', 'schedule'), true);
+  assert.equal(isRequiredInformationRefusal('I would rather not.', 'notes'), false);
 });

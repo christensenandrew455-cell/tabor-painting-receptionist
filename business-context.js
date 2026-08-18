@@ -13,6 +13,12 @@ const WEEKDAY_NAMES = Object.freeze([
   'friday',
   'saturday',
 ]);
+const LEGACY_SCHEDULE_KEYS = Object.freeze({
+  estimateDays: 'serviceRequestDays',
+  estimateWeekdays: 'serviceRequestWeekdays',
+  earliestEstimateStart: 'earliestServiceRequestStart',
+  latestEstimateStart: 'latestServiceRequestStart',
+});
 
 function knowledgeCharacterLimit() {
   const configured = Number(process.env.MAX_WEBSITE_KNOWLEDGE_CHARACTERS);
@@ -62,7 +68,7 @@ function weekdayName(value) {
   ) || '';
 }
 
-function normalizeEstimateWeekdays(value) {
+function normalizeRequestWeekdays(value) {
   if (Array.isArray(value)) {
     return [...new Set(value.map(weekdayName).filter(Boolean))];
   }
@@ -89,6 +95,38 @@ function normalizeEstimateWeekdays(value) {
   }
 
   return WEEKDAY_NAMES.filter((weekday) => new RegExp(`\\b${weekday}(?:s)?\\b|\\b${weekday.slice(0, 3)}\\b`).test(text));
+}
+
+export function normalizeServiceAreas(value) {
+  const areas = [];
+  const add = (candidate) => {
+    const area = cleanText(candidate);
+    if (area) areas.push(area);
+  };
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') add(item);
+      else if (item && typeof item === 'object') {
+        add(item.name || item.label || item.area || item.county || item.city || item.state);
+      }
+    }
+  } else if (value && typeof value === 'object') {
+    for (const [name, enabled] of Object.entries(value)) {
+      if (enabled === false || enabled === null || enabled === undefined) continue;
+      if (typeof enabled === 'string') add(enabled);
+      else add(name);
+    }
+  } else if (typeof value === 'string') {
+    value.split(/[;\n|]/).forEach(add);
+  }
+
+  const unique = new Map();
+  for (const area of areas) {
+    const key = area.toLocaleLowerCase('en-US');
+    if (!unique.has(key)) unique.set(key, area);
+  }
+  return [...unique.values()].slice(0, 100);
 }
 
 function validTimeZone(value) {
@@ -221,6 +259,22 @@ function sanitizeKnowledge(value, depth = 0) {
   return result;
 }
 
+function canonicalizeServiceRequestKnowledge(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeServiceRequestKnowledge);
+  if (!value || typeof value !== 'object') return value;
+
+  const result = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (LEGACY_SCHEDULE_KEYS[key]) continue;
+    result[key] = canonicalizeServiceRequestKnowledge(child);
+  }
+  for (const [legacyKey, canonicalKey] of Object.entries(LEGACY_SCHEDULE_KEYS)) {
+    if (value[legacyKey] === undefined || result[canonicalKey] !== undefined) continue;
+    result[canonicalKey] = canonicalizeServiceRequestKnowledge(value[legacyKey]);
+  }
+  return result;
+}
+
 function publicRuntimeData(runtime, services) {
   const selected = {
     profile: runtime.profile,
@@ -240,14 +294,19 @@ function publicRuntimeData(runtime, services) {
     'estimateWeekdays',
     'earliestEstimateStart',
     'latestEstimateStart',
+    'serviceRequestDays',
+    'serviceRequestWeekdays',
+    'earliestServiceRequestStart',
+    'latestServiceRequestStart',
     'businessBase',
+    'businessCounty',
     'serviceAreas',
     'businessInformation',
   ];
   for (const field of topLevelFields) {
     if (runtime[field] !== undefined) selected[field] = runtime[field];
   }
-  return sanitizeKnowledge(selected);
+  return canonicalizeServiceRequestKnowledge(sanitizeKnowledge(selected));
 }
 
 export function createBusinessContext(runtime = {}) {
@@ -295,37 +354,78 @@ export function createBusinessContext(runtime = {}) {
     'timeZone',
   ])) || validTimeZone(process.env.BUSINESS_TIME_ZONE) || 'America/New_York';
 
-  const estimateWeekdayPaths = [
+  const requestWeekdayPaths = [
+    'profile.serviceRequestWeekdays',
+    'business.serviceRequestWeekdays',
+    'businessInfo.serviceRequestWeekdays',
+    'config.serviceRequestWeekdays',
+    'serviceRequestWeekdays',
     'profile.estimateWeekdays',
     'business.estimateWeekdays',
     'businessInfo.estimateWeekdays',
     'config.estimateWeekdays',
     'estimateWeekdays',
   ];
-  const estimateDaysPaths = [
+  const requestDaysPaths = [
+    'profile.serviceRequestDays',
+    'business.serviceRequestDays',
+    'businessInfo.serviceRequestDays',
+    'config.serviceRequestDays',
+    'serviceRequestDays',
     'profile.estimateDays',
     'business.estimateDays',
     'businessInfo.estimateDays',
     'config.estimateDays',
     'estimateDays',
   ];
-  const estimateWeekdays = normalizeEstimateWeekdays(
-    firstValue(normalizedRuntime, estimateWeekdayPaths)
-      ?? firstValue(normalizedRuntime, estimateDaysPaths),
+  const serviceRequestWeekdays = normalizeRequestWeekdays(
+    firstValue(normalizedRuntime, requestWeekdayPaths)
+      ?? firstValue(normalizedRuntime, requestDaysPaths),
   );
-  const earliestEstimateStart = firstText(normalizedRuntime, [
+  const earliestServiceRequestStart = firstText(normalizedRuntime, [
+    'profile.earliestServiceRequestStart',
+    'business.earliestServiceRequestStart',
+    'businessInfo.earliestServiceRequestStart',
+    'config.earliestServiceRequestStart',
+    'earliestServiceRequestStart',
     'profile.earliestEstimateStart',
     'business.earliestEstimateStart',
     'businessInfo.earliestEstimateStart',
     'config.earliestEstimateStart',
     'earliestEstimateStart',
   ]);
-  const latestEstimateStart = firstText(normalizedRuntime, [
+  const latestServiceRequestStart = firstText(normalizedRuntime, [
+    'profile.latestServiceRequestStart',
+    'business.latestServiceRequestStart',
+    'businessInfo.latestServiceRequestStart',
+    'config.latestServiceRequestStart',
+    'latestServiceRequestStart',
     'profile.latestEstimateStart',
     'business.latestEstimateStart',
     'businessInfo.latestEstimateStart',
     'config.latestEstimateStart',
     'latestEstimateStart',
+  ]);
+  const serviceAreas = normalizeServiceAreas(firstValue(normalizedRuntime, [
+    'profile.serviceAreas',
+    'business.serviceAreas',
+    'businessInfo.serviceAreas',
+    'config.serviceAreas',
+    'serviceAreas',
+    'profile.serviceArea',
+    'business.serviceArea',
+    'businessInfo.serviceArea',
+    'serviceArea',
+  ]));
+  const businessCounty = firstText(normalizedRuntime, [
+    'profile.businessCounty',
+    'business.businessCounty',
+    'businessInfo.businessCounty',
+    'config.businessCounty',
+    'businessCounty',
+    'profile.county',
+    'business.county',
+    'businessInfo.county',
   ]);
 
   const publicData = publicRuntimeData(normalizedRuntime, services);
@@ -338,9 +438,14 @@ export function createBusinessContext(runtime = {}) {
   return Object.freeze({
     businessName,
     timeZone,
-    estimateWeekdays: Object.freeze(estimateWeekdays),
-    earliestEstimateStart,
-    latestEstimateStart,
+    serviceRequestWeekdays: Object.freeze(serviceRequestWeekdays),
+    earliestServiceRequestStart,
+    latestServiceRequestStart,
+    estimateWeekdays: Object.freeze([...serviceRequestWeekdays]),
+    earliestEstimateStart: earliestServiceRequestStart,
+    latestEstimateStart: latestServiceRequestStart,
+    serviceAreas: Object.freeze(serviceAreas),
+    businessCounty,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),
     businessInformation: Object.freeze(

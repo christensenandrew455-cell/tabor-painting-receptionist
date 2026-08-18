@@ -174,7 +174,7 @@ export function resolveRequestedDate(value, { now = new Date(), timeZone = 'Amer
     .replace(/(\d)(st|nd|rd|th)\b/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!input) fail('Ask the caller for their preferred estimate date.', 'preferred_date');
+  if (!input) fail('Ask the caller for their preferred service-request date.', 'preferred_date');
 
   let todayParts;
   try {
@@ -200,24 +200,6 @@ export function resolveRequestedDate(value, { now = new Date(), timeZone = 'Amer
   return Object.freeze({ input: cleanText(value), exactDate, spokenDate });
 }
 
-function inferTimeFromEstimateHours(hour, minute, context = {}) {
-  const earliest = businessEstimateTime(context.earliestEstimateStart);
-  const latest = businessEstimateTime(context.latestEstimateStart);
-  if (!earliest && !latest) return null;
-
-  const baseHour = hour % 12;
-  const candidates = [
-    { hour: baseHour, minutes: baseHour * 60 + minute },
-    { hour: baseHour + 12, minutes: (baseHour + 12) * 60 + minute },
-  ].filter((candidate) => (
-    (!earliest || candidate.minutes >= earliest.minutes)
-    && (!latest || candidate.minutes <= latest.minutes)
-  ));
-
-  if (candidates.length === 1) return candidates[0].hour;
-  return candidates.length ? null : false;
-}
-
 export function normalizeRequestedTime(value, context = {}) {
   let input = cleanText(value)
     .toLowerCase()
@@ -226,7 +208,26 @@ export function normalizeRequestedTime(value, context = {}) {
     .replace(/^(?:at|around|about)\s+/, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!input) fail('Ask the caller for their preferred estimate time.', 'preferred_time');
+  if (!input) fail('Ask the caller for their preferred service-request time.', 'preferred_time');
+
+  const dayparts = [...input.matchAll(/\b(morning|afternoon|evening|night)\b/g)]
+    .map((match) => (match[1] === 'morning' ? 'am' : 'pm'));
+  const daypartMeridiems = new Set(dayparts);
+  if (daypartMeridiems.size > 1) {
+    fail('That time of day was unclear. Ask whether they mean AM or PM.', 'preferred_time');
+  }
+  const daypartMeridiem = [...daypartMeridiems][0] || '';
+  if (daypartMeridiem) {
+    const explicitMeridiem = input.match(/\b(am|pm)\b/)?.[1] || '';
+    if (explicitMeridiem && explicitMeridiem !== daypartMeridiem) {
+      fail('That time of day conflicts with AM or PM. Ask which one they mean.', 'preferred_time');
+    }
+    input = input
+      .replace(/\b(?:(?:in|during)\s+(?:the\s+)?|(?:this|that)\s+|at\s+)?(?:morning|afternoon|evening|night)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!explicitMeridiem) input = `${input} ${daypartMeridiem}`.trim();
+  }
   if (input === 'noon') input = '12 pm';
   if (input === 'midnight') input = '12 am';
 
@@ -242,22 +243,7 @@ export function normalizeRequestedTime(value, context = {}) {
   const minute = Number(match[2] || 0);
   const meridiem = match[3];
   if (!meridiem && hour >= 1 && hour <= 12) {
-    const inferredHour = inferTimeFromEstimateHours(hour, minute, context);
-    if (inferredHour === false) {
-      const earliest = businessEstimateTime(context.earliestEstimateStart);
-      const latest = businessEstimateTime(context.latestEstimateStart);
-      const allowedHours = earliest && latest
-        ? `${earliest.display} through ${latest.display}`
-        : (earliest ? `${earliest.display} or later` : `${latest.display} or earlier`);
-      fail(
-        `That time is outside the business's estimate hours. Ask for ${allowedHours}.`,
-        'preferred_time',
-      );
-    }
-    if (inferredHour === null) {
-      fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
-    }
-    hour = inferredHour;
+    fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
   }
   if (meridiem && (hour < 1 || hour > 12)) {
     fail('That time is invalid. Ask for a valid AM or PM time.', 'preferred_time');
@@ -283,7 +269,7 @@ function timeInMinutes(value) {
   return hour * 60 + Number(match[2]);
 }
 
-function businessEstimateTime(value) {
+function businessRequestTime(value) {
   const text = cleanText(value);
   const twentyFourHour = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
   if (twentyFourHour) {
@@ -317,24 +303,29 @@ function readableWeekdays(weekdays) {
   return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
 }
 
-export function validateEstimateAvailability(date, requestedTime, context = {}) {
-  const estimateWeekdays = Array.isArray(context.estimateWeekdays)
-    ? context.estimateWeekdays.map((day) => cleanText(day).toLowerCase()).filter(Boolean)
+export function validateServiceRequestAvailability(date, requestedTime, context = {}) {
+  const configuredWeekdays = context.serviceRequestWeekdays || context.estimateWeekdays;
+  const requestWeekdays = Array.isArray(configuredWeekdays)
+    ? configuredWeekdays.map((day) => cleanText(day).toLowerCase()).filter(Boolean)
     : [];
   const requestedDate = new Date(`${date.exactDate}T12:00:00.000Z`);
   const requestedWeekday = Object.keys(WEEKDAYS).find(
     (weekday) => WEEKDAYS[weekday] === requestedDate.getUTCDay(),
   );
 
-  if (estimateWeekdays.length && !estimateWeekdays.includes(requestedWeekday)) {
+  if (requestWeekdays.length && !requestWeekdays.includes(requestedWeekday)) {
     fail(
-      `${date.spokenDate} is outside the business's estimate days. Ask for ${readableWeekdays(estimateWeekdays)}.`,
+      `${date.spokenDate} is outside the business's service-request days. Ask for ${readableWeekdays(requestWeekdays)}.`,
       'preferred_date',
     );
   }
 
-  const earliest = businessEstimateTime(context.earliestEstimateStart);
-  const latest = businessEstimateTime(context.latestEstimateStart);
+  const earliest = businessRequestTime(
+    context.earliestServiceRequestStart || context.earliestEstimateStart,
+  );
+  const latest = businessRequestTime(
+    context.latestServiceRequestStart || context.latestEstimateStart,
+  );
   const requestedMinutes = timeInMinutes(requestedTime);
   const beforeOpening = earliest && requestedMinutes < earliest.minutes;
   const afterClosing = latest && requestedMinutes > latest.minutes;
@@ -343,7 +334,7 @@ export function validateEstimateAvailability(date, requestedTime, context = {}) 
       ? `${earliest.display} through ${latest.display}`
       : (earliest ? `${earliest.display} or later` : `${latest.display} or earlier`);
     fail(
-      `${requestedTime} is outside the business's estimate hours. Ask for ${allowedHours}.`,
+      `${requestedTime} is outside the business's service-request hours. Ask for ${allowedHours}.`,
       'preferred_time',
     );
   }
@@ -425,7 +416,7 @@ function requiredText(value, field, label, maxLength) {
   return text;
 }
 
-export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
+export function normalizeServiceRequestDraft(args = {}, context, now = new Date()) {
   if (args.additional_notes_asked !== true) {
     fail('Ask the caller whether they have any additional project notes before continuing.', 'additional_notes_asked');
   }
@@ -441,7 +432,7 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     timeZone: context.timeZone,
   });
   const requestedTime = normalizeRequestedTime(args.preferred_time, context);
-  validateEstimateAvailability(date, requestedTime, context);
+  validateServiceRequestAvailability(date, requestedTime, context);
   return Object.freeze({
     service: matchService(args.service, context.services),
     name: normalizeCallerName(args.name),
@@ -452,10 +443,14 @@ export function normalizeEstimateDraft(args = {}, context, now = new Date()) {
     requestedTime,
     additionalNotes: sanitizeAdditionalNotes(args.additional_notes).slice(0, 1_000),
     consentToContact: true,
+    customerResistanceCount: Math.max(
+      0,
+      Math.min(1_000, Math.trunc(Number(args.customer_resistance_count) || 0)),
+    ),
   });
 }
 
-export function estimateSummary(draft) {
+export function serviceRequestSummary(draft) {
   return Object.freeze({
     name: draft.name,
     service: draft.service,
@@ -474,7 +469,8 @@ function requestId(callControlId, draft) {
 export function buildWebsitePayload({ context, callControlId, callerPhone, draft, submittedAt }) {
   const phone = cleanText(callerPhone);
   return Object.freeze({
-    type: 'estimate_request',
+    type: 'service_request',
+    requestType: 'service_request',
     clientId: context.clientId,
     callControlId: cleanText(callControlId),
     source: 'ai_receptionist',
@@ -487,6 +483,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     additionalNotes: draft.additionalNotes,
     consentToContact: true,
     summaryConfirmed: true,
+    customerResistanceCount: draft.customerResistanceCount,
     submittedAt,
     Name: draft.name,
     Phone: phone,
@@ -512,14 +509,14 @@ export function createIntakeManager({
   return Object.freeze({
     prepare(args) {
       if (submission) {
-        return { ok: false, error: 'The estimate request has already been sent. Answer questions only.' };
+        return { ok: false, error: 'The service request has already been sent. Answer questions only.' };
       }
-      draft = normalizeEstimateDraft(args, context, now());
+      draft = normalizeServiceRequestDraft(args, context, now());
       idempotencyKey = requestId(callControlId, draft);
       return {
         ok: true,
         status: 'ready_for_confirmation',
-        summary: estimateSummary(draft),
+        summary: serviceRequestSummary(draft),
         instruction: 'Read only the five returned summary fields to the caller, then ask for a clear yes or no confirmation. Do not mention contact consent.',
       };
     },
@@ -529,7 +526,7 @@ export function createIntakeManager({
         return { ok: true, status: 'already_submitted', submission };
       }
       if (!draft) {
-        return { ok: false, error: 'Prepare and read back the estimate summary before submitting.' };
+        return { ok: false, error: 'Prepare and read back the service-request summary before submitting.' };
       }
       if (args.caller_confirmed !== true) {
         return { ok: false, error: 'Do not submit until the caller clearly confirms the complete summary.' };

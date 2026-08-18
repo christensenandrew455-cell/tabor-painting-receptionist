@@ -10,17 +10,17 @@ export const INTAKE_FIELD_ORDER = Object.freeze([
 ]);
 
 export const SERVICE_QUESTION = 'What kind of work are you looking to have done?';
-export const NAME_QUESTION = 'What name should I use for the estimate request?';
-export const PROJECT_ADDRESS_QUESTION = "What's the full project address?";
-export const SCHEDULE_QUESTION = 'What day or date would you prefer for the estimate, and what time works best?';
+export const NAME_QUESTION = 'What name should I use for the service request?';
+export const PROJECT_ADDRESS_QUESTION = "What's the full address where the service is needed?";
+export const SCHEDULE_QUESTION = 'What day or date would you prefer for the service request, and what time, including AM or PM, works best?';
 export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes and/or business questions?';
 export const MORE_NOTES_PROMPT = 'Do you have any other notes or business questions?';
 export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What notes or business questions would you like me to add?';
 export const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that one. I'll add it to the notes.";
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
-export const SUBMISSION_START_RESPONSE = "I'm submitting your estimate request now.";
-export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your estimate request has been submitted.";
-export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the estimate request.";
+export const SUBMISSION_START_RESPONSE = "I'm submitting your service request now.";
+export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted.";
+export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the service request.";
 
 const STANDALONE_BACKCHANNELS = new Set([
   'hello',
@@ -273,12 +273,28 @@ export function requestedFieldExplanation(value, pendingField = '') {
   if (
     /^(?:why|why not)$/.test(text)
     || /\bwhy (?:do|does|did|would|will) (?:you|the business|they) need (?:that|it|this|the information)\b/.test(text)
+    || /\bwhy (?:do|would|should|must) i (?:need|have) to (?:give|provide|share|tell)\b/.test(text)
+    || /\bwhy are you asking (?:me )?(?:for )?(?:that|this|it)\b/.test(text)
   ) {
     return ['service', 'name', 'address', 'schedule', 'notes', 'consent'].includes(pendingField)
       ? pendingField
       : '';
   }
   return '';
+}
+
+export function isRequiredInformationRefusal(value, pendingField = '') {
+  if (!['service', 'name', 'address', 'schedule', 'consent'].includes(pendingField)) return false;
+  const text = normalizedCallerText(value);
+  if (!text) return false;
+  return /\b(?:do not|don't|won't|will not|can't|cannot)\s+(?:want to\s+)?(?:give|provide|share|tell)\b/.test(text)
+    || /\b(?:not|never)\s+(?:giving|providing|sharing|telling)\b/.test(text)
+    || /\bnot comfortable\s+(?:giving|providing|sharing|telling)\b/.test(text)
+    || /\bi\s+(?:refuse|decline)\b/.test(text)
+    || /\b(?:i(?:'d| would)\s+)?rather not\b/.test(text)
+    || /\bnone of (?:your|the business(?:'s)?) business\b/.test(text)
+    || /\byou (?:do not|don't) need (?:that|this|it|my|our|the)\b/.test(text)
+    || /\bskip (?:that|this|it)\b/.test(text);
 }
 
 export function looksLikeBusinessQuestion(value) {
@@ -586,7 +602,7 @@ function hasExplicitNameCue(value) {
   const text = cleanText(value);
   if (callerVolunteeredName(text)) return true;
   const prefixed = text.match(
-    /\b(?:call me|you can use|please use|put (?:it|this|the estimate) under|the name is|it(?:'s| is))\s+([^,;!?]+)/iu,
+    /\b(?:call me|you can use|please use|put (?:it|this|the estimate|the service request) under|the name is|it(?:'s| is))\s+([^,;!?]+)/iu,
   );
   if (prefixed) {
     const candidate = prefixed[1].replace(/\s+and\b[\s\S]*$/i, '').trim();

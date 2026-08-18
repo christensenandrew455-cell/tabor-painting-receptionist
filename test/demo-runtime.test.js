@@ -21,8 +21,8 @@ test('keeps demo business information separate from dynamic account fill-ins', (
     usageKey: 'private-key',
     profile: {
       businessName: 'Unrelated Dynamic Business',
-      earliestEstimateStart: '1:00 PM',
-      latestEstimateStart: '2:00 PM',
+      earliestServiceRequestStart: '1:00 PM',
+      latestServiceRequestStart: '2:00 PM',
       services: ['Unrelated Service'],
     },
   };
@@ -30,8 +30,8 @@ test('keeps demo business information separate from dynamic account fill-ins', (
   const demo = runtimeForCalledPhone(dynamicRuntime, '+17742316164');
   assert.equal(demo.demo, true);
   assert.equal(demo.profile.businessName, 'Tabor Painting');
-  assert.equal(demo.profile.earliestEstimateStart, '9:00 AM');
-  assert.equal(demo.profile.latestEstimateStart, '4:30 PM');
+  assert.equal(demo.profile.earliestServiceRequestStart, '9:00 AM');
+  assert.equal(demo.profile.latestServiceRequestStart, '4:30 PM');
   assert.deepEqual(Object.keys(demo.profile.services), [
     'Interior Painting',
     'Exterior Painting',
