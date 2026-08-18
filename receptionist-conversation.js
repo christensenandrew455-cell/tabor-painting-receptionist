@@ -1025,6 +1025,24 @@ export function createReceptionistConversation({ context }) {
     return note;
   }
 
+  function notesTurnProjectDetail(analysis, transcript, dateCandidate = '') {
+    const analyzedNote = groundedProjectNote(
+      analysis.project_note,
+      transcript,
+      dateCandidate,
+    );
+    if (analyzedNote) return analyzedNote;
+    if (
+      analysis.business_answer_status !== 'not_a_question'
+      || cleanText(analysis.business_question)
+      || isClearAffirmative(transcript)
+      || isClearNegative(transcript)
+      || looksLikeUnfinishedThought(transcript)
+      || looksLikeBusinessQuestion(transcript)
+    ) return '';
+    return groundedProjectNote(transcript, transcript, dateCandidate);
+  }
+
   function addGroundedProjectNote(value, transcript, dateCandidate = '') {
     const note = groundedProjectNote(value, transcript, dateCandidate);
     return note ? addNote(note) : false;
@@ -1524,11 +1542,9 @@ export function createReceptionistConversation({ context }) {
         analysis.notes_complete
         || (collectingCorrection !== 'schedule' && isClearNegative(transcript))
       );
-    const projectDetail = groundedProjectNote(
-      analysis.project_note,
-      transcript,
-      dateCandidate,
-    );
+    const projectDetail = before === 'notes' && !collectingCorrection
+      ? notesTurnProjectDetail(analysis, transcript, dateCandidate)
+      : groundedProjectNote(analysis.project_note, transcript, dateCandidate);
     const hasIntakeAnswer = analysisSuppliesIntakeAnswer(analysis, before);
     const projectDetailOverridesQuestion = projectDetail
       && !businessQuestionIsDistinctFromProjectNote(analysis, transcript, projectDetail);
@@ -1602,7 +1618,7 @@ export function createReceptionistConversation({ context }) {
         || callerFinishedNotes
         || (question.hadQuestion && projectDetailOverridesQuestion)
         ? false
-        : addGroundedProjectNote(analysis.project_note, transcript, dateCandidate);
+        : (projectDetail ? addNote(projectDetail) : false);
       const correctionPrefix = scheduleWasCorrected && !question.prefix
         ? 'Okay, I updated that preference.'
         : '';

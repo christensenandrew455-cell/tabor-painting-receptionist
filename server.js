@@ -461,7 +461,16 @@ wss.on('connection', (telnyx, request) => {
           level: assessedPayload.riskLevel,
           factors: assessedPayload.riskFactors.map((item) => item.code),
         }));
-        return sendArcData(call.runtime, assessedPayload, options);
+        const websiteResponse = await sendArcData(call.runtime, assessedPayload, options);
+        console.log('[Service request delivery]', JSON.stringify({
+          callControlId: call.id,
+          leadId: clean(websiteResponse.id),
+          duplicate: websiteResponse.duplicate === true,
+          confirmationTextSent: websiteResponse.confirmationTextSent === true,
+          confirmationTextStatus: clean(websiteResponse.confirmationTextStatus),
+          confirmationTextError: clean(websiteResponse.confirmationTextError),
+        }));
+        return websiteResponse;
       },
       onAudio: (payload) => sendTelnyx({ event: 'media', media: { payload } }),
       onPlaybackClear: () => sendTelnyx({ event: 'clear' }),
