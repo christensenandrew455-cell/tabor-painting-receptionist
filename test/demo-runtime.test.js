@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createBusinessContext } from '../business-context.js';
 import {
   DEFAULT_DEMO_PHONE_NUMBER,
   isDemoPhoneNumber,
@@ -7,6 +8,7 @@ import {
   loadRuntimeForCalledPhone,
   runtimeForCalledPhone,
 } from '../demo-runtime.js';
+import { createIntakeManager, matchService } from '../intake.js';
 
 test('recognizes the dedicated ARC demo number in common Telnyx formats', () => {
   assert.equal(DEFAULT_DEMO_PHONE_NUMBER, '+17742316164');
@@ -15,7 +17,7 @@ test('recognizes the dedicated ARC demo number in common Telnyx formats', () => 
   assert.equal(isDemoPhoneNumber('+15555550123'), false);
 });
 
-test('keeps demo business information separate from dynamic account fill-ins', () => {
+test('keeps the neutral demo completely separate from dynamic account fill-ins', () => {
   const dynamicRuntime = {
     clientId: 'dynamic-account',
     intakeUrl: 'https://private.example.test/intake',
@@ -31,17 +33,16 @@ test('keeps demo business information separate from dynamic account fill-ins', (
 
   const demo = runtimeForCalledPhone(dynamicRuntime, '+17742316164');
   assert.equal(demo.demo, true);
-  assert.equal(demo.profile.businessName, 'Tabor Painting');
-  assert.equal(demo.profile.earliestServiceRequestStart, '9:00 AM');
-  assert.equal(demo.profile.latestServiceRequestStart, '4:30 PM');
-  assert.deepEqual(Object.keys(demo.profile.services), [
-    'Interior Painting',
-    'Exterior Painting',
-    'Wood Staining',
-  ]);
-  assert.equal(demo.intakeUrl, dynamicRuntime.intakeUrl);
-  assert.equal(demo.usageUrl, dynamicRuntime.usageUrl);
-  assert.equal(demo.usageKey, dynamicRuntime.usageKey);
+  assert.equal(demo.profile.businessName, 'AI Receptionist Demo');
+  assert.equal(demo.profile.earliestServiceRequestStart, '');
+  assert.equal(demo.profile.latestServiceRequestStart, '');
+  assert.deepEqual(demo.profile.serviceRequestWeekdays, []);
+  assert.deepEqual(demo.profile.serviceAreas, []);
+  assert.deepEqual(demo.profile.services, {});
+  assert.deepEqual(demo.profile.businessInformation, []);
+  assert.equal(demo.intakeUrl, undefined);
+  assert.equal(demo.usageUrl, undefined);
+  assert.equal(demo.usageKey, undefined);
 
   const account = runtimeForCalledPhone(dynamicRuntime, '+15555550123');
   assert.equal(account, dynamicRuntime);
@@ -60,7 +61,41 @@ test('loads the demo locally without requesting an ARC account', async () => {
   assert.equal(accountLoads, 0);
   assert.equal(isDemoRuntime(demo), true);
   assert.equal(demo.calledPhone, '+17742316164');
-  assert.equal(demo.profile.businessName, 'Tabor Painting');
+  assert.equal(demo.profile.businessName, 'AI Receptionist Demo');
+});
+
+test('demo accepts any service and has no business-specific day or time window', () => {
+  const runtime = runtimeForCalledPhone({}, '+17742316164');
+  const context = createBusinessContext(runtime);
+  assert.equal(context.businessName, 'AI Receptionist Demo');
+  assert.deepEqual(context.services, []);
+  assert.deepEqual(context.serviceRequestWeekdays, []);
+  assert.equal(context.earliestServiceRequestStart, '');
+  assert.equal(context.latestServiceRequestStart, '');
+  assert.equal(matchService('AC repair', context.services), 'AC repair');
+
+  const manager = createIntakeManager({
+    context,
+    callControlId: 'demo-call',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true, demo: true }),
+    now: () => new Date('2026-08-03T16:00:00.000Z'),
+  });
+  const prepared = manager.prepare({
+    service: 'AC repair',
+    name: 'Jordan Smith',
+    address: '123 Main Street, Albany, New York',
+    preferred_date: 'Sunday',
+    preferred_time: '2:00 AM',
+    additional_notes: 'The AC will not run.',
+    additional_notes_asked: true,
+    consent_to_contact: true,
+    consent_asked_separately: true,
+  });
+
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.summary.service, 'AC repair');
+  assert.equal(prepared.summary.preferredDateAndTime, 'Sunday, August 9, 2026 at 2:00 AM');
 });
 
 test('loads every non-demo number through the unchanged ARC account path', async () => {
