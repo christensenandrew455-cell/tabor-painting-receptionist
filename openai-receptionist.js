@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { cleanText } from './business-context.js';
 import { createIntakeManager } from './intake.js';
@@ -277,7 +278,8 @@ function retryQuestionFromSpeech(value, fallback = '') {
 function createSafetyIdentifier(runtime = {}, callControlId = '') {
   const identity = cleanText(runtime?.clientId || runtime?.businessId || runtime?.id || callControlId);
   if (!identity) return 'anonymous-receptionist-call';
-  return `receptionist-${Buffer.from(identity).toString('base64url').slice(0, 64)}`;
+  const digest = createHash('sha256').update(identity).digest('base64url');
+  return `receptionist-${digest}`;
 }
 
 export function createOpenAiReceptionist({
