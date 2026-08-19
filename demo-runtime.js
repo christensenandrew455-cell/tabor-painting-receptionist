@@ -3,24 +3,14 @@ import { cleanText } from './business-context.js';
 export const DEFAULT_DEMO_PHONE_NUMBER = '+17742316164';
 
 export const DEMO_PROFILE = Object.freeze({
-  businessName: 'Tabor Painting',
+  businessName: 'AI Receptionist Demo',
   timeZone: 'America/New_York',
-  serviceRequestWeekdays: Object.freeze([
-    'monday',
-    'tuesday',
-    'wednesday',
-    'thursday',
-    'friday',
-  ]),
-  earliestServiceRequestStart: '9:00 AM',
-  latestServiceRequestStart: '4:30 PM',
-  businessType: 'Painting company',
-  serviceAreas: Object.freeze(['Massachusetts']),
-  services: Object.freeze({
-    'Interior Painting': 'Interior painting services.',
-    'Exterior Painting': 'Exterior painting services.',
-    'Wood Staining': 'Wood staining services.',
-  }),
+  serviceRequestWeekdays: Object.freeze([]),
+  earliestServiceRequestStart: '',
+  latestServiceRequestStart: '',
+  businessType: '',
+  serviceAreas: Object.freeze([]),
+  services: Object.freeze({}),
   businessInformation: Object.freeze([]),
 });
 
@@ -46,7 +36,6 @@ export function isDemoPhoneNumber(
 export function runtimeForCalledPhone(runtime = {}, calledPhone, options = {}) {
   if (!isDemoPhoneNumber(calledPhone, options.demoPhoneNumber)) return runtime;
   return {
-    ...runtime,
     demo: true,
     calledPhone: normalizePhoneNumber(calledPhone),
     profile: {

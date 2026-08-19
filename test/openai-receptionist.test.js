@@ -24,6 +24,18 @@ const CONTEXT = Object.freeze({
   knowledgeJson: '{"businessInformation":[{"title":"Warranty","info":"One year on labor."}]}',
 });
 
+const DEMO_CONTEXT = Object.freeze({
+  businessName: 'AI Receptionist Demo',
+  timeZone: 'America/New_York',
+  clientId: '',
+  serviceRequestWeekdays: [],
+  earliestServiceRequestStart: '',
+  latestServiceRequestStart: '',
+  services: [],
+  businessInformation: [],
+  knowledgeJson: '{"profile":{"businessName":"AI Receptionist Demo"},"services":[]}',
+});
+
 class FakeWebSocket extends EventEmitter {
   static instance = null;
 
@@ -247,17 +259,22 @@ test('omits the optional OpenAI safety identifier only for the demo runtime', as
   }
 });
 
-async function advanceHarnessToSummaryRequest(socket) {
+async function advanceHarnessToSummaryRequest(socket, {
+  businessName = 'Tabor Painting',
+  greeting = `Hi, thank you for calling ${businessName}. What kind of work are you looking to have done?`,
+  serviceCallerText = 'I need exterior painting.',
+  service = 'Exterior Painting',
+} = {}) {
   await finishSpeech(socket, {
     responseId: 'summary-path-greeting',
-    transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    transcript: greeting,
   });
   const steps = [
     {
-      callerText: 'I need exterior painting.',
+      callerText: serviceCallerText,
       args: analysis({
         service_status: 'complete',
-        fields: { service: 'Exterior Painting' },
+        fields: { service },
       }),
       speech: 'Okay, what name should I use for the service request?',
     },
@@ -284,7 +301,7 @@ async function advanceHarnessToSummaryRequest(socket) {
     {
       callerText: 'No.',
       args: analysis({ notes_complete: true }),
-      speech: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+      speech: `Okay, thanks. One more question. Do you consent to being contacted by ${businessName}?`,
     },
     {
       callerText: 'Yes.',
@@ -349,6 +366,112 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /simplify only owner-facing notes and business questions/i);
   assert.match(prompt, /never duplicate the structured service, name, address, date, or time in notes/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
+});
+
+test('demo session is neutral, accepts every trade, and contains no Tabor Painting rules', () => {
+  const event = buildSessionUpdate(DEMO_CONTEXT, { demo: true });
+  const prompt = event.session.instructions;
+
+  assert.match(prompt, /neutral product demo of the ARC Client Center AI receptionist/i);
+  assert.match(prompt, /not representing any real business/i);
+  assert.match(prompt, /accept any substantive description of requested work/i);
+  assert.match(prompt, /painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade/i);
+  assert.match(prompt, /no real business-specific services, prices, availability, policies/i);
+  assert.doesNotMatch(prompt, /Tabor Painting|Interior Painting|Exterior Painting|Wood Staining/i);
+  assert.deepEqual(event.session.audio.input.transcription.keywords, ['AI Receptionist Demo']);
+});
+
+test('demo greeting and analysis accept an HVAC request without a service catalog', async () => {
+  const h = await createHarness({
+    context: DEMO_CONTEXT,
+    runtime: { demo: true },
+  });
+  try {
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /Hi, thank you for calling the AI receptionist demo number\./i,
+    );
+    assert.doesNotMatch(latestResponse(h.socket).response.instructions, /Tabor Painting/i);
+
+    await finishSpeech(h.socket, {
+      responseId: 'demo-greeting',
+      transcript: 'Hi, thank you for calling the AI receptionist demo number. What kind of work are you looking to have done?',
+    });
+    caller(h.socket, "My AC won't run.", 'demo-hvac-service');
+
+    const request = latestResponse(h.socket).response;
+    assert.match(request.instructions, /demo has no service catalog/i);
+    assert.match(request.instructions, /accepts every substantive requested work type/i);
+    assert.match(
+      request.tools[0].parameters.properties.fields.properties.service.description,
+      /accept every substantive trade or work type/i,
+    );
+    assert.match(
+      request.tools[0].parameters.properties.service_status.description,
+      /never use not_offered/i,
+    );
+
+    await finishAnalysis(h.socket, {
+      responseId: 'demo-hvac-analysis',
+      args: analysis({
+        service_status: 'complete',
+        fields: { service: 'AC repair' },
+      }),
+    });
+    assert.equal(h.receptionist.snapshot().state.values.service, 'AC repair');
+    assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('demo completes with the demo-specific closing while regular closing stays unchanged', async () => {
+  const h = await createHarness({
+    context: DEMO_CONTEXT,
+    runtime: { demo: true },
+  });
+  try {
+    await advanceHarnessToSummaryRequest(h.socket, {
+      businessName: 'AI Receptionist Demo',
+      greeting: 'Hi, thank you for calling the AI receptionist demo number. What kind of work are you looking to have done?',
+      serviceCallerText: "My AC won't run.",
+      service: 'AC repair',
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'demo-summary',
+      transcript: "Okay, here's the summary. Jordan Smith is requesting AC repair at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
+    });
+    caller(h.socket, 'Yes.', 'demo-summary-confirmation');
+    await finishAnalysis(h.socket, {
+      responseId: 'demo-summary-analysis',
+      args: analysis({ summary_confirmation: 'yes' }),
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'demo-pre-submit',
+      transcript: "I'm submitting your service request now.",
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'demo-success',
+      transcript: "You're all set. Your service request has been submitted.",
+    });
+
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /Thank you for trying out the demo number\. Have a good day\./i,
+    );
+    assert.doesNotMatch(
+      latestResponse(h.socket).response.instructions,
+      /Thank you for filling out a service request/i,
+    );
+    await finishSpeech(h.socket, {
+      responseId: 'demo-goodbye',
+      transcript: 'Thank you for trying out the demo number. Have a good day.',
+    });
+    assert.deepEqual(h.goodbye, [true]);
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
 });
 
 test('generated audio streams immediately instead of waiting for transcript validation', async () => {

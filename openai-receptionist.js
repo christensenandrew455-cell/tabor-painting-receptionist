@@ -6,6 +6,7 @@ import {
   CALLER_TURN_ANALYSIS_TOOL,
   buildSummaryRecoverySpeech,
   buildTurnAnalysisInstructions,
+  callerTurnAnalysisTool,
   createReceptionistConversation,
 } from './receptionist-conversation.js';
 import {
@@ -35,6 +36,8 @@ const SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
 const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
 const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
 const DEFAULT_HOLD_RECOVERY_MS = 30_000;
+const DEMO_GREETING = `Hi, thank you for calling the AI receptionist demo number. ${SERVICE_QUESTION}`;
+const DEMO_GOODBYE = 'Thank you for trying out the demo number. Have a good day.';
 const SUPPORTED_VOICES = new Set([
   'alloy',
   'ash',
@@ -146,7 +149,56 @@ function transcriptionConfiguration(context = {}) {
   };
 }
 
-export function buildReceptionistInstructions(context, { submitted = false } = {}) {
+function buildDemoReceptionistInstructions(context, { submitted = false } = {}) {
+  return `
+# Role
+You are running a neutral product demo of the ARC Client Center AI receptionist. You are not representing any real business.
+Your only objective is to demonstrate one complete service-request intake. Sound friendly, attentive, concise, and natural.
+Never introduce yourself with a personal name. If directly asked, say that you are the AI receptionist demo, managed by ARC Client Center.
+
+# Authoritative call control
+The server owns the intake state, question order, validation, confirmation, submission, and hangup.
+Never infer the current step from memory when a response instruction gives you the exact action.
+When instructed to say exact text, say it immediately and exactly. Do not add a preamble, explanation, second question, or offer of more help.
+When analyze_caller_turn is forced, call it once without speaking. The tool is language understanding, not permission to change state or submit anything.
+
+# Demo intake behavior
+Use the same intake flow for callers from every trade and business type.
+Accept any substantive description of requested work. There is no service catalog in demo mode, so never reject work because it is painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade.
+Turn the caller's requested work into a short, accurate service label while preserving useful scope, quantities, sizes, conditions, and other project details in summarized owner-facing notes.
+Do not impose business-specific weekdays or hours. Record any structurally valid preferred date and explicit time as the caller's preference.
+Keep the caller's name, full address, date, time, and yes/no meaning literal. A full address still requires the street number, street name, city or town, and state.
+
+# Business knowledge boundary
+This demo has no real business-specific services, prices, availability, policies, or other facts.
+At the notes/questions step, answer only a server-supported platform fallback question. If the server data does not support the answer, classify the question as unanswerable so it can be added to the notes.
+Never use general trade knowledge or pretend this demo belongs to a real business.
+Service-request preferences are not confirmed appointments. Never claim that a particular date or time is available.
+
+# Turn taking
+Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
+Do not interrupt the caller. The first delivery of every question must finish without caller barge-in. Only a question repeated after the caller-silence delay yields as soon as the caller begins answering.
+Use short spoken turns. Ask one question at a time.
+
+# Demo configuration
+${serviceGuide(context)}
+
+<business_information>
+${context.knowledgeJson}
+</business_information>
+
+# Completion state
+${submitted
+    ? 'The demo service request has been submitted. Say only the exact success or goodbye text requested by the server.'
+    : 'The demo request is not submitted until the server completes the confirmed write.'}
+`;
+}
+
+export function buildReceptionistInstructions(
+  context,
+  { submitted = false, demo = false } = {},
+) {
+  if (demo) return buildDemoReceptionistInstructions(context, { submitted });
   const businessName = spokenBusinessName(context.businessName);
   return `
 # Role
@@ -201,7 +253,7 @@ function selectedVoice() {
   return SUPPORTED_VOICES.has(voice) ? voice : DEFAULT_VOICE;
 }
 
-export function buildSessionUpdate(context, { submitted = false } = {}) {
+export function buildSessionUpdate(context, { submitted = false, demo = false } = {}) {
   const model = cleanText(process.env.OPENAI_REALTIME_MODEL) || DEFAULT_MODEL;
   const controls = costControls();
   return {
@@ -210,7 +262,7 @@ export function buildSessionUpdate(context, { submitted = false } = {}) {
       type: 'realtime',
       model,
       output_modalities: ['audio'],
-      instructions: buildReceptionistInstructions(context, { submitted }),
+      instructions: buildReceptionistInstructions(context, { submitted, demo }),
       audio: {
         input: {
           format: { type: 'audio/pcmu' },
@@ -309,6 +361,7 @@ export function createOpenAiReceptionist({
   const realtimeUrl = cleanText(process.env.OPENAI_REALTIME_URL)
     || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
   const controls = costControls();
+  const demoMode = runtime?.demo === true;
   const configuredRecoveryDelay = incompleteTurnRecoveryMs
     ?? process.env.OPENAI_CALLER_SILENCE_REPROMPT_MS;
   const recoveryDelayMs = Math.round(boundedNumber(
@@ -376,7 +429,7 @@ export function createOpenAiReceptionist({
   const openai = new WebSocketClass(realtimeUrl, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      ...(runtime?.demo === true ? {} : {
+      ...(demoMode ? {} : {
         'OpenAI-Safety-Identifier': createSafetyIdentifier(runtime, callControlId),
       }),
     },
@@ -487,7 +540,7 @@ export function createOpenAiReceptionist({
   }
 
   function sendSessionUpdate() {
-    sendJson(openai, buildSessionUpdate(context, { submitted }));
+    sendJson(openai, buildSessionUpdate(context, { submitted, demo: demoMode }));
   }
 
   function emitTranscript(speaker, value, metadata = {}) {
@@ -662,9 +715,10 @@ export function createOpenAiReceptionist({
   function requestGreeting() {
     if (greetingRequested || submitted || endingCall) return;
     greetingRequested = true;
-    const businessName = spokenBusinessName(context.businessName);
     requestSpeech(
-      `Hi, thank you for calling ${businessName}. ${SERVICE_QUESTION}`,
+      demoMode
+        ? DEMO_GREETING
+        : `Hi, thank you for calling ${spokenBusinessName(context.businessName)}. ${SERVICE_QUESTION}`,
       { after: 'continue' },
     );
   }
@@ -674,7 +728,9 @@ export function createOpenAiReceptionist({
     endingCall = true;
     clearIncompleteTurnRecovery();
     requestSpeech(
-      'Thank you for filling out a service request. Have a good day.',
+      demoMode
+        ? DEMO_GOODBYE
+        : 'Thank you for filling out a service request. Have a good day.',
       { after: 'complete' },
     );
   }
@@ -695,8 +751,9 @@ export function createOpenAiReceptionist({
         },
         callerTranscript: turn.text,
         context,
+        demo: demoMode,
       }),
-      tools: [structuredClone(CALLER_TURN_ANALYSIS_TOOL)],
+      tools: [callerTurnAnalysisTool({ demo: demoMode })],
       tool_choice: { type: 'function', name: CALLER_TURN_ANALYSIS_TOOL.name },
     }, {
       kind: 'analysis',
