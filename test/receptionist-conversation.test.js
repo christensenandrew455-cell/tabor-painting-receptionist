@@ -167,6 +167,49 @@ test('a natural supplied-service request is accepted even when it ends as an ava
   assert.deepEqual(conversation.snapshot().notes, ['Stain the new deck.']);
 });
 
+test('demo accepts a substantive service even when analysis asks for clarification', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'AI Receptionist Demo',
+    serviceRequestWeekdays: [],
+    earliestServiceRequestStart: '',
+    latestServiceRequestStart: '',
+    services: [],
+    businessInformation: [],
+  };
+  const conversation = createReceptionistConversation({ context, demo: true });
+
+  const action = analyzedTurn(
+    conversation,
+    'I need to get some pipes cleaned.',
+    { service_status: 'ambiguous' },
+  );
+
+  assert.equal(conversation.snapshot().values.service, 'some pipes cleaned');
+  assert.equal(conversation.snapshot().pendingField, 'name');
+  assert.deepEqual(conversation.snapshot().notes, []);
+  assert.match(action.text, /what name should I use/i);
+  assert.doesNotMatch(action.text, /little more|more specific/i);
+});
+
+test('a malformed service-note paraphrase is repaired before it can reach the summary', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Drain Cleaning', description: 'Drain clearing' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+
+  const action = analyzedTurn(conversation, 'I need to get some pipes cleaned.', {
+    service_status: 'complete',
+    project_note: 'Clean get some pipes.',
+    fields: { service: 'Drain Cleaning' },
+  });
+
+  assert.match(action.text, /what name should I use/i);
+  assert.deepEqual(conversation.snapshot().notes, ['Clean some pipes.']);
+  assert.doesNotMatch(conversation.snapshot().notes.join(' '), /clean get/i);
+});
+
 test('a reaction or unfinished thought stays silent and cannot complete service', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   assert.deepEqual(analyzedTurn(conversation, 'Oh.'), { type: 'wait', preserve: false });
@@ -1145,6 +1188,35 @@ test('Tuesday at 3 in the afternoon advances when the analyzer drops the time', 
   assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
   assert.equal(conversation.snapshot().values.preferredTime, '3 in the afternoon');
   assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('an explicit AM or morning phrase wins when analysis drops the time of day', () => {
+  for (const [transcript, expectedTime] of [
+    ['Tuesday at 10 a.m.', '10 am'],
+    ['Tuesday sometime in the morning, like 10 in the morning.', '10 in the morning'],
+  ]) {
+    const conversation = createReceptionistConversation({ context: CONTEXT });
+    analyzedTurn(conversation, 'Exterior painting.', {
+      service_status: 'complete',
+      fields: { service: 'Exterior Painting' },
+    });
+    analyzedTurn(conversation, 'Andrew Christensen.', {
+      fields: { name: 'Andrew Christensen' },
+    });
+    analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+      address_status: 'complete',
+      fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+    });
+
+    const action = analyzedTurn(conversation, transcript, {
+      fields: { preferred_date: 'Tuesday', preferred_time: '10' },
+    });
+
+    assert.match(action.text, /additional notes/i);
+    assert.doesNotMatch(action.text, /AM or PM/i);
+    assert.equal(conversation.snapshot().values.preferredTime, expectedTime);
+    assert.equal(conversation.snapshot().pendingField, 'notes');
+  }
 });
 
 test('a bare time-only reply asks for AM or PM after saving the date', () => {

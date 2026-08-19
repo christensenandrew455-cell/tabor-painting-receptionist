@@ -143,7 +143,7 @@ function transcriptionConfiguration(context = {}) {
   ].filter(Boolean).slice(0, 50);
   return {
     model,
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning or afternoon, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning, afternoon, evening, or night, and short yes or no answers.',
     ...(keywords.length ? { keywords } : {}),
     languages: [language],
   };
@@ -389,7 +389,7 @@ export function createOpenAiReceptionist({
   const emittedTranscriptKeys = new Set();
   const pendingCallerTranscriptions = new Set();
   const deferredAnalysisCompletions = [];
-  const conversation = createReceptionistConversation({ context });
+  const conversation = createReceptionistConversation({ context, demo: demoMode });
   const intake = createIntakeManager({
     context,
     callControlId,

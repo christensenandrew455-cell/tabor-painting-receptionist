@@ -133,7 +133,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       project_note: {
         type: 'string',
-        description: 'The final stored version of actual caller-provided project information from this turn. Always summarize it into a concise, owner-facing action, quantity, scope, or condition statement before returning it; never copy transcript-style wording. Remove first-person lead-ins, fillers, false starts, and repeated ideas while preserving every concrete detail without adding facts. When the caller answers the service question with scope, location, quantity, condition, material, color, or another useful detail beyond merely naming the service, include it even though it was said during the service step. Keep service words needed to express a concrete detail, such as the number or sizes of work areas; omit only a standalone repetition of the selected service. Never copy a prior example, invent a room or project detail, or put a name, address, preferred date/time, consent answer, conversation repair, or field question here. A conversational tag such as “you know what I mean?” does not turn a project note into a question. Empty only when this turn contains no project detail.',
+        description: 'The final stored version of actual caller-provided project information from this turn. Always summarize it into a concise, owner-facing action, quantity, scope, or condition statement before returning it; never copy transcript-style wording. Remove first-person lead-ins, fillers, false starts, and repeated ideas while preserving every concrete detail and the caller\'s actual requested action without adding facts. Never replace the requested work or object with a different diagnosis, cause, solution, service, or project detail. When the caller answers the service question with scope, location, quantity, condition, material, color, or another useful detail beyond merely naming the service, include it even though it was said during the service step. Keep service words needed to express a concrete detail, such as the number or sizes of work areas; omit only a standalone repetition of the selected service. Never copy a prior example, invent a room or project detail, or put a name, address, preferred date/time, consent answer, conversation repair, or field question here. A conversational tag such as “you know what I mean?” does not turn a project note into a question. Empty only when this turn contains no project detail.',
       },
       notes_complete: {
         type: 'boolean',
@@ -285,7 +285,7 @@ const SERVICE_NOTE_GENERIC_WORDS = new Set([
   "i've", 'job',
   'if', 'just', 'kind', 'like',
   'look', 'maybe', 'need', 'okay', 'ok', 'please', 'probably', 'project', 'sorry',
-  'over', 'somebody', 'someone', 'sort', 'suppose', 'think', 'try', 'uh', 'um', 'want', 'was', 'well', 'were', 'wonder', 'work', 'yeah',
+  'over', 'some', 'somebody', 'someone', 'sort', 'suppose', 'think', 'try', 'uh', 'um', 'want', 'was', 'well', 'were', 'wonder', 'work', 'yeah',
   'yes', 'will', 'would', "we're", "we've",
 ]);
 
@@ -373,7 +373,8 @@ function cleanedProjectNoteSentence(value) {
     .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?:was|were)\s+(?:just\s+)?looking\s+to\s+(?:get|have)[,; ]+/i, '')
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, '')
-    .replace(/^(?:get|have)\s+(?=(?:my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
+    .replace(/^(?:get|have)\s+(?=(?:some|my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
+    .replace(/^(build|clean|fix|inspect|install|paint|rebuild|remodel|renovate|repair|repaint|replace|service|stain|trim)\s+(?:get|have)\s+/i, '$1 ')
     .replace(/^(?:like)[,; ]+/i, '')
     .replace(/^(?:i|we)\s+(?=accidentally\b)/i, '')
     .replace(/\b(?:uh+|um+)\b[,;.! ]*/gi, '')
@@ -422,6 +423,19 @@ function cleanedServiceTurnNote(value) {
     .filter(Boolean)
     .join(' ')
     .trim();
+}
+
+function demoServiceFromCallerText(value) {
+  const service = cleanText(value)
+    .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like|actually)[,;.! ]+)+/i, '')
+    .replace(/^(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?\s+/i, '')
+    .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?\s+/i, '')
+    .replace(/^(?:can|could|would|will)\s+(?:you|someone|somebody)\s+(?:please\s+)?/i, '')
+    .replace(/^(?:get|have)\s+(?=(?:some|my|our|his|her|their|the|a|an|one|two|three|couple|\d)\b)/i, '')
+    .replace(/\s+(?:please|thanks?)?[.!?]*$/i, '')
+    .replace(/[.!?]+$/g, '')
+    .trim();
+  return service.slice(0, 160);
 }
 
 function isLowQualityProjectNote(value) {
@@ -476,6 +490,12 @@ function normalizedTimePhrase(value) {
     .replace(/[^\p{L}\p{N}':]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function hasExplicitTimeOfDay(value) {
+  return /\b(?:am|pm|morning|afternoon|evening|night|noon|midnight)\b/i.test(
+    normalizedTimePhrase(value),
+  );
 }
 
 function requestedDateCandidate(value, context = {}) {
@@ -916,7 +936,7 @@ export function buildTurnAnalysisInstructions({
     requestedWorkQuestionRule,
     'Classify requests for business information by meaning, not by exact keywords, sentence form, punctuation, or whether the caller phrases the request indirectly. Use service_count and service_list for all supplied services; use remaining_service_count and remaining_service_list when the caller means the supplied services other than their selected service; use lead_response_time for how long the business takes to reply after submission; use service_request_window for accepted service-request days/times; and use other only for another actual information request. Never use other merely because an intake answer is unfamiliar. Tolerate transcription mistakes in the business name.',
     'Write business_question as one short, direct, grammatical question. Remove fillers, false starts, conversational lead-ins, and repeated versions of the same question. Do not copy a messy transcript verbatim. Preserve the substantive meaning and do not reinterpret a project-duration question as a service-list or callback question merely because it also mentions a job, project, or work.',
-    'Write project_note as the final text that will be saved, read back, and sent to the business—not as a transcript. Summarize every useful project detail into a concise owner-facing action, quantity, scope, or condition statement. Remove first-person wording, filler, false starts, and repeated ideas while preserving all useful scope, location, quantity, condition, material, color, access directions, landmarks, and appearance details. Prefer the caller\'s exact concrete nouns and work action, rearranging them for clear grammar instead of replacing them with unsupported synonyms. Do not save a raw conversational sentence. Do not repeat only the structured service category, but keep service words required to express concrete scope or quantity. Do not include the caller name, street address, preferred date/time, consent, or summary confirmation. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
+    'Write project_note as the final text that will be saved, read back, and sent to the business—not as a transcript. Summarize every useful project detail into a concise owner-facing action, quantity, scope, or condition statement. Remove first-person wording, filler, false starts, and repeated ideas while preserving all useful scope, location, quantity, condition, material, color, access directions, landmarks, appearance details, and the caller\'s actual requested action. Prefer the caller\'s exact concrete nouns and work action, rearranging them for clear grammar instead of replacing them with unsupported synonyms. Never turn the caller\'s words into a different diagnosis, cause, solution, service, object, or requested action. Do not save a raw conversational sentence. Do not repeat only the structured service category, but keep service words required to express concrete scope or quantity. Do not include the caller name, street address, preferred date/time, consent, or summary confirmation. Never add a fact or copy details from an earlier caller, an example, or general knowledge.',
     'Use background_speech when the caller is talking to someone else or making an unrelated self-directed remark and gives no answer or relevant question. A turn that eventually contains a direct answer is complete, even if unrelated words came first. When AUTHORITATIVE_CALL_STATE.holdActive is true, be especially strict: unrelated speech remains background_speech and only a relevant answer, correction, business question, or explicit statement that the caller is ready ends the hold.',
     'Do not use general knowledge for business, trade, project, price, duration, policy, or availability answers.',
     'The supplied Title/Info business-information items are authoritative business facts. If one directly supports a caller question, mark it answerable and copy the shortest exact supporting Info value into business_support. If no supplied fact answers the question, mark it unanswerable.',
@@ -971,7 +991,7 @@ export function buildSummaryRecoverySpeech(summary = {}) {
   );
 }
 
-export function createReceptionistConversation({ context }) {
+export function createReceptionistConversation({ context, demo = false }) {
   const callerTranscripts = [];
   const values = {
     service: '',
@@ -1407,6 +1427,21 @@ export function createReceptionistConversation({ context }) {
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
     const currentField = pendingField();
+    if (
+      demo
+      && currentField === 'service'
+      && !looksLikeUnfinishedThought(transcript)
+      && !isConversationRepairRequest(transcript)
+      && hasUsableServiceAnswer(transcript, context)
+    ) {
+      analysis.fields.service = analysis.fields.service || demoServiceFromCallerText(transcript);
+      if (analysis.fields.service) {
+        analysis.service_status = 'complete';
+        if (['unintelligible', 'background_speech'].includes(analysis.turn_status)) {
+          analysis.turn_status = 'complete';
+        }
+      }
+    }
     const collectingAddress = currentField === 'address';
     const addressTurn = collectingAddress
       || analysis.correction_field === 'address';
@@ -1544,7 +1579,13 @@ export function createReceptionistConversation({ context }) {
       analysis.fields.preferred_time = completedPendingTime;
     } else if (
       shouldCaptureDetectedTime
-      && !isGroundedInCallerEvidence(analysis.fields.preferred_time, [transcript])
+      && (
+        !isGroundedInCallerEvidence(analysis.fields.preferred_time, [transcript])
+        || (
+          hasExplicitTimeOfDay(detectedTime)
+          && !hasExplicitTimeOfDay(analysis.fields.preferred_time)
+        )
+      )
     ) {
       analysis.fields.preferred_time = detectedTime;
     }
@@ -1770,7 +1811,7 @@ export function createReceptionistConversation({ context }) {
         dateCandidate,
       );
       const analyzedNote = groundedProjectNote(
-        analysis.project_note,
+        serviceTurnProjectNote(analysis.project_note, values.service, context),
         transcript,
         dateCandidate,
       );

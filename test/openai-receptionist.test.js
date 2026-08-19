@@ -377,7 +377,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.output.voice, 'marin');
   assert.deepEqual(event.session.audio.input.transcription, {
     model: 'gpt-live-transcribe',
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning or afternoon, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning, afternoon, evening, or night, and short yes or no answers.',
     keywords: ['Tabor Painting', 'Exterior Painting', 'Interior Painting'],
     languages: ['en'],
   });
@@ -423,7 +423,7 @@ test('demo session is neutral, accepts every trade, and contains no Tabor Painti
   assert.deepEqual(event.session.audio.input.transcription.keywords, ['AI Receptionist Demo']);
 });
 
-test('demo greeting and analysis accept an HVAC request without a service catalog', async () => {
+test('demo accepts a stated pipe-cleaning service without asking for more detail', async () => {
   const h = await createHarness({
     context: DEMO_CONTEXT,
     runtime: { demo: true },
@@ -439,7 +439,7 @@ test('demo greeting and analysis accept an HVAC request without a service catalo
       responseId: 'demo-greeting',
       transcript: 'Hi, thank you for calling the AI receptionist demo number. What kind of work are you looking to have done?',
     });
-    caller(h.socket, "My AC won't run.", 'demo-hvac-service');
+    caller(h.socket, 'I need to get some pipes cleaned.', 'demo-pipe-service');
 
     const request = latestResponse(h.socket).response;
     assert.match(request.instructions, /demo has no service catalog/i);
@@ -454,14 +454,17 @@ test('demo greeting and analysis accept an HVAC request without a service catalo
     );
 
     await finishAnalysis(h.socket, {
-      responseId: 'demo-hvac-analysis',
+      responseId: 'demo-pipe-analysis',
       args: analysis({
-        service_status: 'complete',
-        fields: { service: 'AC repair' },
+        service_status: 'ambiguous',
+        project_note: 'Clean get some pipes.',
+        fields: { service: 'Pipe cleaning' },
       }),
     });
-    assert.equal(h.receptionist.snapshot().state.values.service, 'AC repair');
+    assert.equal(h.receptionist.snapshot().state.values.service, 'Pipe cleaning');
+    assert.deepEqual(h.receptionist.snapshot().state.notes, []);
     assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+    assert.doesNotMatch(latestResponse(h.socket).response.instructions, /little more|more specific/i);
   } finally {
     h.restore();
   }

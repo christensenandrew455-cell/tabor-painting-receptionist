@@ -79,9 +79,11 @@ test('always requires AM or PM for a bare hour and understands spoken dayparts',
   assert.throws(() => normalizeRequestedTime('9', CONTEXT), /AM or PM/);
   assert.throws(() => normalizeRequestedTime('nine', CONTEXT), /AM or PM/);
   assert.equal(normalizeRequestedTime('nine am', CONTEXT), '9:00 AM');
+  assert.equal(normalizeRequestedTime('10 a.m.', CONTEXT), '10:00 AM');
   assert.equal(normalizeRequestedTime('7 in the morning', CONTEXT), '7:00 AM');
   assert.equal(normalizeRequestedTime('7 in the afternoon', CONTEXT), '7:00 PM');
   assert.equal(normalizeRequestedTime('7 in the evening', CONTEXT), '7:00 PM');
+  assert.equal(normalizeRequestedTime('10 at night', CONTEXT), '10:00 PM');
 });
 
 test('an explicit daypart outside the service-request window asks for a valid time', () => {
