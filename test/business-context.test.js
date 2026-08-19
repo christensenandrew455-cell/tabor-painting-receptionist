@@ -98,6 +98,25 @@ test('normalizes textual service-request day ranges from ARC', () => {
   ]);
 });
 
+test('keeps ARC structured service-area states and counties for risk checks', () => {
+  const context = createBusinessContext({
+    profile: {
+      businessName: 'County Plumbing',
+      serviceAreas: ['Massachusetts', 'Worcester County', 'Middlesex County'],
+      serviceAreaMode: 'counties',
+      serviceAreaStates: ['Massachusetts'],
+      serviceAreaCounties: ['Worcester County', 'Middlesex County'],
+      services: ['Emergency Plumbing'],
+    },
+  });
+
+  assert.equal(context.serviceAreaMode, 'counties');
+  assert.deepEqual(context.serviceAreaStates, ['Massachusetts']);
+  assert.deepEqual(context.serviceAreaCounties, ['Worcester County', 'Middlesex County']);
+  assert.match(context.knowledgeJson, /serviceAreaStates/);
+  assert.match(context.knowledgeJson, /Middlesex County/);
+});
+
 test('keeps service-request availability empty when the owner does not configure it', () => {
   const context = createBusinessContext({
     profile: {

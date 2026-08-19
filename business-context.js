@@ -301,6 +301,9 @@ function publicRuntimeData(runtime, services) {
     'businessBase',
     'businessCounty',
     'serviceAreas',
+    'serviceAreaMode',
+    'serviceAreaStates',
+    'serviceAreaCounties',
     'businessInformation',
   ];
   for (const field of topLevelFields) {
@@ -417,6 +420,27 @@ export function createBusinessContext(runtime = {}) {
     'businessInfo.serviceArea',
     'serviceArea',
   ]));
+  const serviceAreaStates = normalizeServiceAreas(firstValue(normalizedRuntime, [
+    'profile.serviceAreaStates',
+    'business.serviceAreaStates',
+    'businessInfo.serviceAreaStates',
+    'config.serviceAreaStates',
+    'serviceAreaStates',
+  ]));
+  const serviceAreaCounties = normalizeServiceAreas(firstValue(normalizedRuntime, [
+    'profile.serviceAreaCounties',
+    'business.serviceAreaCounties',
+    'businessInfo.serviceAreaCounties',
+    'config.serviceAreaCounties',
+    'serviceAreaCounties',
+  ]));
+  const serviceAreaMode = firstText(normalizedRuntime, [
+    'profile.serviceAreaMode',
+    'business.serviceAreaMode',
+    'businessInfo.serviceAreaMode',
+    'config.serviceAreaMode',
+    'serviceAreaMode',
+  ]);
   const businessCounty = firstText(normalizedRuntime, [
     'profile.businessCounty',
     'business.businessCounty',
@@ -445,6 +469,9 @@ export function createBusinessContext(runtime = {}) {
     earliestEstimateStart: earliestServiceRequestStart,
     latestEstimateStart: latestServiceRequestStart,
     serviceAreas: Object.freeze(serviceAreas),
+    serviceAreaMode,
+    serviceAreaStates: Object.freeze(serviceAreaStates),
+    serviceAreaCounties: Object.freeze(serviceAreaCounties),
     businessCounty,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),

@@ -137,8 +137,10 @@ The ARC response can place public business information in `profile`, `business`,
     "serviceRequestWeekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
     "earliestServiceRequestStart": "09:00",
     "latestServiceRequestStart": "16:00",
-    "businessCounty": "Albany County",
-    "serviceAreas": ["Albany County", "Rensselaer County"],
+    "serviceAreas": ["New York", "Albany County", "Rensselaer County"],
+    "serviceAreaMode": "counties",
+    "serviceAreaStates": ["New York"],
+    "serviceAreaCounties": ["Albany County", "Rensselaer County"],
     "services": {
       "Interior Painting": "Walls, ceilings, trim, and cabinets",
       "Exterior Painting": "Siding, trim, decks, and fences"
@@ -156,6 +158,8 @@ The ARC response can place public business information in `profile`, `business`,
 ```
 
 Service-request weekdays and start times are optional. When they are absent, the receptionist records the caller's preferred date and time without claiming that the preference falls inside an owner-configured scheduling window. The older `estimateDays`, `estimateWeekdays`, `earliestEstimateStart`, and `latestEstimateStart` runtime fields remain accepted as compatibility aliases, but all new ARC data and caller-facing language should use the service-request names. Owner-supplied Title/Info items are available for grounded business-question answers. Legacy business-hours fields, tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
+
+Service areas have two supported modes: `states` means one or more whole states with no county list; `counties` means exactly one state plus one or more counties in that state. The risk check uses the structured arrays when ARC supplies them and keeps the flat `serviceAreas` field as a compatibility fallback.
 
 ## Receptionist-side risk assessment
 

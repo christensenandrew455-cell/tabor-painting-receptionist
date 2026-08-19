@@ -197,6 +197,16 @@ function canonicalState(value) {
   return Object.values(US_STATE_NAMES).includes(state) ? state : state;
 }
 
+function configuredStateName(value) {
+  const configured = normalized(value);
+  const state = canonicalState(configured);
+  return state
+    && Object.values(US_STATE_NAMES).includes(state)
+    && (configured.length === 2 || configured === state)
+    ? state
+    : '';
+}
+
 function placeWithoutCounty(value) {
   return normalized(value).replace(/\bcounty\b/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -205,12 +215,9 @@ function serviceAreaMatchesAddress(area, address = {}) {
   const configured = normalized(area);
   if (!configured) return false;
 
-  const configuredState = canonicalState(configured);
+  const configuredState = configuredStateName(configured);
   const state = canonicalState(address.state);
-  const isStateOnly = configuredState
-    && Object.values(US_STATE_NAMES).includes(configuredState)
-    && (configured.length === 2 || configured === configuredState);
-  if (isStateOnly) return Boolean(state && state === configuredState);
+  if (configuredState) return Boolean(state && state === configuredState);
 
   const postalCode = normalized(address.postalCode);
   if (/^\d{5}(?:\d{4})?$/.test(configured)) {
@@ -227,13 +234,58 @@ function serviceAreaMatchesAddress(area, address = {}) {
   );
 }
 
-function configuredServiceAreas(context = {}) {
-  const areas = Array.isArray(context.serviceAreas)
-    ? context.serviceAreas.map(cleanText).filter(Boolean)
-    : [];
+function uniqueAreas(values = []) {
+  const unique = new Map();
+  for (const value of values.map(cleanText).filter(Boolean)) {
+    const key = normalized(value);
+    if (key && !unique.has(key)) unique.set(key, value);
+  }
+  return [...unique.values()];
+}
+
+function configuredServiceArea(context = {}) {
+  const areas = uniqueAreas(Array.isArray(context.serviceAreas) ? context.serviceAreas : []);
+  const suppliedStates = uniqueAreas(Array.isArray(context.serviceAreaStates) ? context.serviceAreaStates : [])
+    .map(configuredStateName)
+    .filter(Boolean);
+  const suppliedCounties = uniqueAreas(Array.isArray(context.serviceAreaCounties) ? context.serviceAreaCounties : []);
+  const states = [...suppliedStates];
+  const counties = [...suppliedCounties];
+  const otherAreas = [];
+
+  if (!states.length && !counties.length) {
+    for (const area of areas) {
+      const state = configuredStateName(area);
+      if (state) states.push(state);
+      else if (/\b(?:county|parish|borough|census area|municipality)\b/i.test(area)) counties.push(area);
+      else otherAreas.push(area);
+    }
+    if (states.length === 1 && !counties.length && otherAreas.length) {
+      counties.push(...otherAreas.splice(0));
+    }
+  }
+
   const county = cleanText(context.businessCounty);
-  if (county && !areas.some((area) => normalized(area) === normalized(county))) areas.push(county);
-  return areas;
+  if (county) counties.push(county);
+  return Object.freeze({
+    states: Object.freeze(uniqueAreas(states)),
+    counties: Object.freeze(uniqueAreas(counties)),
+    otherAreas: Object.freeze(uniqueAreas(otherAreas)),
+  });
+}
+
+function serviceAreaContainsAddress(serviceArea, address = {}) {
+  const state = canonicalState(address.state);
+  if (serviceArea.states.length > 1) return Boolean(state && serviceArea.states.includes(state));
+  if (serviceArea.states.length === 1) {
+    if (!state || state !== serviceArea.states[0]) return false;
+    if (!serviceArea.counties.length) return true;
+    return serviceArea.counties.some((county) => serviceAreaMatchesAddress(county, address));
+  }
+  if (serviceArea.counties.length) {
+    return serviceArea.counties.some((county) => serviceAreaMatchesAddress(county, address));
+  }
+  return serviceArea.otherAreas.some((area) => serviceAreaMatchesAddress(area, address));
 }
 
 function resistancePoints(count) {
@@ -282,18 +334,20 @@ export function scoreServiceRequestRisk({
   assessedAt = new Date().toISOString(),
 } = {}) {
   const factors = [];
-  const serviceAreas = configuredServiceAreas(context);
+  const serviceArea = configuredServiceArea(context);
   const addressVerified = addressValidation.status === 'verified';
-  const serviceAreaAssessed = addressVerified && serviceAreas.length > 0;
+  const serviceAreaAssessed = addressVerified && Boolean(
+    serviceArea.states.length || serviceArea.counties.length || serviceArea.otherAreas.length
+  );
   const addressInsideServiceArea = serviceAreaAssessed
-    ? serviceAreas.some((area) => serviceAreaMatchesAddress(area, addressValidation))
+    ? serviceAreaContainsAddress(serviceArea, addressValidation)
     : null;
 
   if (serviceAreaAssessed && !addressInsideServiceArea) {
     factors.push(factor(
       'outside_service_area',
       1,
-      'Service address is outside the configured county or service area.',
+      'Service address is outside the configured service area.',
     ));
   }
 

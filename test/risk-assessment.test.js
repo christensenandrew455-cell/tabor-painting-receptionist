@@ -205,6 +205,76 @@ test('a fully verified request has zero points and no warning factors', () => {
   assert.equal(risk.checks.phone.callerNameMatches, true);
 });
 
+test('multiple-state service areas accept any selected state and reject unselected states', () => {
+  const context = {
+    serviceAreas: ['Massachusetts', 'New York'],
+    serviceAreaMode: 'states',
+    serviceAreaStates: ['Massachusetts', 'New York'],
+    serviceAreaCounties: [],
+  };
+  const inside = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context,
+    phoneLookup: VERIFIED_PHONE,
+    addressValidation: VERIFIED_ADDRESS,
+  });
+  const outside = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context,
+    phoneLookup: { ...VERIFIED_PHONE, state: 'NJ' },
+    addressValidation: { ...VERIFIED_ADDRESS, state: 'New Jersey' },
+  });
+
+  assert.equal(inside.checks.address.serviceAreaStatus, 'inside');
+  assert.equal(inside.assessment.outsideServiceArea, false);
+  assert.equal(outside.checks.address.serviceAreaStatus, 'outside');
+  assert.equal(outside.assessment.outsideServiceArea, true);
+  assert.equal(outside.factors.some((item) => item.code === 'outside_service_area'), true);
+});
+
+test('one-state county mode requires both the selected state and one selected county', () => {
+  const context = {
+    serviceAreas: ['Massachusetts', 'Worcester County', 'Middlesex County'],
+    serviceAreaMode: 'counties',
+    serviceAreaStates: ['Massachusetts'],
+    serviceAreaCounties: ['Worcester County', 'Middlesex County'],
+  };
+  const phoneLookup = { ...VERIFIED_PHONE, state: 'MA' };
+  const inside = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context,
+    phoneLookup,
+    addressValidation: { ...VERIFIED_ADDRESS, state: 'Massachusetts', county: 'Worcester County' },
+  });
+  const outsideCounty = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context,
+    phoneLookup,
+    addressValidation: { ...VERIFIED_ADDRESS, state: 'Massachusetts', county: 'Hampden County' },
+  });
+  const outsideState = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context,
+    phoneLookup: VERIFIED_PHONE,
+    addressValidation: VERIFIED_ADDRESS,
+  });
+
+  assert.equal(inside.checks.address.serviceAreaStatus, 'inside');
+  assert.equal(outsideCounty.checks.address.serviceAreaStatus, 'outside');
+  assert.equal(outsideState.checks.address.serviceAreaStatus, 'outside');
+});
+
+test('legacy flat one-state service areas still treat a plain area name as a county restriction', () => {
+  const risk = scoreServiceRequestRisk({
+    payload: { name: 'Jordan Smith' },
+    context: { serviceAreas: ['Massachusetts', 'Worcester'] },
+    phoneLookup: { ...VERIFIED_PHONE, state: 'MA' },
+    addressValidation: { ...VERIFIED_ADDRESS, state: 'Massachusetts', county: 'Hampden County' },
+  });
+
+  assert.equal(risk.checks.address.serviceAreaStatus, 'outside');
+});
+
 test('risk classifications use the requested 0–2, 3–5, 6–8, and 9+ boundaries', () => {
   const low = scoreServiceRequestRisk({
     payload: { name: 'Jordan Smith' },
