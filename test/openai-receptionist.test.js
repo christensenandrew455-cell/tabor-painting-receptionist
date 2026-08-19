@@ -233,6 +233,20 @@ test('keeps the OpenAI safety identifier within 64 characters for long Telnyx ca
   }
 });
 
+test('omits the optional OpenAI safety identifier only for the demo runtime', async () => {
+  const h = await createHarness({
+    runtime: { demo: true },
+    callControlId: `v3:${'long-telnyx-call-control-id-'.repeat(8)}`,
+  });
+
+  try {
+    assert.equal('OpenAI-Safety-Identifier' in h.socket.options.headers, false);
+    assert.equal(h.socket.options.headers.Authorization, 'Bearer test-key');
+  } finally {
+    h.restore();
+  }
+});
+
 async function advanceHarnessToSummaryRequest(socket) {
   await finishSpeech(socket, {
     responseId: 'summary-path-greeting',

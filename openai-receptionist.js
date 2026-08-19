@@ -376,7 +376,9 @@ export function createOpenAiReceptionist({
   const openai = new WebSocketClass(realtimeUrl, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      'OpenAI-Safety-Identifier': createSafetyIdentifier(runtime, callControlId),
+      ...(runtime?.demo === true ? {} : {
+        'OpenAI-Safety-Identifier': createSafetyIdentifier(runtime, callControlId),
+      }),
     },
   });
 
