@@ -373,11 +373,11 @@ test('demo session is neutral, accepts every trade, and contains no Tabor Painti
   const prompt = event.session.instructions;
 
   assert.match(prompt, /neutral product demo of the ARC Client Center AI receptionist/i);
-  assert.match(prompt, /not representing Tabor Painting or any other real business/i);
+  assert.match(prompt, /not representing any real business/i);
   assert.match(prompt, /accept any substantive description of requested work/i);
   assert.match(prompt, /painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade/i);
   assert.match(prompt, /no real business-specific services, prices, availability, policies/i);
-  assert.doesNotMatch(prompt, /Interior Painting|Exterior Painting|Wood Staining/i);
+  assert.doesNotMatch(prompt, /Tabor Painting|Interior Painting|Exterior Painting|Wood Staining/i);
   assert.deepEqual(event.session.audio.input.transcription.keywords, ['AI Receptionist Demo']);
 });
 
