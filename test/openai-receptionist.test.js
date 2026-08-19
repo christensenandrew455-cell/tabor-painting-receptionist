@@ -161,6 +161,8 @@ async function finishAnalysis(socket, {
 
 async function createHarness({
   context = CONTEXT,
+  runtime = { clientId: 'client-123' },
+  callControlId = 'call-123',
   deliver,
   incompleteTurnRecoveryMs,
   holdRecoveryMs,
@@ -176,8 +178,8 @@ async function createHarness({
   const playbackClears = [];
   const receptionist = createOpenAiReceptionist({
     context,
-    runtime: { clientId: 'client-123' },
-    callControlId: 'call-123',
+    runtime,
+    callControlId,
     callerPhone: '+15555550123',
     deliver: deliver || (async () => ({ ok: true })),
     onAudio: (value) => audio.push(value),
@@ -214,6 +216,22 @@ async function createHarness({
     },
   };
 }
+
+test('keeps the OpenAI safety identifier within 64 characters for long Telnyx call IDs', async () => {
+  const h = await createHarness({
+    runtime: {},
+    callControlId: `v3:${'long-telnyx-call-control-id-'.repeat(8)}`,
+  });
+
+  try {
+    const identifier = h.socket.options.headers['OpenAI-Safety-Identifier'];
+    assert.ok(identifier.length <= 64);
+    assert.equal(identifier.length, 56);
+    assert.match(identifier, /^receptionist-[A-Za-z0-9_-]+$/);
+  } finally {
+    h.restore();
+  }
+});
 
 async function advanceHarnessToSummaryRequest(socket) {
   await finishSpeech(socket, {
