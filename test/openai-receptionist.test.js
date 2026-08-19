@@ -259,6 +259,48 @@ test('omits the optional OpenAI safety identifier only for the demo runtime', as
   }
 });
 
+async function advanceHarnessToScheduleQuestion(socket, { idPrefix = 'schedule-path' } = {}) {
+  await finishSpeech(socket, {
+    responseId: `${idPrefix}-greeting`,
+    transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+  });
+  const steps = [
+    {
+      callerText: 'I need exterior painting.',
+      args: analysis({
+        service_status: 'complete',
+        fields: { service: 'Exterior Painting' },
+      }),
+      speech: 'Okay, what name should I use for the service request?',
+    },
+    {
+      callerText: 'Jordan Smith.',
+      args: analysis({ fields: { name: 'Jordan Smith' } }),
+      speech: "Thanks. What's the full address where the service is needed?",
+    },
+    {
+      callerText: '123 Main Street, Albany, New York.',
+      args: analysis({
+        address_status: 'complete',
+        fields: { address: '123 Main Street, Albany, New York' },
+      }),
+      speech: 'Got it. What date and exact time would you prefer for the service request?',
+    },
+  ];
+
+  for (const [index, step] of steps.entries()) {
+    caller(socket, step.callerText, `${idPrefix}-caller-${index}`);
+    await finishAnalysis(socket, {
+      responseId: `${idPrefix}-analysis-${index}`,
+      args: step.args,
+    });
+    await finishSpeech(socket, {
+      responseId: `${idPrefix}-speech-${index}`,
+      transcript: step.speech,
+    });
+  }
+}
+
 async function advanceHarnessToSummaryRequest(socket, {
   businessName = 'Tabor Painting',
   greeting = `Hi, thank you for calling ${businessName}. What kind of work are you looking to have done?`,
@@ -289,7 +331,7 @@ async function advanceHarnessToSummaryRequest(socket, {
         address_status: 'complete',
         fields: { address: '123 Main Street, Albany, New York' },
       }),
-      speech: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
+      speech: 'Got it. What date and exact time would you prefer for the service request?',
     },
     {
       callerText: 'Tuesday, August 11, 2099 at 2 PM.',
@@ -342,7 +384,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
   assert.deepEqual(event.session.audio.input.turn_detection, {
     type: 'semantic_vad',
-    eagerness: 'medium',
+    eagerness: 'low',
     create_response: false,
     interrupt_response: false,
   });
@@ -545,10 +587,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
         fields: { address: '123 Main Street, Albany, New York' },
       }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /day or date/i);
+    assert.match(latestResponse(h.socket).response.instructions, /date and exact time/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-schedule',
-      transcript: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
+      transcript: 'Got it. What date and exact time would you prefer for the service request?',
     });
 
     caller(h.socket, 'Tuesday, August 11, 2099 at 2 PM.', 'caller-schedule');
@@ -912,6 +954,42 @@ test('a split caller sentence is recombined even when the first analysis already
   }
 });
 
+test('a pause after a schedule lead-in waits for and combines the exact time', async () => {
+  const h = await createHarness({ incompleteTurnRecoveryMs: 200 });
+  try {
+    await advanceHarnessToScheduleQuestion(h.socket, { idPrefix: 'paused-schedule' });
+    const beforeFragment = responseCreates(h.socket).length;
+
+    caller(h.socket, 'Tuesday at', 'paused-schedule-date-fragment');
+    await nextTurn();
+
+    assert.equal(responseCreates(h.socket).length, beforeFragment);
+    assert.equal(h.receptionist.snapshot().state.pendingField, 'schedule');
+
+    caller(h.socket, '2 PM.', 'paused-schedule-time-fragment');
+    await nextTurn();
+
+    assert.equal(responseCreates(h.socket).length, beforeFragment + 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.match(
+      latestResponse(h.socket).response.instructions,
+      /LATEST_CALLER_TRANSCRIPT="Tuesday at 2 PM\."/,
+    );
+
+    await finishAnalysis(h.socket, {
+      responseId: 'paused-schedule-analysis',
+      args: analysis({
+        fields: { preferred_date: 'Tuesday', preferred_time: '2 PM' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /additional notes/i);
+    assert.doesNotMatch(latestResponse(h.socket).response.instructions, /AM or PM/i);
+    assert.equal(h.errors.length, 0);
+  } finally {
+    h.restore();
+  }
+});
+
 test('transcription failure produces a useful retry prompt instead of silence', async () => {
   const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
   try {
@@ -1226,7 +1304,7 @@ test('a newer caller turn supersedes stale analysis before the receptionist can 
       args: analysis({ turn_status: 'background_speech' }),
     });
 
-    assert.match(latestResponse(h.socket).response.instructions, /day or date/i);
+    assert.match(latestResponse(h.socket).response.instructions, /date and exact time/i);
     assert.equal(
       h.receptionist.snapshot().state.values.address,
       '197 Lancaster Road, Berlin, Massachusetts',
@@ -1277,7 +1355,7 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
           address_status: 'complete',
           fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
         }),
-        speech: 'Got it. What day or date would you prefer for the service request, and what time, including AM or PM, works best?',
+        speech: 'Got it. What date and exact time would you prefer for the service request?',
       },
     ];
     for (const [index, step] of steps.entries()) {

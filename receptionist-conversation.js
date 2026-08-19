@@ -511,6 +511,12 @@ function requestedDateCandidate(value, context = {}) {
   return '';
 }
 
+function isIncompleteScheduleTimeLeadIn(value, context = {}) {
+  const text = normalizedTimePhrase(value);
+  if (!text || !requestedDateCandidate(value, context)) return false;
+  return /\b(?:at|around|about)(?:\s+(?:uh+|um+|erm+|hmm+))?$/.test(text);
+}
+
 function requestedTimeCandidate(value, { dateCandidate = '', allowBare = false } = {}) {
   const text = normalizedTimePhrase(value);
   if (!text) return '';
@@ -813,8 +819,8 @@ function spokenPreparationError(error, field) {
       ? `The listed service-request days are ${allowed}. What day would you prefer instead?`
       : 'What listed service-request day would you prefer instead?';
   }
-  if (field === 'preferred_date') return 'What day or date would you prefer for the service request?';
-  if (field === 'preferred_time') return 'What time, including AM or PM, would work best for the service request?';
+  if (field === 'preferred_date') return 'What date would you prefer for the service request?';
+  if (field === 'preferred_time') return 'What exact time would work best for the service request?';
   if (field === 'service') return 'Could you tell me a little more about the work you need done?';
   if (field === 'name') return NAME_QUESTION;
   if (field === 'address') return PROJECT_ADDRESS_QUESTION;
@@ -1029,8 +1035,8 @@ export function createReceptionistConversation({ context }) {
       return addressFollowupQuestion();
     }
     if (field === 'schedule') {
-      if (values.preferredDate && !values.preferredTime) return 'What time, including AM or PM, would work best for the service request?';
-      if (!values.preferredDate && values.preferredTime) return 'What day or date would you prefer for the service request?';
+      if (values.preferredDate && !values.preferredTime) return 'What exact time would work best for the service request?';
+      if (!values.preferredDate && values.preferredTime) return 'What date would you prefer for the service request?';
       return SCHEDULE_QUESTION;
     }
     if (field === 'notes') {
@@ -1325,6 +1331,9 @@ export function createReceptionistConversation({ context }) {
           bareQuestion(current),
         ),
       };
+    }
+    if (current === 'schedule' && isIncompleteScheduleTimeLeadIn(text, context)) {
+      return { type: 'wait', preserve: true };
     }
     const disposition = classifyCallerTranscript(text);
     if (disposition === 'filler') {

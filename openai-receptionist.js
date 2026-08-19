@@ -270,7 +270,7 @@ export function buildSessionUpdate(context, { submitted = false, demo = false } 
           transcription: transcriptionConfiguration(context),
           turn_detection: {
             type: 'semantic_vad',
-            eagerness: 'medium',
+            eagerness: 'low',
             create_response: false,
             interrupt_response: false,
           },

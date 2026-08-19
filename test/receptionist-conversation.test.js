@@ -125,7 +125,10 @@ test('one authoritative state advances through the required field order exactly 
     address_status: 'complete',
     fields: { address: '123 Main Street, Albany, New York' },
   });
-  assert.match(action.text, /day or date/i);
+  assert.equal(
+    action.text,
+    'Got it. What date and exact time would you prefer for the service request?',
+  );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
   action = analyzedTurn(conversation, 'Tuesday at 1 PM.', {
@@ -189,7 +192,7 @@ test('a clearly spoken full address advances even when the analyzer omits it', (
 
   assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
 });
 
 test('a city and state alone stay pending until a numbered street address is supplied', () => {
@@ -223,7 +226,7 @@ test('a city and state alone stay pending until a numbered street address is sup
     '197 Lancaster Road, Berlin, Massachusetts',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
 });
 
 test('a grounded full address outranks a false unintelligible label', () => {
@@ -246,7 +249,7 @@ test('a grounded full address outranks a false unintelligible label', () => {
     },
   );
 
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.doesNotMatch(action.text, /didn't catch/i);
   assert.equal(
     conversation.snapshot().values.address,
@@ -280,7 +283,7 @@ test('the logged spoken-number address is accepted once without another address 
     '197 Lancaster Road, Berlin, Massachusetts',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.doesNotMatch(action.text, /street address|where the service is needed|what state/i);
 });
 
@@ -461,7 +464,7 @@ test('the supplied call transcript no longer skips fields, repeats the address, 
     '197 Lancaster Road, Berlin, Massachusetts.',
     { address_status: 'not_addressed' },
   );
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
 
   action = analyzedTurn(conversation, 'Tuesday at 2 PM.', {
@@ -611,7 +614,7 @@ test('valid intake answers outrank a false business-question label and extra det
     business_question_type: 'other',
     fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
   });
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(
     conversation.snapshot().values.address,
@@ -761,7 +764,7 @@ test('an ordinal day-of-month answer completes the date instead of becoming a no
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(
     action.text,
-    'What time, including AM or PM, would work best for the service request?',
+    'What exact time would work best for the service request?',
   );
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -811,7 +814,7 @@ test('service-request-window questions use app constraints without promising ava
   assert.match(action.text, /9:00 AM to 4:00 PM/i);
   assert.match(action.text, /business will confirm the request/i);
   assert.doesNotMatch(action.text, /available/i);
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -849,7 +852,7 @@ test('field reason questions get a short explanation and repeat only the pending
     fields: { address: '123 Main Street, Albany, New York' },
   });
   action = analyzedTurn(conversation, 'Why do you need the date and time?');
-  assert.match(action.text, /preferred day and time.*What day or date/i);
+  assert.match(action.text, /preferred day and time.*What date and exact time/i);
 
   analyzedTurn(conversation, 'Tuesday at 2 PM.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '2 PM' },
@@ -907,7 +910,7 @@ test('partial addresses stay pending and later fragments combine without invente
     address_status: 'complete',
     fields: { address: '123 Main Street, Albany, New York' },
   });
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
 });
 
@@ -936,7 +939,7 @@ test('a supplied town is retained and only the missing state is requested', () =
     address_status: 'partial',
     address_parts: { street: '', locality: 'Earlon', state: 'Massachusetts' },
   });
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -970,7 +973,7 @@ test('the logged address sequence ignores a bad fragment and accepts the later c
   action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
     turn_status: 'background_speech',
   });
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -1011,7 +1014,7 @@ test('the supplied split-address call waits for locality, avoids schedule repeti
     address_status: 'complete',
     fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
   });
-  assert.match(action.text, /day or date/i);
+  assert.match(action.text, /date/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -1163,7 +1166,7 @@ test('a bare time-only reply asks for AM or PM after saving the date', () => {
   });
   assert.equal(
     action.text,
-    'What time, including AM or PM, would work best for the service request?',
+    'What exact time would work best for the service request?',
   );
 
   action = analyzedTurn(conversation, '3.');
