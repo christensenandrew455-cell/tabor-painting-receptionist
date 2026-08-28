@@ -171,9 +171,9 @@ test('demo accepts a substantive service even when analysis asks for clarificati
   const context = {
     ...CONTEXT,
     businessName: 'AI Receptionist Demo',
-    serviceRequestWeekdays: [],
-    earliestServiceRequestStart: '',
-    latestServiceRequestStart: '',
+    serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    earliestServiceRequestStart: '9:00 AM',
+    latestServiceRequestStart: '5:00 PM',
     services: [],
     businessInformation: [],
   };
@@ -190,6 +190,77 @@ test('demo accepts a substantive service even when analysis asks for clarificati
   assert.deepEqual(conversation.snapshot().notes, []);
   assert.match(action.text, /what name should I use/i);
   assert.doesNotMatch(action.text, /little more|more specific/i);
+});
+
+test('demo treats a question-shaped request as service work, not an information question', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'AI Receptionist Demo',
+    serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    earliestServiceRequestStart: '9:00 AM',
+    latestServiceRequestStart: '5:00 PM',
+    services: [],
+    businessInformation: [],
+  };
+  const conversation = createReceptionistConversation({ context, demo: true });
+
+  const action = analyzedTurn(conversation, 'Can you mow my lawn?', {
+    business_answer_status: 'unanswerable',
+    business_question: 'Can you mow my lawn?',
+    business_question_type: 'other',
+  });
+
+  assert.equal(conversation.snapshot().values.service, 'mow my lawn');
+  assert.equal(conversation.snapshot().pendingField, 'name');
+  assert.deepEqual(conversation.snapshot().notes, []);
+  assert.match(action.text, /what name should I use/i);
+  assert.doesNotMatch(action.text, /I don't know/i);
+});
+
+test('demo does not mistake unrelated conversation for a service request', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'AI Receptionist Demo',
+    serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    earliestServiceRequestStart: '9:00 AM',
+    latestServiceRequestStart: '5:00 PM',
+    services: [],
+    businessInformation: [],
+  };
+  const conversation = createReceptionistConversation({ context, demo: true });
+
+  const action = analyzedTurn(conversation, 'The sky is blue today.');
+
+  assert.deepEqual(action, { type: 'wait', preserve: false });
+  assert.equal(conversation.snapshot().values.service, '');
+  assert.equal(conversation.snapshot().pendingField, 'service');
+});
+
+test('demo gives the same unknown-question fallback during final confirmation', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'AI Receptionist Demo',
+    serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    earliestServiceRequestStart: '9:00 AM',
+    latestServiceRequestStart: '5:00 PM',
+    services: [],
+    businessInformation: [],
+  };
+  const conversation = createReceptionistConversation({ context, demo: true });
+  completeToSummary(conversation);
+
+  const action = analyzedTurn(conversation, 'How much would that cost?', {
+    business_answer_status: 'unanswerable',
+    business_question: 'How much would that cost?',
+    business_question_type: 'other',
+  });
+
+  assert.equal(
+    action.text,
+    "I'm sorry, I don't know that, but you can submit a service request. Does that all sound right?",
+  );
+  assert.equal(conversation.snapshot().phase, 'summary');
+  assert.deepEqual(conversation.snapshot().notes, []);
 });
 
 test('a malformed service-note paraphrase is repaired before it can reach the summary', () => {

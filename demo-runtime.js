@@ -2,12 +2,20 @@ import { cleanText } from './business-context.js';
 
 export const DEFAULT_DEMO_PHONE_NUMBER = '+17742316164';
 
+const DEMO_SERVICE_REQUEST_WEEKDAYS = Object.freeze([
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+]);
+
 export const DEMO_PROFILE = Object.freeze({
   businessName: 'AI Receptionist Demo',
   timeZone: 'America/New_York',
-  serviceRequestWeekdays: Object.freeze([]),
-  earliestServiceRequestStart: '',
-  latestServiceRequestStart: '',
+  serviceRequestWeekdays: DEMO_SERVICE_REQUEST_WEEKDAYS,
+  earliestServiceRequestStart: '9:00 AM',
+  latestServiceRequestStart: '5:00 PM',
   businessType: '',
   serviceAreas: Object.freeze([]),
   services: Object.freeze({}),
@@ -26,7 +34,7 @@ export function normalizePhoneNumber(value) {
 
 export function isDemoPhoneNumber(
   calledPhone,
-  demoPhoneNumber = process.env.DEMO_PHONE_NUMBER || DEFAULT_DEMO_PHONE_NUMBER,
+  demoPhoneNumber = DEFAULT_DEMO_PHONE_NUMBER,
 ) {
   const called = normalizePhoneNumber(calledPhone);
   const demo = normalizePhoneNumber(demoPhoneNumber);

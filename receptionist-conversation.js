@@ -10,6 +10,7 @@ import {
 import {
   ADDITIONAL_NOTES_DETAILS_PROMPT,
   ADDITIONAL_NOTES_PROMPT,
+  DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE,
   MORE_NOTES_PROMPT,
   NAME_QUESTION,
   PROJECT_ADDRESS_QUESTION,
@@ -209,7 +210,7 @@ export function callerTurnAnalysisTool({ demo = false } = {}) {
     'Analyze only the latest caller turn for the neutral receptionist demo.',
     'Use ordinary language understanding to recognize any requested type of work, caller details, corrections, unfinished speech, conversation repair, notes, consent, and summary confirmation.',
     'There is no service catalog in demo mode. Turn any substantive requested work into a concise service label without inventing project details.',
-    'For a business question, use only supplied demo/platform information. Otherwise mark it unanswerable.',
+    'Mark every separate business-information question as unanswerable so the server can give the demo fallback. A request for work phrased as a question is still a service request, not a business-information question.',
     'This tool is silent. Do not produce spoken audio in the same response.',
   ].join(' ');
   tool.parameters.properties.fields.properties.service.description = [
@@ -436,6 +437,16 @@ function demoServiceFromCallerText(value) {
     .replace(/[.!?]+$/g, '')
     .trim();
   return service.slice(0, 160);
+}
+
+function hasExplicitDemoServiceIntent(value) {
+  const text = cleanText(value);
+  if (!text) return false;
+  return /\b(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?\b/i.test(text)
+    || /\b(?:i|we)(?:'d| would)\s+like(?:\s+to)?\b/i.test(text)
+    || /\b(?:i|we)(?:'m| am|'re| are)\s+(?:looking|hoping|trying)\s+to\b/i.test(text)
+    || /^(?:can|could|would|will)\s+(?:you|someone|somebody|the business|they)\s+(?!tell|explain|say|give)\S+/i.test(text)
+    || /^(?:please\s+)?(?:build|clean|fix|inspect|install|mow|paint|repair|replace|service|stain|trim)\b/i.test(text);
 }
 
 function isLowQualityProjectNote(value) {
@@ -942,7 +953,8 @@ export function buildTurnAnalysisInstructions({
     'The supplied Title/Info business-information items are authoritative business facts. If one directly supports a caller question, mark it answerable and copy the shortest exact supporting Info value into business_support. If no supplied fact answers the question, mark it unanswerable.',
     ...(demo ? [
       'DEMO_MODE=true. Do not infer a real business, a trade, a service catalog, pricing, availability, or policy from general knowledge.',
-      'The demo accepts every substantive requested work type and has no business-specific schedule restriction. Unknown business-specific questions must remain unanswerable and be handled by the server fallback.',
+      'The demo accepts every substantive requested work type. Its fixed service-request window is Monday through Friday from 9:00 AM through 5:00 PM in America/New_York; treat this only as validation for a caller\'s preferred date and time, never as a confirmed appointment.',
+      'Mark every separate business-information question unanswerable, including questions about services, prices, hours, policies, availability, or the platform. The server will give the demo-specific fallback.',
     ] : []),
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
     `LATEST_CALLER_TRANSCRIPT=${JSON.stringify(cleanText(callerTranscript))}`,
@@ -1266,7 +1278,11 @@ export function createReceptionistConversation({ context, demo = false }) {
     ) ? analysis.business_question : '';
     const question = conciseBusinessQuestion(
       groundedQuestion
-      || ((typedQuestion || looksLikeBusinessQuestion(transcript)) ? transcript : ''),
+      || ((
+        typedQuestion
+        || looksLikeBusinessQuestion(transcript)
+        || (demo && analysis.business_answer_status === 'unanswerable')
+      ) ? transcript : ''),
     );
     if (!question) return { prefix: '', hadQuestion: false };
     const serviceRequestWindowQuestion = analysis.business_question_type === 'service_request_window'
@@ -1278,6 +1294,12 @@ export function createReceptionistConversation({ context, demo = false }) {
       && analysis.business_question_type === 'none'
     ) {
       return { prefix: '', hadQuestion: false };
+    }
+    if (demo && !(scheduleTurn && isScheduleRequestQuestion(transcript))) {
+      return {
+        prefix: DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE,
+        hadQuestion: true,
+      };
     }
     if (
       scheduleTurn
@@ -1391,6 +1413,23 @@ export function createReceptionistConversation({ context, demo = false }) {
         phase = 'submitting';
         return { type: 'submit' };
       }
+      if (
+        demo
+        && !isClearNegative(transcript)
+        && (
+          analysis.business_answer_status !== 'not_a_question'
+          || cleanText(analysis.business_question)
+          || looksLikeBusinessQuestion(transcript)
+        )
+      ) {
+        return {
+          type: 'speak',
+          text: joinSpeech(
+            DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE,
+            bareQuestion('summary'),
+          ),
+        };
+      }
       return { type: 'speak', text: 'What should I correct?' };
     }
 
@@ -1427,11 +1466,15 @@ export function createReceptionistConversation({ context, demo = false }) {
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
     const currentField = pendingField();
+    const analyzerRecognizedDemoService = Boolean(analysis.fields.service)
+      && ['complete', 'ambiguous'].includes(analysis.service_status);
+    const explicitDemoServiceIntent = hasExplicitDemoServiceIntent(transcript);
     if (
       demo
       && currentField === 'service'
       && !looksLikeUnfinishedThought(transcript)
       && !isConversationRepairRequest(transcript)
+      && (analyzerRecognizedDemoService || explicitDemoServiceIntent)
       && hasUsableServiceAnswer(transcript, context)
     ) {
       analysis.fields.service = analysis.fields.service || demoServiceFromCallerText(transcript);
@@ -1671,7 +1714,17 @@ export function createReceptionistConversation({ context, demo = false }) {
       && !hasIntakeAnswer
       && !projectDetailOverridesQuestion
       && !looksLikeUnfinishedThought(transcript)
-      && hasDataBackedOutsideQuestion;
+      && (
+        hasDataBackedOutsideQuestion
+        || (
+          demo
+          && (
+            analysis.business_answer_status !== 'not_a_question'
+            || cleanText(analysis.business_question)
+            || looksLikeBusinessQuestion(transcript)
+          )
+        )
+      );
     const scheduleRequestQuestion = scheduleTurn && isScheduleRequestQuestion(transcript);
     const hasDirectSchedulePreference = Boolean(
       analysis.fields.preferred_date
@@ -1805,8 +1858,11 @@ export function createReceptionistConversation({ context, demo = false }) {
       && values.service
       && !hasOtherStructuredField
     ) {
+      const serviceTurnEvidence = demo
+        ? demoServiceFromCallerText(transcript)
+        : transcript;
       const codeOwnedNote = groundedProjectNote(
-        serviceTurnProjectNote(transcript, values.service, context),
+        serviceTurnProjectNote(serviceTurnEvidence, values.service, context),
         transcript,
         dateCandidate,
       );

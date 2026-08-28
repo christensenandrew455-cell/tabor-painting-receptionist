@@ -25,6 +25,14 @@ The server normalizes relative dates such as `Tuesday` and ordinal days such as 
 
 After notes and standalone contact consent are complete, the server prepares the final readback. Contact consent cannot double as summary confirmation. The caller must separately confirm the complete readback before submission. The receptionist then says it is submitting, performs one idempotent ARC write, reports success or failure, says goodbye, waits for the audio playback mark, and hangs up. There is no post-submission question mode.
 
+### Dedicated demo number
+
+Calls to **(774) 231-6164** are identified locally before any ARC-account lookup. Every other called number continues through the normal ARC-account runtime path. The demo follows the same intake order and final readback as a normal receptionist, but it accepts any substantive type of requested work instead of matching against a business service catalog. A non-service answer cannot complete the service step.
+
+The demo accepts preferred service-request times Monday through Friday from 9:00 AM through 5:00 PM in the `America/New_York` timezone. Every separate business-information question receives the fixed response, “I'm sorry, I don't know that, but you can submit a service request,” after which the still-pending intake question resumes. Question-shaped requests for actual work, such as “Can you mow my lawn?”, are accepted as services.
+
+The greeting explains that the caller can pretend to be one of their own clients and that the provided information is not saved. Demo calls do not write to ARC, run the lead-risk/delivery path, invoke the configured delivery callback, retain caller/receptionist transcripts in this service, or claim that a request was submitted. Once the caller confirms the final readback, the demo says, “Thank you for calling the demo number. Have a good day,” and hangs up after playback completes.
+
 ## Turn taking and recovery
 
 Incoming audio uses far-field noise reduction and semantic voice activity detection. OpenAI does not automatically create or interrupt responses: caller turns are analyzed by the server-controlled flow. The first delivery of every question—including an immediate clarification—finishes without caller barge-in. If the caller stays silent for five seconds and the receptionist repeats the pending question, that timed repeat yields immediately when the caller starts answering; other caller speech remains queued until the active prompt finishes.

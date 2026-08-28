@@ -296,12 +296,14 @@ function endCall(id, reason = 'hangup') {
   call.receptionist?.close();
   call.receptionist = null;
   calls.delete(id);
-  console.log('[Call transcript]', JSON.stringify({
-    reason: finalReason,
-    callControlId: call.id,
-    callerPhone: call.callerPhone,
-    entries: call.transcript,
-  }));
+  if (!isDemoRuntime(call.runtime)) {
+    console.log('[Call transcript]', JSON.stringify({
+      reason: finalReason,
+      callControlId: call.id,
+      callerPhone: call.callerPhone,
+      entries: call.transcript,
+    }));
+  }
   if (call.openAiUsage) {
     console.log('[Call OpenAI usage]', JSON.stringify({
       reason: finalReason,
@@ -391,7 +393,7 @@ wss.on('connection', (telnyx, request) => {
   }
 
   function recordTranscript(entry = {}) {
-    if (!call || call.ended) return;
+    if (!call || call.ended || isDemoRuntime(call.runtime)) return;
     const text = String(entry.text ?? '').trim();
     if (!text) return;
     const saved = {

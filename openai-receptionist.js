@@ -36,8 +36,8 @@ const SUMMARY_MAX_OUTPUT_TOKENS = 4_096;
 const DEFAULT_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
 const NOTES_INCOMPLETE_TURN_RECOVERY_MS = 5_000;
 const DEFAULT_HOLD_RECOVERY_MS = 30_000;
-const DEMO_GREETING = `Hi, thank you for calling the AI receptionist demo number. ${SERVICE_QUESTION}`;
-const DEMO_GOODBYE = 'Thank you for trying out the demo number. Have a good day.';
+const DEMO_GREETING = `Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. ${SERVICE_QUESTION}`;
+const DEMO_GOODBYE = 'Thank you for calling the demo number. Have a good day.';
 const SUPPORTED_VOICES = new Set([
   'alloy',
   'ash',
@@ -166,12 +166,12 @@ When analyze_caller_turn is forced, call it once without speaking. The tool is l
 Use the same intake flow for callers from every trade and business type.
 Accept any substantive description of requested work. There is no service catalog in demo mode, so never reject work because it is painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade.
 Turn the caller's requested work into a short, accurate service label while preserving useful scope, quantities, sizes, conditions, and other project details in summarized owner-facing notes.
-Do not impose business-specific weekdays or hours. Record any structurally valid preferred date and explicit time as the caller's preference.
+Accept preferred service-request dates only Monday through Friday and times from 9:00 AM through 5:00 PM in America/New_York. If a preference is outside that window, ask for a valid alternative.
 Keep the caller's name, full address, date, time, and yes/no meaning literal. A full address still requires the street number, street name, city or town, and state.
 
 # Business knowledge boundary
-This demo has no real business-specific services, prices, availability, policies, or other facts.
-At the notes/questions step, answer only a server-supported platform fallback question. If the server data does not support the answer, classify the question as unanswerable so it can be added to the notes.
+This demo has no real business-specific services, prices, appointment availability, policies, or other facts beyond its fixed service-request window.
+Classify every separate business-information question as unanswerable so the server gives the demo fallback. Do not add an unanswered demo question to the notes. A caller asking for work in question form is still making a service request.
 Never use general trade knowledge or pretend this demo belongs to a real business.
 Service-request preferences are not confirmed appointments. Never claim that a particular date or time is available.
 
@@ -189,8 +189,8 @@ ${context.knowledgeJson}
 
 # Completion state
 ${submitted
-    ? 'The demo service request has been submitted. Say only the exact success or goodbye text requested by the server.'
-    : 'The demo request is not submitted until the server completes the confirmed write.'}
+    ? 'The demo is complete. Say only the exact goodbye text requested by the server.'
+    : 'Demo information is never submitted or saved. After the caller confirms the final readback, say only the exact goodbye requested by the server.'}
 `;
 }
 
@@ -892,6 +892,11 @@ export function createOpenAiReceptionist({
     }
     if (action.type === 'submit') {
       clearHoldState();
+      if (demoMode) {
+        finalizing = true;
+        requestGoodbye();
+        return;
+      }
       finalizing = true;
       requestSpeech(SUBMISSION_START_RESPONSE, { after: 'submit', turn });
       return;

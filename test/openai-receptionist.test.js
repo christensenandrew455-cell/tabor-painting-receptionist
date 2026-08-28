@@ -28,9 +28,9 @@ const DEMO_CONTEXT = Object.freeze({
   businessName: 'AI Receptionist Demo',
   timeZone: 'America/New_York',
   clientId: '',
-  serviceRequestWeekdays: [],
-  earliestServiceRequestStart: '',
-  latestServiceRequestStart: '',
+  serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+  earliestServiceRequestStart: '9:00 AM',
+  latestServiceRequestStart: '5:00 PM',
   services: [],
   businessInformation: [],
   knowledgeJson: '{"profile":{"businessName":"AI Receptionist Demo"},"services":[]}',
@@ -418,7 +418,9 @@ test('demo session is neutral, accepts every trade, and contains no Tabor Painti
   assert.match(prompt, /not representing any real business/i);
   assert.match(prompt, /accept any substantive description of requested work/i);
   assert.match(prompt, /painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade/i);
-  assert.match(prompt, /no real business-specific services, prices, availability, policies/i);
+  assert.match(prompt, /Monday through Friday and times from 9:00 AM through 5:00 PM/i);
+  assert.match(prompt, /classify every separate business-information question as unanswerable/i);
+  assert.match(prompt, /demo information is never submitted or saved/i);
   assert.doesNotMatch(prompt, /Tabor Painting|Interior Painting|Exterior Painting|Wood Staining/i);
   assert.deepEqual(event.session.audio.input.transcription.keywords, ['AI Receptionist Demo']);
 });
@@ -431,13 +433,15 @@ test('demo accepts a stated pipe-cleaning service without asking for more detail
   try {
     assert.match(
       latestResponse(h.socket).response.instructions,
-      /Hi, thank you for calling the AI receptionist demo number\./i,
+      /Hi, thank you for calling the ARC Client Center demo number\./i,
     );
+    assert.match(latestResponse(h.socket).response.instructions, /pretend you're one of your own clients/i);
+    assert.match(latestResponse(h.socket).response.instructions, /None of the information you provide is saved/i);
     assert.doesNotMatch(latestResponse(h.socket).response.instructions, /Tabor Painting/i);
 
     await finishSpeech(h.socket, {
       responseId: 'demo-greeting',
-      transcript: 'Hi, thank you for calling the AI receptionist demo number. What kind of work are you looking to have done?',
+      transcript: "Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. What kind of work are you looking to have done?",
     });
     caller(h.socket, 'I need to get some pipes cleaned.', 'demo-pipe-service');
 
@@ -470,15 +474,55 @@ test('demo accepts a stated pipe-cleaning service without asking for more detail
   }
 });
 
-test('demo completes with the demo-specific closing while regular closing stays unchanged', async () => {
+test('demo gives its fixed fallback for business questions without saving them as notes', async () => {
   const h = await createHarness({
     context: DEMO_CONTEXT,
     runtime: { demo: true },
   });
   try {
+    await finishSpeech(h.socket, {
+      responseId: 'demo-question-greeting',
+      transcript: "Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. What kind of work are you looking to have done?",
+    });
+    caller(h.socket, 'What hours are you open?', 'demo-hours-question');
+    await finishAnalysis(h.socket, {
+      responseId: 'demo-hours-analysis',
+      args: analysis({
+        business_answer_status: 'answerable',
+        business_question: 'What hours are you open?',
+        business_question_type: 'service_request_window',
+        business_support: 'Monday through Friday from 9 AM to 5 PM.',
+      }),
+    });
+
+    const instructions = latestResponse(h.socket).response.instructions;
+    assert.match(
+      instructions,
+      /I'm sorry, I don't know that, but you can submit a service request\./i,
+    );
+    assert.match(instructions, /What kind of work are you looking to have done\?/i);
+    assert.doesNotMatch(instructions, /Monday through Friday|9:00 AM|5:00 PM/i);
+    assert.deepEqual(h.receptionist.snapshot().state.notes, []);
+    assert.equal(h.receptionist.snapshot().state.pendingField, 'service');
+  } finally {
+    h.restore();
+  }
+});
+
+test('demo ends immediately after confirmation without saving or claiming submission', async () => {
+  const deliveries = [];
+  const h = await createHarness({
+    context: DEMO_CONTEXT,
+    runtime: { demo: true },
+    deliver: async (payload) => {
+      deliveries.push(payload);
+      return { ok: true };
+    },
+  });
+  try {
     await advanceHarnessToSummaryRequest(h.socket, {
       businessName: 'AI Receptionist Demo',
-      greeting: 'Hi, thank you for calling the AI receptionist demo number. What kind of work are you looking to have done?',
+      greeting: "Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. What kind of work are you looking to have done?",
       serviceCallerText: "My AC won't run.",
       service: 'AC repair',
     });
@@ -491,26 +535,22 @@ test('demo completes with the demo-specific closing while regular closing stays 
       responseId: 'demo-summary-analysis',
       args: analysis({ summary_confirmation: 'yes' }),
     });
-    await finishSpeech(h.socket, {
-      responseId: 'demo-pre-submit',
-      transcript: "I'm submitting your service request now.",
-    });
-    await finishSpeech(h.socket, {
-      responseId: 'demo-success',
-      transcript: "You're all set. Your service request has been submitted.",
-    });
 
     assert.match(
       latestResponse(h.socket).response.instructions,
-      /Thank you for trying out the demo number\. Have a good day\./i,
+      /Thank you for calling the demo number\. Have a good day\./i,
     );
     assert.doesNotMatch(
       latestResponse(h.socket).response.instructions,
-      /Thank you for filling out a service request/i,
+      /submitting|submitted|Thank you for filling out a service request/i,
     );
+    assert.equal(deliveries.length, 0);
+    assert.equal(h.submitted.length, 0);
+    assert.equal(h.receptionist.snapshot().submitted, false);
+    assert.equal(h.receptionist.snapshot().endingCall, true);
     await finishSpeech(h.socket, {
       responseId: 'demo-goodbye',
-      transcript: 'Thank you for trying out the demo number. Have a good day.',
+      transcript: 'Thank you for calling the demo number. Have a good day.',
     });
     assert.deepEqual(h.goodbye, [true]);
     assert.equal(h.errors.length, 0);

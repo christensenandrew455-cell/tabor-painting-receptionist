@@ -17,6 +17,7 @@ export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes and/or 
 export const MORE_NOTES_PROMPT = 'Do you have any other notes or business questions?';
 export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What notes or business questions would you like me to add?';
 export const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that one. I'll add it to the notes.";
+export const DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that, but you can submit a service request.";
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 export const SUBMISSION_START_RESPONSE = "I'm submitting your service request now.";
 export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted.";
