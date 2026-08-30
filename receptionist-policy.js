@@ -19,7 +19,7 @@ export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What notes or business questions
 export const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that one. I'll add it to the notes.";
 export const DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that, but you can submit a service request.";
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
-export const SUBMISSION_START_RESPONSE = "I'm submitting your service request now.";
+export const SUBMISSION_START_RESPONSE = "I'm sending it in now.";
 export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted.";
 export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the service request.";
 

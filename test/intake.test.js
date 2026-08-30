@@ -273,6 +273,15 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.service, 'Interior Painting');
   assert.equal(deliveries[0].payload.requestedDate, '2026-08-04');
   assert.equal(deliveries[0].payload.requestedTime, '3:30 PM');
+  assert.equal(
+    deliveries[0].payload.requestSummary,
+    [
+      '- Service: Interior Painting',
+      '- Preferred time: Tuesday, August 4, 2026 at 3:30 PM',
+      '- Address: 123 Main Street, Albany, NY 12207',
+      '- Notes: The living room has vaulted ceilings.',
+    ].join('\n'),
+  );
   assert.equal(deliveries[0].payload.consentToContact, true);
   assert.equal(deliveries[0].payload.summaryConfirmed, true);
   assert.equal(deliveries[0].payload.Name, 'Jordan Smith');
@@ -282,6 +291,7 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.PreferredDate, '2026-08-04');
   assert.equal(deliveries[0].payload.PreferredTime, '3:30 PM');
   assert.equal(deliveries[0].payload.Notes, 'The living room has vaulted ceilings.');
+  assert.equal(deliveries[0].payload.RequestSummary, deliveries[0].payload.requestSummary);
   assert.match(deliveries[0].options.idempotencyKey, /^[a-f0-9]{64}$/);
 
   const repeated = await manager.submit({ caller_confirmed: true });

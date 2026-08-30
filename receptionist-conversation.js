@@ -580,12 +580,22 @@ function requestedTimeCandidate(value, { dateCandidate = '', allowBare = false }
 function meridiemOnlyCandidate(value) {
   const text = normalizedTimePhrase(value);
   const match = text.match(
-    /^(?:(?:it is|it's|that is|that's|make it|i mean|i meant|okay|ok|uh|um)\s+)*(?:(?:in|during)\s+(?:the\s+)?)?(am|pm|morning|afternoon|evening|night)$/i,
+    /^(?:(?:it is|it's|that is|that's|make it|i mean|i meant|okay|ok|yes|yeah|yep|yup|you|the|uh|um)\s+)*(?:(?:in|during)\s+(?:the\s+)?)?(am|pm|morning|afternoon|evening|night)$/i,
   );
   if (!match) return '';
   return match[1] === 'morning'
     ? 'am'
     : (['afternoon', 'evening', 'night'].includes(match[1]) ? 'pm' : match[1]);
+}
+
+function isSimpleSummaryAffirmative(value) {
+  const text = normalized(value)
+    .replace(/^(?:(?:actually|okay|ok|oh|so|uh+|um+|well)\s+)+/, '')
+    .trim();
+  if (/^(?:yes|yeah|yep|yup|correct|right|that(?:'s| is) right|it(?:'s| is) right)$/.test(text)) {
+    return true;
+  }
+  return /^(?:yes|yeah|yep|yup)\s+(?:(?:that|it)(?: all)? (?:looks|sounds) right|(?:that(?:'s| is)|it(?:'s| is)) right)$/.test(text);
 }
 
 function isScheduleOnlyProjectNote(note, dateCandidate) {
@@ -1012,6 +1022,7 @@ export function createReceptionistConversation({ context, demo = false }) {
   let consentGranted = false;
   let customerResistanceCount = 0;
   let pendingTimeWithoutMeridiem = '';
+  let serviceChoicePrompted = false;
   let phase = 'collecting';
   let preparedSummary = null;
   const partialAddressParts = {
@@ -1037,7 +1048,9 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (street && locality && !state) return `What state is ${locality} in?`;
     if (street && !locality && state) return 'What city or town is that in?';
     if (street && !locality) return 'What city or town and state is that in?';
-    if (!street && (locality || state)) return "What's the street address for the project?";
+    if (!street && locality && state) return "What's the street number and street name?";
+    if (!street && locality) return "What's the street number, street name, and state?";
+    if (!street && state) return "What's the street number, street name, and city or town?";
     return PROJECT_ADDRESS_QUESTION;
   }
 
@@ -1060,6 +1073,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       return addressFollowupQuestion();
     }
     if (field === 'schedule') {
+      if (pendingTimeWithoutMeridiem) return 'Do you mean AM or PM?';
       if (values.preferredDate && !values.preferredTime) return 'What exact time would work best for the service request?';
       if (!values.preferredDate && values.preferredTime) return 'What date would you prefer for the service request?';
       return SCHEDULE_QUESTION;
@@ -1091,6 +1105,32 @@ export function createReceptionistConversation({ context, demo = false }) {
       return `Okay, sounds good. ${ADDITIONAL_NOTES_PROMPT}`;
     }
     return bareQuestion(field);
+  }
+
+  function serviceSelectionAction(prefix = '') {
+    if (demo) return { type: 'speak', text: joinSpeech(prefix, SERVICE_QUESTION) };
+    const choices = serviceNames(context);
+    if (!choices.length) {
+      return {
+        type: 'speak',
+        text: joinSpeech(prefix, 'Could you tell me a little more about the work you need done?'),
+      };
+    }
+    const serviceList = readableSuppliedList(choices);
+    if (serviceChoicePrompted) {
+      phase = 'ending';
+      return {
+        type: 'end',
+        text: choices.length === 1
+          ? `I'm sorry, I can only accept service requests for ${serviceList}. I won't be able to submit this request. Have a good day.`
+          : `I'm sorry, I can only accept service requests for one of these services: ${serviceList}. I won't be able to submit this request. Have a good day.`,
+      };
+    }
+    serviceChoicePrompted = true;
+    const question = choices.length === 1
+      ? `The service listed is ${serviceList}. Is that the service you're looking for?`
+      : `The services listed are ${serviceList}. Which service are you looking for?`;
+    return { type: 'speak', text: joinSpeech(prefix, question) };
   }
 
   function addNote(value) {
@@ -1199,6 +1239,7 @@ export function createReceptionistConversation({ context, demo = false }) {
           throw Object.assign(new Error('Service was not supplied by the caller.'), { field: 'service' });
         }
         values.service = supplied || matchService(analysis.fields.service, context.services);
+        serviceChoicePrompted = false;
         changed = true;
       } catch (fieldError) {
         error ||= fieldError;
@@ -1345,6 +1386,24 @@ export function createReceptionistConversation({ context, demo = false }) {
     const text = cleanText(transcript);
     const current = pendingField();
     if (isHoldRequest(text)) return { type: 'hold' };
+    if (current === 'summary' && isSimpleSummaryAffirmative(text)) {
+      phase = 'submitting';
+      return { type: 'submit' };
+    }
+    if (current === 'schedule' && pendingTimeWithoutMeridiem) {
+      const meridiem = meridiemOnlyCandidate(text);
+      if (meridiem) {
+        values.preferredTime = `${pendingTimeWithoutMeridiem} ${meridiem}`;
+        const error = validateSchedule();
+        if (error) {
+          return {
+            type: 'speak',
+            text: preparationErrorQuestion(error, error.field),
+          };
+        }
+        return { type: 'speak', text: advancingQuestion() };
+      }
+    }
     if (isAiIdentityQuestion(text)) {
       const business = spokenBusinessName(context.businessName);
       return {
@@ -1823,7 +1882,7 @@ export function createReceptionistConversation({ context, demo = false }) {
         phase = 'ending';
         return {
           type: 'end',
-          text: "I understand. I can't submit the service request without permission to contact you.",
+          text: "I understand. I can't submit the service request without permission to contact you, so it was not submitted. Have a good day.",
         };
       }
       return { type: 'speak', text: joinSpeech(question.prefix, bareQuestion('consent')) };
@@ -1846,6 +1905,9 @@ export function createReceptionistConversation({ context, demo = false }) {
       );
     const applied = applyCollectingFields(analysis, transcript);
     if (applied.error) {
+      if (before === 'service' && applied.error.field === 'service') {
+        return serviceSelectionAction(question.prefix);
+      }
       return {
         type: 'speak',
         text: joinSpeech(question.prefix, preparationErrorQuestion(applied.error, applied.error.field)),
@@ -1886,26 +1948,15 @@ export function createReceptionistConversation({ context, demo = false }) {
       }
       return { type: 'wait', preserve: true };
     }
-    if (!changed && analysis.service_status === 'not_offered' && before === 'service') {
-      const choices = serviceNames(context);
-      const followup = demo
-        ? SERVICE_QUESTION
-        : choices.length
-          ? `The services listed are ${choices.join(', ')}. Which one are you looking for?`
-          : 'Could you tell me a little more about the work you need done?';
-      return { type: 'speak', text: joinSpeech(question.prefix, followup) };
+    if (!changed && before === 'service' && serviceChoicePrompted) {
+      return serviceSelectionAction(question.prefix);
     }
-    if (!changed && analysis.service_status === 'ambiguous' && before === 'service') {
-      const followup = demo
-        ? SERVICE_QUESTION
-        : 'Could you tell me a little more about the work you need done?';
-      return { type: 'speak', text: joinSpeech(question.prefix, followup) };
-    }
-    if (!changed && analysis.service_status === 'complete' && before === 'service') {
-      const followup = demo
-        ? SERVICE_QUESTION
-        : 'Could you tell me a little more about the work you need done?';
-      return { type: 'speak', text: joinSpeech(question.prefix, followup) };
+    if (
+      !changed
+      && before === 'service'
+      && ['not_offered', 'ambiguous', 'complete'].includes(analysis.service_status)
+    ) {
+      return serviceSelectionAction(question.prefix);
     }
     if (!changed && !projectNoteAdded && !question.hadQuestion) {
       return looksLikeBusinessQuestion(transcript)
@@ -1983,6 +2034,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       consentAsked,
       customerResistanceCount,
       pendingTimeWithoutMeridiem,
+      serviceChoicePrompted,
       preparedSummary,
     };
   }

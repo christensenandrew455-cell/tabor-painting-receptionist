@@ -475,6 +475,15 @@ export function serviceRequestSummary(draft) {
   });
 }
 
+export function savedServiceRequestSummary(draft) {
+  return [
+    `- Service: ${draft.service}`,
+    `- Preferred time: ${draft.requestedDateSpoken} at ${draft.requestedTime}`,
+    `- Address: ${draft.address}`,
+    `- Notes: ${draft.additionalNotes || 'None'}`,
+  ].join('\n');
+}
+
 function requestId(callControlId, draft) {
   return createHash('sha256')
     .update(`${cleanText(callControlId)}:${JSON.stringify(draft)}`)
@@ -483,6 +492,7 @@ function requestId(callControlId, draft) {
 
 export function buildWebsitePayload({ context, callControlId, callerPhone, draft, submittedAt }) {
   const phone = cleanText(callerPhone);
+  const requestSummary = savedServiceRequestSummary(draft);
   return Object.freeze({
     type: 'service_request',
     requestType: 'service_request',
@@ -496,6 +506,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     requestedDate: draft.requestedDate,
     requestedTime: draft.requestedTime,
     additionalNotes: draft.additionalNotes,
+    requestSummary,
     consentToContact: true,
     summaryConfirmed: true,
     customerResistanceCount: draft.customerResistanceCount,
@@ -507,6 +518,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     PreferredDate: draft.requestedDate,
     PreferredTime: draft.requestedTime,
     Notes: draft.additionalNotes,
+    RequestSummary: requestSummary,
   });
 }
 

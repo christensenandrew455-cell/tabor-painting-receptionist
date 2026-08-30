@@ -384,7 +384,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.input.noise_reduction.type, 'far_field');
   assert.deepEqual(event.session.audio.input.turn_detection, {
     type: 'semantic_vad',
-    eagerness: 'low',
+    eagerness: 'medium',
     create_response: false,
     interrupt_response: false,
   });
@@ -535,10 +535,6 @@ test('demo ends immediately after confirmation without saving or claiming submis
       transcript: "Okay, here's the summary. Jordan Smith is requesting AC repair at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
     });
     caller(h.socket, 'Yes.', 'demo-summary-confirmation');
-    await finishAnalysis(h.socket, {
-      responseId: 'demo-summary-analysis',
-      args: analysis({ summary_confirmation: 'yes' }),
-    });
 
     assert.match(
       latestResponse(h.socket).response.instructions,
@@ -703,15 +699,12 @@ test('a complete call collects, confirms, submits once, reports success, and end
     });
 
     caller(h.socket, 'Yes, that all sounds right.', 'caller-summary');
-    await finishAnalysis(h.socket, {
-      responseId: 'analysis-summary',
-      args: analysis({ summary_confirmation: 'yes' }),
-    });
-    assert.match(latestResponse(h.socket).response.instructions, /submitting your service request now/i);
+    assert.equal(latestResponse(h.socket).response.tool_choice, 'none');
+    assert.match(latestResponse(h.socket).response.instructions, /I'm sending it in now\./i);
     assert.equal(deliveries.length, 0);
     await finishSpeech(h.socket, {
       responseId: 'pre-submit',
-      transcript: "I'm submitting your service request now.",
+      transcript: "I'm sending it in now.",
     });
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].payload.service, 'Exterior Painting');
@@ -721,6 +714,15 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(
       deliveries[0].payload.additionalNotes,
       'Paint the exterior of the house. The lawn is bumpy, so look out.',
+    );
+    assert.equal(
+      deliveries[0].payload.requestSummary,
+      [
+        '- Service: Exterior Painting',
+        '- Preferred time: Tuesday, August 11, 2099 at 2:00 PM',
+        '- Address: 123 Main Street, Albany, New York',
+        '- Notes: Paint the exterior of the house. The lawn is bumpy, so look out.',
+      ].join('\n'),
     );
     assert.equal(deliveries[0].payload.summaryConfirmed, true);
     assert.equal(h.submitted.length, 1);
@@ -746,6 +748,61 @@ test('a complete call collects, confirms, submits once, reports success, and end
       h.socket.sent.some((event) => event.type === 'conversation.item.delete'),
       false,
     );
+  } finally {
+    h.restore();
+  }
+});
+
+test('contact refusal ends once without claiming the request was submitted', async () => {
+  const deliveries = [];
+  const h = await createHarness({
+    deliver: async (payload) => {
+      deliveries.push(payload);
+      return { ok: true };
+    },
+  });
+  try {
+    await advanceHarnessToScheduleQuestion(h.socket, { idPrefix: 'refusal' });
+    caller(h.socket, 'Tuesday, August 11, 2099 at 2 PM.', 'refusal-schedule');
+    await finishAnalysis(h.socket, {
+      responseId: 'refusal-schedule-analysis',
+      args: analysis({
+        fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
+      }),
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'refusal-ask-notes',
+      transcript: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
+    });
+    caller(h.socket, 'No notes.', 'refusal-notes');
+    await finishAnalysis(h.socket, {
+      responseId: 'refusal-notes-analysis',
+      args: analysis({ notes_complete: true }),
+    });
+    await finishSpeech(h.socket, {
+      responseId: 'refusal-ask-consent',
+      transcript: 'Okay, thanks. One more question. Do you consent to being contacted by Tabor Painting?',
+    });
+
+    caller(h.socket, 'No.', 'refusal-consent');
+    await finishAnalysis(h.socket, {
+      responseId: 'refusal-consent-analysis',
+      args: analysis({ contact_consent: 'no' }),
+    });
+    const responsesBeforeEnding = responseCreates(h.socket).length;
+    const ending = latestResponse(h.socket).response.instructions;
+    assert.match(ending, /was not submitted/i);
+    assert.match(ending, /Have a good day/i);
+    assert.doesNotMatch(ending, /Thank you for filling out a service request/i);
+
+    await finishSpeech(h.socket, {
+      responseId: 'refusal-ending',
+      transcript: "I understand. I can't submit the service request without permission to contact you, so it was not submitted. Have a good day.",
+    });
+    assert.equal(responseCreates(h.socket).length, responsesBeforeEnding);
+    assert.deepEqual(h.goodbye, [true]);
+    assert.equal(deliveries.length, 0);
+    assert.equal(h.submitted.length, 0);
   } finally {
     h.restore();
   }

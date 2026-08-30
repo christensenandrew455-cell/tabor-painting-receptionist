@@ -270,7 +270,7 @@ export function buildSessionUpdate(context, { submitted = false, demo = false } 
           transcription: transcriptionConfiguration(context),
           turn_detection: {
             type: 'semantic_vad',
-            eagerness: 'low',
+            eagerness: 'medium',
             create_response: false,
             interrupt_response: false,
           },
@@ -809,6 +809,10 @@ export function createOpenAiReceptionist({
         requestSpeech(preflight.text, { turn });
         return;
       }
+      if (preflight.type !== 'analyze') {
+        handleConversationAction(preflight, turn);
+        return;
+      }
       requestAnalysis(turn);
       return;
     }
@@ -904,7 +908,8 @@ export function createOpenAiReceptionist({
     if (action.type === 'end') {
       clearHoldState();
       finalizing = true;
-      requestSpeech(action.text, { after: 'goodbye', turn });
+      endingCall = true;
+      requestSpeech(action.text, { after: 'complete', turn });
       return;
     }
     dispatchCallerTurn();

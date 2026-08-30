@@ -361,7 +361,7 @@ test('a city and state alone stay pending until a numbered street address is sup
 
   assert.equal(conversation.snapshot().values.address, '');
   assert.equal(conversation.snapshot().pendingField, 'address');
-  assert.match(action.text, /street address/i);
+  assert.equal(action.text, "What's the street number and street name?");
 
   action = analyzedTurn(conversation, '197 Lancaster Road.', {
     address_status: 'partial',
@@ -713,15 +713,65 @@ test('code owns service-note wording and rejects a bad analyzer paraphrase witho
   assert.doesNotMatch(conversation.snapshot().notes.join(' '), /changed/i);
 });
 
-test('a contradictory complete-service analysis asks for clarification instead of staying silent', () => {
+test('a contradictory complete-service analysis lists the configured choices', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   const action = analyzedTurn(conversation, 'I need a couple of rooms done.', {
     service_status: 'complete',
   });
 
   assert.equal(action.type, 'speak');
-  assert.match(action.text, /tell me a little more about the work/i);
+  assert.equal(
+    action.text,
+    'The services listed are Wood Staining, Exterior Painting, Interior Painting, and Small Paint Repair. Which service are you looking for?',
+  );
   assert.equal(conversation.snapshot().pendingField, 'service');
+});
+
+test('an unsupported service gets one listed-service retry and then ends', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Burst Pipe Repair', description: 'Repair a burst pipe' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+
+  let action = analyzedTurn(conversation, 'Can you mow my lawn?', {
+    service_status: 'not_offered',
+    fields: { service: 'Lawn Mowing' },
+  });
+  assert.equal(
+    action.text,
+    "The service listed is Burst Pipe Repair. Is that the service you're looking for?",
+  );
+  assert.equal(conversation.snapshot().serviceChoicePrompted, true);
+
+  action = analyzedTurn(conversation, 'No, I need lawn mowing.', {
+    service_status: 'not_offered',
+    fields: { service: 'Lawn Mowing' },
+  });
+  assert.equal(action.type, 'end');
+  assert.match(action.text, /only accept service requests for Burst Pipe Repair/i);
+  assert.match(action.text, /won't be able to submit/i);
+  assert.equal(conversation.snapshot().phase, 'ending');
+});
+
+test('a listed service is accepted on the one allowed retry', () => {
+  const context = {
+    ...CONTEXT,
+    services: [{ name: 'Burst Pipe Repair', description: 'Repair a burst pipe' }],
+  };
+  const conversation = createReceptionistConversation({ context });
+  analyzedTurn(conversation, 'Can you mow my lawn?', {
+    service_status: 'not_offered',
+    fields: { service: 'Lawn Mowing' },
+  });
+
+  const action = analyzedTurn(conversation, 'Burst pipe repair.', {
+    service_status: 'complete',
+    fields: { service: 'Burst Pipe Repair' },
+  });
+  assert.match(action.text, /what name should I use/i);
+  assert.equal(conversation.snapshot().values.service, 'Burst Pipe Repair');
+  assert.equal(conversation.snapshot().serviceChoicePrompted, false);
 });
 
 test('valid intake answers outrank a false business-question label and extra details become notes', () => {
@@ -1269,6 +1319,32 @@ test('a natural daypart-only clarification completes a previously bare hour', ()
   action = analyzedTurn(conversation, 'In the afternoon.');
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredTime, '1 pm');
+});
+
+test('a noisy ASR meridiem reply completes the saved hour without asking for it again', () => {
+  const conversation = createReceptionistConversation({ context: CONTEXT });
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Andrew Christensen.', {
+    fields: { name: 'Andrew Christensen' },
+  });
+  analyzedTurn(conversation, '197 Lincoln Road, Berlin, Massachusetts.', {
+    address_status: 'complete',
+    fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
+  });
+
+  let action = analyzedTurn(conversation, 'Tuesday at 10.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: '10' },
+  });
+  assert.equal(action.text, 'Do you mean AM or PM?');
+
+  action = analyzedTurn(conversation, 'You AM.');
+  assert.match(action.text, /additional notes/i);
+  assert.doesNotMatch(action.text, /exact time|AM or PM/i);
+  assert.equal(conversation.snapshot().values.preferredTime, '10 am');
+  assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
 test('Tuesday at 3 in the afternoon advances when the analyzer drops the time', () => {
@@ -1944,9 +2020,7 @@ test('correcting only the summary time preserves the already confirmed day', () 
 test('only a separate yes to the complete readback permits submission', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeToSummary(conversation);
-  const action = analyzedTurn(conversation, 'Yes, that all sounds right.', {
-    summary_confirmation: 'yes',
-  });
+  const action = conversation.preflight('Yes, that all sounds right.');
   assert.deepEqual(action, { type: 'submit' });
   assert.equal(conversation.snapshot().phase, 'submitting');
 });
@@ -1982,5 +2056,7 @@ test('refusing contact permission ends without preparing or submitting', () => {
   const action = analyzedTurn(conversation, 'No, do not contact me.', { contact_consent: 'no' });
   assert.equal(action.type, 'end');
   assert.match(action.text, /can't submit/i);
+  assert.match(action.text, /was not submitted/i);
+  assert.match(action.text, /Have a good day/i);
   assert.equal(conversation.snapshot().phase, 'ending');
 });
