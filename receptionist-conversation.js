@@ -209,18 +209,21 @@ export function callerTurnAnalysisTool({ demo = false } = {}) {
   tool.description = [
     'Analyze only the latest caller turn for the neutral receptionist demo.',
     'Use ordinary language understanding to recognize any requested type of work, caller details, corrections, unfinished speech, conversation repair, notes, consent, and summary confirmation.',
-    'There is no service catalog in demo mode. Turn any substantive requested work into a concise service label without inventing project details.',
+    'There is no service catalog in demo mode. When the service field is pending, treat any meaningful problem, condition, desired outcome, or work statement as the requested work and summarize it directly without inventing details.',
+    'Do not require the caller to name a trade, service category, or specific solution, and never ask for clarification about the kind of work.',
     'Mark every separate business-information question as unanswerable so the server can give the demo fallback. A request for work phrased as a question is still a service request, not a business-information question.',
     'This tool is silent. Do not produce spoken audio in the same response.',
   ].join(' ');
   tool.parameters.properties.fields.properties.service.description = [
     'A concise service label accurately summarizing the work requested in this caller turn.',
-    'Accept every substantive trade or work type because the demo has no service catalog.',
-    'Empty only when no requested work was supplied in this turn.',
+    'Accept every meaningful problem, condition, desired outcome, trade, or work type because the demo has no service catalog.',
+    'A statement such as a pipe bursting is a complete work answer even when the caller does not name plumbing or ask for a repair.',
+    'Empty only when the caller supplied no work answer at all, such as filler, conversation repair, or a separate information question.',
   ].join(' ');
   tool.parameters.properties.service_status.description = [
-    'Whether this turn provides no requested work, enough information for a concise service label, or needs a small clarification.',
-    'In demo mode, never use not_offered merely because the service list is empty or because the work belongs to a particular trade.',
+    'When the service field is pending, use complete for every meaningful problem, condition, desired outcome, or work statement, even if the caller does not name a trade or solution.',
+    'Never use ambiguous or not_offered in demo mode and never require more detail about the work.',
+    'Use not_addressed only when the caller supplied no work answer at all.',
   ].join(' ');
   tool.parameters.properties.business_answer_status.description = [
     'Use not_a_question for an intake answer or project detail.',
@@ -428,7 +431,7 @@ function cleanedServiceTurnNote(value) {
 
 function demoServiceFromCallerText(value) {
   const service = cleanText(value)
-    .replace(/^(?:(?:um+|uh+|well|okay|ok|so|like|actually)[,;.! ]+)+/i, '')
+    .replace(/^(?:(?:um+|uh+|well|okay|ok|yes|yeah|yep|yup|sure|right|alright|all right|so|like|actually)[,;.! ]+)+/i, '')
     .replace(/^(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?\s+/i, '')
     .replace(/^(?:i|we)(?:'d| would)\s+like(?:\s+to)?\s+/i, '')
     .replace(/^(?:can|could|would|will)\s+(?:you|someone|somebody)\s+(?:please\s+)?/i, '')
@@ -437,16 +440,6 @@ function demoServiceFromCallerText(value) {
     .replace(/[.!?]+$/g, '')
     .trim();
   return service.slice(0, 160);
-}
-
-function hasExplicitDemoServiceIntent(value) {
-  const text = cleanText(value);
-  if (!text) return false;
-  return /\b(?:i|we)\s+(?:just\s+)?(?:need|want)(?:\s+to)?\b/i.test(text)
-    || /\b(?:i|we)(?:'d| would)\s+like(?:\s+to)?\b/i.test(text)
-    || /\b(?:i|we)(?:'m| am|'re| are)\s+(?:looking|hoping|trying)\s+to\b/i.test(text)
-    || /^(?:can|could|would|will)\s+(?:you|someone|somebody|the business|they)\s+(?!tell|explain|say|give)\S+/i.test(text)
-    || /^(?:please\s+)?(?:build|clean|fix|inspect|install|mow|paint|repair|replace|service|stain|trim)\b/i.test(text);
 }
 
 function isLowQualityProjectNote(value) {
@@ -925,10 +918,10 @@ export function buildTurnAnalysisInstructions({
     description: service.description,
   }));
   const structuredFieldRule = demo
-    ? 'Turn any substantive requested work into a concise service label. Copy the caller\'s name, address, preferred date, preferred time, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for the demo service label, project_note, and business_question.'
+    ? 'Turn any meaningful problem, condition, desired outcome, or work statement into a concise service label without requiring a category or clarification. Copy the caller\'s name, address, preferred date, preferred time, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for the demo service label, project_note, and business_question.'
     : 'Only the requested service may be semantically mapped to a supplied category. Copy the caller\'s name, address, preferred date, preferred time, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for project_note and business_question.';
   const serviceRule = demo
-    ? 'The demo has no service catalog. Any substantive description of requested work can complete the service field. Return a short, accurate service label and set service_status to complete; never reject work because of its trade or because SUPPLIED_SERVICES is empty.'
+    ? 'The demo has no service catalog. While service is pending, every meaningful problem, condition, desired outcome, or work statement completes the service field, even when the caller does not name a trade, category, or solution. Summarize what the caller said into a short, accurate service label, set service_status to complete, and never ask for more detail about the work. Never use ambiguous or not_offered in demo mode.'
     : 'The caller may name a supplied category or describe the needed outcome naturally; either can complete the service field when its meaning maps to one supplied service. Map only to the supplied service list and never assume a trade or capability that was not supplied for this business.';
   const requestedWorkQuestionRule = demo
     ? 'A separate business-information request may occur during any intake step. First capture any answer to the pending field. If the caller asks whether the demo can handle a kind of work because they want that work done, treat it as the requested service and do not classify it as a separate business question.'
@@ -953,7 +946,7 @@ export function buildTurnAnalysisInstructions({
     'The supplied Title/Info business-information items are authoritative business facts. If one directly supports a caller question, mark it answerable and copy the shortest exact supporting Info value into business_support. If no supplied fact answers the question, mark it unanswerable.',
     ...(demo ? [
       'DEMO_MODE=true. Do not infer a real business, a trade, a service catalog, pricing, availability, or policy from general knowledge.',
-      'The demo accepts every substantive requested work type. Its fixed service-request window is Monday through Friday from 9:00 AM through 5:00 PM in America/New_York; treat this only as validation for a caller\'s preferred date and time, never as a confirmed appointment.',
+      'The demo accepts every meaningful work description without category matching or follow-up clarification. Its fixed service-request window is Monday through Friday from 9:00 AM through 5:00 PM in America/New_York; treat this only as validation for a caller\'s preferred date and time, never as a confirmed appointment.',
       'Mark every separate business-information question unanswerable, including questions about services, prices, hours, policies, availability, or the platform. The server will give the demo-specific fallback.',
     ] : []),
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
@@ -1083,6 +1076,12 @@ export function createReceptionistConversation({ context, demo = false }) {
     return '';
   }
 
+  function preparationErrorQuestion(error, field) {
+    return demo && field === 'service'
+      ? SERVICE_QUESTION
+      : spokenPreparationError(error, field);
+  }
+
   function advancingQuestion(field = pendingField()) {
     if (field === 'name') return `Okay, ${NAME_QUESTION.toLowerCase()}`;
     if (field === 'address') return `Thanks. ${PROJECT_ADDRESS_QUESTION}`;
@@ -1188,11 +1187,14 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (analysis.fields.service && canWrite('service')) {
       try {
         const supplied = exactSuppliedService(analysis.fields.service, context);
+        const serviceEvidence = demo
+          ? demoServiceFromCallerText(transcript)
+          : transcript;
         if (
           analysis.service_status !== 'complete'
           || classifyCallerTranscript(transcript) !== 'meaningful'
           || isConversationRepairRequest(transcript)
-          || !hasUsableServiceAnswer(transcript, context, { confirmedService: supplied })
+          || !hasUsableServiceAnswer(serviceEvidence, context, { confirmedService: supplied })
         ) {
           throw Object.assign(new Error('Service was not supplied by the caller.'), { field: 'service' });
         }
@@ -1448,7 +1450,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       phase = 'collecting';
       return {
         type: 'speak',
-        text: spokenPreparationError(applied.error, applied.error.field || correction),
+        text: preparationErrorQuestion(applied.error, applied.error.field || correction),
       };
     }
     if (!applied.changed) {
@@ -1466,18 +1468,15 @@ export function createReceptionistConversation({ context, demo = false }) {
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
     const currentField = pendingField();
-    const analyzerRecognizedDemoService = Boolean(analysis.fields.service)
-      && ['complete', 'ambiguous'].includes(analysis.service_status);
-    const explicitDemoServiceIntent = hasExplicitDemoServiceIntent(transcript);
+    const demoService = demoServiceFromCallerText(transcript);
     if (
       demo
       && currentField === 'service'
       && !looksLikeUnfinishedThought(transcript)
       && !isConversationRepairRequest(transcript)
-      && (analyzerRecognizedDemoService || explicitDemoServiceIntent)
-      && hasUsableServiceAnswer(transcript, context)
+      && hasUsableServiceAnswer(demoService, context)
     ) {
-      analysis.fields.service = analysis.fields.service || demoServiceFromCallerText(transcript);
+      analysis.fields.service = analysis.fields.service || demoService;
       if (analysis.fields.service) {
         analysis.service_status = 'complete';
         if (['unintelligible', 'background_speech'].includes(analysis.turn_status)) {
@@ -1764,7 +1763,7 @@ export function createReceptionistConversation({ context, demo = false }) {
         type: 'speak',
         text: joinSpeech(
           question.prefix,
-          spokenPreparationError(correctionResult.error, correctionResult.error.field),
+          preparationErrorQuestion(correctionResult.error, correctionResult.error.field),
         ),
       };
     }
@@ -1849,7 +1848,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (applied.error) {
       return {
         type: 'speak',
-        text: joinSpeech(question.prefix, spokenPreparationError(applied.error, applied.error.field)),
+        text: joinSpeech(question.prefix, preparationErrorQuestion(applied.error, applied.error.field)),
       };
     }
 
@@ -1889,16 +1888,24 @@ export function createReceptionistConversation({ context, demo = false }) {
     }
     if (!changed && analysis.service_status === 'not_offered' && before === 'service') {
       const choices = serviceNames(context);
-      const followup = choices.length
-        ? `The services listed are ${choices.join(', ')}. Which one are you looking for?`
-        : 'Could you tell me a little more about the work you need done?';
+      const followup = demo
+        ? SERVICE_QUESTION
+        : choices.length
+          ? `The services listed are ${choices.join(', ')}. Which one are you looking for?`
+          : 'Could you tell me a little more about the work you need done?';
       return { type: 'speak', text: joinSpeech(question.prefix, followup) };
     }
     if (!changed && analysis.service_status === 'ambiguous' && before === 'service') {
-      return { type: 'speak', text: joinSpeech(question.prefix, 'Could you tell me a little more about the work you need done?') };
+      const followup = demo
+        ? SERVICE_QUESTION
+        : 'Could you tell me a little more about the work you need done?';
+      return { type: 'speak', text: joinSpeech(question.prefix, followup) };
     }
     if (!changed && analysis.service_status === 'complete' && before === 'service') {
-      return { type: 'speak', text: joinSpeech(question.prefix, 'Could you tell me a little more about the work you need done?') };
+      const followup = demo
+        ? SERVICE_QUESTION
+        : 'Could you tell me a little more about the work you need done?';
+      return { type: 'speak', text: joinSpeech(question.prefix, followup) };
     }
     if (!changed && !projectNoteAdded && !question.hadQuestion) {
       return looksLikeBusinessQuestion(transcript)
@@ -1953,7 +1960,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       consentAsked = false;
     }
     phase = 'collecting';
-    return spokenPreparationError(error, field);
+    return preparationErrorQuestion(error, field);
   }
 
   function snapshot() {

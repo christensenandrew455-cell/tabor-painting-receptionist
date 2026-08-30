@@ -425,7 +425,7 @@ test('demo session is neutral, accepts every trade, and contains no Tabor Painti
   assert.deepEqual(event.session.audio.input.transcription.keywords, ['AI Receptionist Demo']);
 });
 
-test('demo accepts a stated pipe-cleaning service without asking for more detail', async () => {
+test('demo accepts a burst-pipe problem statement without asking for more detail', async () => {
   const h = await createHarness({
     context: DEMO_CONTEXT,
     runtime: { demo: true },
@@ -443,29 +443,33 @@ test('demo accepts a stated pipe-cleaning service without asking for more detail
       responseId: 'demo-greeting',
       transcript: "Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. What kind of work are you looking to have done?",
     });
-    caller(h.socket, 'I need to get some pipes cleaned.', 'demo-pipe-service');
+    caller(h.socket, 'Yeah, one of my pipes burst in my basement.', 'demo-pipe-service');
 
     const request = latestResponse(h.socket).response;
     assert.match(request.instructions, /demo has no service catalog/i);
-    assert.match(request.instructions, /accepts every substantive requested work type/i);
+    assert.match(
+      request.instructions,
+      /every meaningful problem, condition, desired outcome, or work statement completes/i,
+    );
     assert.match(
       request.tools[0].parameters.properties.fields.properties.service.description,
-      /accept every substantive trade or work type/i,
+      /accept every meaningful problem, condition, desired outcome, trade, or work type/i,
     );
     assert.match(
       request.tools[0].parameters.properties.service_status.description,
-      /never use not_offered/i,
+      /never use ambiguous or not_offered/i,
     );
 
     await finishAnalysis(h.socket, {
       responseId: 'demo-pipe-analysis',
       args: analysis({
         service_status: 'ambiguous',
-        project_note: 'Clean get some pipes.',
-        fields: { service: 'Pipe cleaning' },
       }),
     });
-    assert.equal(h.receptionist.snapshot().state.values.service, 'Pipe cleaning');
+    assert.equal(
+      h.receptionist.snapshot().state.values.service,
+      'one of my pipes burst in my basement',
+    );
     assert.deepEqual(h.receptionist.snapshot().state.notes, []);
     assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
     assert.doesNotMatch(latestResponse(h.socket).response.instructions, /little more|more specific/i);

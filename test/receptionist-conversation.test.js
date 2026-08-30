@@ -167,7 +167,7 @@ test('a natural supplied-service request is accepted even when it ends as an ava
   assert.deepEqual(conversation.snapshot().notes, ['Stain the new deck.']);
 });
 
-test('demo accepts a substantive service even when analysis asks for clarification', () => {
+test('demo directly accepts problem and work statements even when analysis asks for clarification', () => {
   const context = {
     ...CONTEXT,
     businessName: 'AI Receptionist Demo',
@@ -177,19 +177,53 @@ test('demo accepts a substantive service even when analysis asks for clarificati
     services: [],
     businessInformation: [],
   };
-  const conversation = createReceptionistConversation({ context, demo: true });
+  const examples = [
+    {
+      transcript: 'Yeah, one of my pipes burst in my basement.',
+      service: 'one of my pipes burst in my basement',
+    },
+    {
+      transcript: 'Yeah, I need my lawn trimmed.',
+      service: 'my lawn trimmed',
+    },
+  ];
 
-  const action = analyzedTurn(
-    conversation,
-    'I need to get some pipes cleaned.',
-    { service_status: 'ambiguous' },
-  );
+  for (const example of examples) {
+    const conversation = createReceptionistConversation({ context, demo: true });
+    const action = analyzedTurn(
+      conversation,
+      example.transcript,
+      { service_status: 'ambiguous' },
+    );
 
-  assert.equal(conversation.snapshot().values.service, 'some pipes cleaned');
-  assert.equal(conversation.snapshot().pendingField, 'name');
-  assert.deepEqual(conversation.snapshot().notes, []);
-  assert.match(action.text, /what name should I use/i);
-  assert.doesNotMatch(action.text, /little more|more specific/i);
+    assert.equal(conversation.snapshot().values.service, example.service);
+    assert.equal(conversation.snapshot().pendingField, 'name');
+    assert.deepEqual(conversation.snapshot().notes, []);
+    assert.match(action.text, /what name should I use/i);
+    assert.doesNotMatch(action.text, /little more|more specific/i);
+  }
+});
+
+test('demo never asks for more service detail when analysis returns a catalog status', () => {
+  const context = {
+    ...CONTEXT,
+    businessName: 'AI Receptionist Demo',
+    serviceRequestWeekdays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    earliestServiceRequestStart: '9:00 AM',
+    latestServiceRequestStart: '5:00 PM',
+    services: [],
+    businessInformation: [],
+  };
+
+  for (const serviceStatus of ['ambiguous', 'not_offered', 'complete']) {
+    const conversation = createReceptionistConversation({ context, demo: true });
+    const action = analyzedTurn(conversation, 'Not sure.', {
+      service_status: serviceStatus,
+    });
+
+    assert.equal(action.text, 'What kind of work are you looking to have done?');
+    assert.doesNotMatch(action.text, /little more|more specific/i);
+  }
 });
 
 test('demo treats a question-shaped request as service work, not an information question', () => {
