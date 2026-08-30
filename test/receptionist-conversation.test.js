@@ -1831,8 +1831,9 @@ test('turn analysis receives owner-supplied Title and Info facts as semantic evi
   assert.match(instructions, /Every day, 5 PM to 9 PM/);
   assert.match(instructions, /mark it unanswerable/);
   assert.match(instructions, /only the requested service may be semantically mapped/i);
-  assert.match(instructions, /final text that will be saved, read back, and sent to the business/i);
-  assert.match(instructions, /Do not save a raw conversational sentence/i);
+  assert.match(instructions, /latest caller audio item.*primary evidence/i);
+  assert.match(instructions, /separate final summarizer/i);
+  assert.match(instructions, /Remove obvious filler and false starts/i);
 });
 
 test('an unsupported business question is not answered from general knowledge and is saved once', () => {

@@ -178,6 +178,10 @@ async function createHarness({
   deliver,
   incompleteTurnRecoveryMs,
   holdRecoveryMs,
+  summarizeRequest = async ({ draft }) => ({
+    service: draft.service,
+    notes: draft.additional_notes,
+  }),
 } = {}) {
   const previousApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key';
@@ -204,6 +208,7 @@ async function createHarness({
     onUsage: () => {},
     onLatency: (entry) => latencies.push(entry),
     onError: (error) => errors.push(error),
+    summarizeRequest,
     incompleteTurnRecoveryMs,
     holdRecoveryMs,
     WebSocketClass: FakeWebSocket,
@@ -306,6 +311,8 @@ async function advanceHarnessToSummaryRequest(socket, {
   greeting = `Hi, thank you for calling ${businessName}. What kind of work are you looking to have done?`,
   serviceCallerText = 'I need exterior painting.',
   service = 'Exterior Painting',
+  projectNoteCallerText = '',
+  projectNote = '',
 } = {}) {
   await finishSpeech(socket, {
     responseId: 'summary-path-greeting',
@@ -340,6 +347,11 @@ async function advanceHarnessToSummaryRequest(socket, {
       }),
       speech: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
     },
+    ...(projectNote ? [{
+      callerText: projectNoteCallerText,
+      args: analysis({ project_note: projectNote }),
+      speech: 'Okay, I put that down. Do you have any other notes or business questions?',
+    }] : []),
     {
       callerText: 'No.',
       args: analysis({ notes_complete: true }),
@@ -577,6 +589,171 @@ test('generated audio streams immediately instead of waiting for transcript vali
       h.socket.sent.some((event) => event.type === 'conversation.item.delete'),
       false,
     );
+  } finally {
+    h.restore();
+  }
+});
+
+test('the live model\'s native-audio interpretation outranks a bad sidecar transcript', async () => {
+  const h = await createHarness();
+  try {
+    await finishSpeech(h.socket, {
+      responseId: 'native-audio-greeting',
+      transcript: 'Hi, thank you for calling Tabor Painting. What kind of work are you looking to have done?',
+    });
+
+    caller(h.socket, 'I need my lawn mower.', 'native-audio-service');
+    await finishAnalysis(h.socket, {
+      responseId: 'native-audio-service-analysis',
+      args: analysis({
+        heard_text: 'I need the exterior of my house painted.',
+        service_status: 'complete',
+        fields: { service: 'Exterior Painting' },
+      }),
+    });
+
+    assert.equal(h.receptionist.snapshot().state.values.service, 'Exterior Painting');
+    assert.equal(h.receptionist.snapshot().state.pendingField, 'name');
+    assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('one final summary supplies both the spoken readback and the saved bullet summary', async () => {
+  const deliveries = [];
+  const summaryCalls = [];
+  const h = await createHarness({
+    deliver: async (payload) => {
+      deliveries.push(payload);
+      return { ok: true };
+    },
+    summarizeRequest: async (input) => {
+      summaryCalls.push(input);
+      return {
+        service: 'A service the business does not offer',
+        notes: 'Rear siding is peeling. The back gate is locked.',
+      };
+    },
+  });
+  try {
+    await advanceHarnessToSummaryRequest(h.socket, {
+      projectNoteCallerText: 'Uh, the rear siding is peeling, and, you know, the back gate is locked.',
+      projectNote: 'The rear siding is peeling, and the back gate is locked.',
+    });
+
+    assert.equal(summaryCalls.length, 1);
+    assert.equal(summaryCalls[0].demo, false);
+    assert.match(
+      summaryCalls[0].source.understoodCallerTurns.join('\n'),
+      /rear siding is peeling.*back gate is locked/i,
+    );
+    const readback = latestResponse(h.socket).response.instructions;
+    assert.match(readback, /requesting Exterior Painting/i);
+    assert.doesNotMatch(readback, /service the business does not offer/i);
+    assert.match(readback, /Rear siding is peeling\. The back gate is locked\./i);
+    assert.doesNotMatch(readback, /\buh\b|you know/i);
+
+    await finishSpeech(h.socket, {
+      responseId: 'dedicated-final-summary-readback',
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: Rear siding is peeling. The back gate is locked. Does that all sound right?",
+    });
+    caller(h.socket, 'Yes.', 'dedicated-final-summary-confirmation');
+    assert.match(latestResponse(h.socket).response.instructions, /I'm sending it in now/i);
+    await finishSpeech(h.socket, {
+      responseId: 'dedicated-final-summary-submit',
+      transcript: "I'm sending it in now.",
+    });
+
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].service, 'Exterior Painting');
+    assert.equal(deliveries[0].additionalNotes, 'Rear siding is peeling. The back gate is locked.');
+    assert.equal(deliveries[0].requestSummary, [
+      '- Service: Exterior Painting',
+      '- Preferred time: Tuesday, August 11, 2099 at 2:00 PM',
+      '- Address: 123 Main Street, Albany, New York',
+      '- Notes: Rear siding is peeling. The back gate is locked.',
+    ].join('\n'));
+  } finally {
+    h.restore();
+  }
+});
+
+test('the demo uses the dedicated final summary for its service label and notes', async () => {
+  const summaryCalls = [];
+  const h = await createHarness({
+    context: DEMO_CONTEXT,
+    runtime: { demo: true },
+    summarizeRequest: async (input) => {
+      summaryCalls.push(input);
+      return {
+        service: 'Emergency burst pipe repair',
+        notes: 'Water is spreading across the basement.',
+      };
+    },
+  });
+  try {
+    await advanceHarnessToSummaryRequest(h.socket, {
+      businessName: 'AI Receptionist Demo',
+      greeting: "Hi, thank you for calling the ARC Client Center demo number. You can pretend you're one of your own clients and test it however you'd like. None of the information you provide is saved. What kind of work are you looking to have done?",
+      serviceCallerText: "Uh, a pipe burst downstairs and water's going everywhere.",
+      service: 'Pipe burst downstairs',
+    });
+
+    assert.equal(summaryCalls.length, 1);
+    assert.equal(summaryCalls[0].demo, true);
+    const readback = latestResponse(h.socket).response.instructions;
+    assert.match(readback, /requesting Emergency burst pipe repair/i);
+    assert.match(readback, /Water is spreading across the basement/i);
+    assert.doesNotMatch(readback, /\buh\b|going everywhere/i);
+  } finally {
+    h.restore();
+  }
+});
+
+test('a failed Luna summary falls back once to Realtime whole-call summarization', async () => {
+  let lunaCalls = 0;
+  const h = await createHarness({
+    summarizeRequest: async () => {
+      lunaCalls += 1;
+      throw new Error('Luna summary unavailable');
+    },
+  });
+  try {
+    await advanceHarnessToSummaryRequest(h.socket, {
+      projectNoteCallerText: 'The rear siding is peeling.',
+      projectNote: 'The rear siding is peeling.',
+    });
+
+    assert.equal(lunaCalls, 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'finalize_service_request_summary');
+    assert.match(latestResponse(h.socket).response.instructions, /complete caller audio conversation/i);
+
+    h.socket.receive({ type: 'response.created', response: { id: 'realtime-summary-fallback' } });
+    h.socket.receive({
+      type: 'response.done',
+      response: {
+        id: 'realtime-summary-fallback',
+        output: [{
+          id: 'realtime-summary-fallback-call-item',
+          type: 'function_call',
+          name: 'finalize_service_request_summary',
+          call_id: 'realtime-summary-fallback-call',
+          arguments: JSON.stringify({
+            service_label: 'Wrong service label',
+            notes_summary: 'Rear siding is peeling.',
+          }),
+        }],
+      },
+    });
+    await nextTurn();
+    await nextTurn();
+
+    const readback = latestResponse(h.socket).response.instructions;
+    assert.match(readback, /requesting Exterior Painting/i);
+    assert.doesNotMatch(readback, /Wrong service label/i);
+    assert.match(readback, /Rear siding is peeling/i);
+    assert.equal(h.errors.filter((error) => /Luna summary unavailable/i.test(error.message)).length, 1);
   } finally {
     h.restore();
   }
@@ -879,7 +1056,7 @@ test('the silence timer does not begin before generated receptionist audio can f
   }
 });
 
-test('an empty transcription during the greeting cannot create a duplicate opening prompt', async () => {
+test('an empty sidecar transcription falls back to native audio without duplicating the greeting', async () => {
   const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
   try {
     h.socket.receive({ type: 'response.created', response: { id: 'overlap-greeting' } });
@@ -900,14 +1077,20 @@ test('an empty transcription during the greeting cannot create a duplicate openi
     });
     await nextTurn();
 
-    const before = responseCreates(h.socket).length;
-    await wait(60);
-    assert.equal(responseCreates(h.socket).length, before);
-    await wait(100);
-    assert.equal(responseCreates(h.socket).length, before + 1);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.match(latestResponse(h.socket).response.instructions, /latest caller audio.*primary evidence/i);
+
+    await finishAnalysis(h.socket, {
+      responseId: 'empty-overlap-analysis',
+      args: analysis({
+        heard_text: '',
+        turn_status: 'unintelligible',
+      }),
+    });
     const instruction = latestResponse(h.socket).response.instructions;
     assert.match(instruction, /What kind of work are you looking to have done\?/);
-    assert.doesNotMatch(instruction, /didn't catch|thank you for calling/i);
+    assert.match(instruction, /didn't catch/i);
+    assert.doesNotMatch(instruction, /thank you for calling/i);
   } finally {
     h.restore();
   }
@@ -1094,7 +1277,7 @@ test('a pause after a schedule lead-in waits for and combines the exact time', a
   }
 });
 
-test('transcription failure produces a useful retry prompt instead of silence', async () => {
+test('transcription failure falls back to the live model\'s native audio understanding', async () => {
   const h = await createHarness({ incompleteTurnRecoveryMs: 20 });
   try {
     await finishSpeech(h.socket, {
@@ -1105,12 +1288,23 @@ test('transcription failure produces a useful retry prompt instead of silence', 
     const before = responseCreates(h.socket).length;
     h.socket.receive({
       type: 'conversation.item.input_audio_transcription.failed',
+      item_id: 'failed-sidecar-transcription',
       error: { message: 'transcription unavailable' },
     });
-    await wait(80);
     assert.equal(responseCreates(h.socket).length, before + 1);
-    assert.match(latestResponse(h.socket).response.instructions, /didn't catch that/i);
-    assert.match(latestResponse(h.socket).response.instructions, /what kind of work/i);
+    assert.equal(latestResponse(h.socket).response.tool_choice.name, 'analyze_caller_turn');
+    assert.match(latestResponse(h.socket).response.instructions, /latest caller audio.*primary evidence/i);
+
+    await finishAnalysis(h.socket, {
+      responseId: 'failed-sidecar-native-analysis',
+      args: analysis({
+        heard_text: 'I need the outside of my house painted.',
+        service_status: 'complete',
+        fields: { service: 'Exterior Painting' },
+      }),
+    });
+    assert.match(latestResponse(h.socket).response.instructions, /what name should I use/i);
+    assert.equal(h.receptionist.snapshot().state.values.service, 'Exterior Painting');
     assert.match(h.errors[0].message, /transcription unavailable/i);
   } finally {
     h.restore();
