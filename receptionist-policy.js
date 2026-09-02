@@ -12,7 +12,7 @@ export const INTAKE_FIELD_ORDER = Object.freeze([
 export const SERVICE_QUESTION = 'What kind of work are you looking to have done?';
 export const NAME_QUESTION = 'What name should I use for the service request?';
 export const PROJECT_ADDRESS_QUESTION = "What's the full address where the service is needed?";
-export const SCHEDULE_QUESTION = 'What date and exact time would you prefer for the service request?';
+export const SCHEDULE_QUESTION = 'What day or date works best, and would you prefer morning or afternoon?';
 export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes and/or business questions?';
 export const MORE_NOTES_PROMPT = 'Do you have any other notes or business questions?';
 export const ADDITIONAL_NOTES_DETAILS_PROMPT = 'What notes or business questions would you like me to add?';
@@ -20,7 +20,7 @@ export const UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that 
 export const DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know that, but you can submit a service request.";
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 export const SUBMISSION_START_RESPONSE = "I'm sending it in now.";
-export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted.";
+export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted. If it's accepted, the business owner will follow up to confirm the exact date and time.";
 export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the service request.";
 
 const STANDALONE_BACKCHANNELS = new Set([

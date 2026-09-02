@@ -289,7 +289,7 @@ async function advanceHarnessToScheduleQuestion(socket, { idPrefix = 'schedule-p
         address_status: 'complete',
         fields: { address: '123 Main Street, Albany, New York' },
       }),
-      speech: 'Got it. What date and exact time would you prefer for the service request?',
+      speech: 'Got it. What day or date works best, and would you prefer morning or afternoon?',
     },
   ];
 
@@ -338,12 +338,12 @@ async function advanceHarnessToSummaryRequest(socket, {
         address_status: 'complete',
         fields: { address: '123 Main Street, Albany, New York' },
       }),
-      speech: 'Got it. What date and exact time would you prefer for the service request?',
+      speech: 'Got it. What day or date works best, and would you prefer morning or afternoon?',
     },
     {
-      callerText: 'Tuesday, August 11, 2099 at 2 PM.',
+      callerText: 'Tuesday, August 11, 2099 in the afternoon.',
       args: analysis({
-        fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
+        fields: { preferred_date: 'August 11 2099', preferred_time: 'afternoon' },
       }),
       speech: 'Okay, sounds good. Do you have any additional notes and/or business questions?',
     },
@@ -389,7 +389,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.output.voice, 'marin');
   assert.deepEqual(event.session.audio.input.transcription, {
     model: 'gpt-live-transcribe',
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning, afternoon, evening, or night, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
     keywords: ['Tabor Painting', 'Exterior Painting', 'Interior Painting'],
     languages: ['en'],
   });
@@ -412,13 +412,13 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /only when the supplied business information explicitly supports/i);
   assert.match(prompt, /owner-supplied Title\/Info item/i);
   assert.match(prompt, /One year on labor/i);
-  assert.match(prompt, /never claim that a particular date or time is available/i);
+  assert.match(prompt, /not proof that a specific date or time is open/i);
   assert.match(prompt, /AI receptionist working for Tabor Painting, managed by ARC Client Center/i);
   assert.match(prompt, /call it once without speaking/i);
   assert.match(prompt, /only a question repeated after the caller-silence delay yields/i);
-  assert.match(prompt, /keep the caller's name, address, date, time, and yes\/no meaning literal/i);
+  assert.match(prompt, /keep the caller's name, address, day, time-window words, and yes\/no meaning literal/i);
   assert.match(prompt, /simplify only owner-facing notes and business questions/i);
-  assert.match(prompt, /never duplicate the structured service, name, address, date, or time in notes/i);
+  assert.match(prompt, /never duplicate the structured service, name, address, preferred day, or time window in notes/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
 });
 
@@ -430,7 +430,9 @@ test('demo session is neutral, accepts every trade, and contains no Tabor Painti
   assert.match(prompt, /not representing any real business/i);
   assert.match(prompt, /accept any substantive description of requested work/i);
   assert.match(prompt, /painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade/i);
-  assert.match(prompt, /Monday through Friday and times from 9:00 AM through 5:00 PM/i);
+  assert.match(prompt, /service-request days only Monday through Friday/i);
+  assert.match(prompt, /morning or afternoon works better/i);
+  assert.match(prompt, /never request an exact clock time or AM\/PM/i);
   assert.match(prompt, /classify every separate business-information question as unanswerable/i);
   assert.match(prompt, /demo information is never submitted or saved/i);
   assert.doesNotMatch(prompt, /Tabor Painting|Interior Painting|Exterior Painting|Wood Staining/i);
@@ -544,7 +546,7 @@ test('demo ends immediately after confirmation without saving or claiming submis
     });
     await finishSpeech(h.socket, {
       responseId: 'demo-summary',
-      transcript: "Okay, here's the summary. Jordan Smith is requesting AC repair at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting AC repair at 123 Main Street, Albany, New York. The preferred day and time window is Tuesday, August 11, 2099, afternoon. Does that all sound right?",
     });
     caller(h.socket, 'Yes.', 'demo-summary-confirmation');
 
@@ -656,7 +658,7 @@ test('one final summary supplies both the spoken readback and the saved bullet s
 
     await finishSpeech(h.socket, {
       responseId: 'dedicated-final-summary-readback',
-      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: Rear siding is peeling. The back gate is locked. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred day and time window is Tuesday, August 11, 2099, afternoon. The notes are: Rear siding is peeling. The back gate is locked. Does that all sound right?",
     });
     caller(h.socket, 'Yes.', 'dedicated-final-summary-confirmation');
     assert.match(latestResponse(h.socket).response.instructions, /I'm sending it in now/i);
@@ -670,7 +672,7 @@ test('one final summary supplies both the spoken readback and the saved bullet s
     assert.equal(deliveries[0].additionalNotes, 'Rear siding is peeling. The back gate is locked.');
     assert.equal(deliveries[0].requestSummary, [
       '- Service: Exterior Painting',
-      '- Preferred time: Tuesday, August 11, 2099 at 2:00 PM',
+      '- Preferred window: Tuesday, August 11, 2099 — Afternoon',
       '- Address: 123 Main Street, Albany, New York',
       '- Notes: Rear siding is peeling. The back gate is locked.',
     ].join('\n'));
@@ -807,17 +809,17 @@ test('a complete call collects, confirms, submits once, reports success, and end
         fields: { address: '123 Main Street, Albany, New York' },
       }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /date and exact time/i);
+    assert.match(latestResponse(h.socket).response.instructions, /day or date.*morning or afternoon/i);
     await finishSpeech(h.socket, {
       responseId: 'ask-schedule',
-      transcript: 'Got it. What date and exact time would you prefer for the service request?',
+      transcript: 'Got it. What day or date works best, and would you prefer morning or afternoon?',
     });
 
-    caller(h.socket, 'Tuesday, August 11, 2099 at 2 PM.', 'caller-schedule');
+    caller(h.socket, 'Tuesday, August 11, 2099 in the afternoon.', 'caller-schedule');
     await finishAnalysis(h.socket, {
       responseId: 'analysis-schedule',
       args: analysis({
-        fields: { preferred_date: 'August 11 2099', preferred_time: '2 PM' },
+        fields: { preferred_date: 'August 11 2099', preferred_time: 'afternoon' },
       }),
     });
     assert.match(latestResponse(h.socket).response.instructions, /additional notes/i);
@@ -872,7 +874,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(latestResponse(h.socket).response.max_output_tokens, 4_096);
     await finishSpeech(h.socket, {
       responseId: 'summary',
-      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred date and time is Tuesday, August 11, 2099 at 2:00 PM. The notes are: Paint the exterior of the house. The lawn is bumpy, so look out. Does that all sound right?",
+      transcript: "Okay, here's the summary. Jordan Smith is requesting Exterior Painting at 123 Main Street, Albany, New York. The preferred day and time window is Tuesday, August 11, 2099, afternoon. The notes are: Paint the exterior of the house. The lawn is bumpy, so look out. Does that all sound right?",
     });
 
     caller(h.socket, 'Yes, that all sounds right.', 'caller-summary');
@@ -887,7 +889,8 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(deliveries[0].payload.service, 'Exterior Painting');
     assert.equal(deliveries[0].payload.name, 'Jordan Smith');
     assert.equal(deliveries[0].payload.address, '123 Main Street, Albany, New York');
-    assert.equal(deliveries[0].payload.requestedTime, '2:00 PM');
+    assert.equal(deliveries[0].payload.requestedTimeWindow, 'Afternoon');
+    assert.equal(deliveries[0].payload.requestedTime, 'Afternoon');
     assert.equal(
       deliveries[0].payload.additionalNotes,
       'Paint the exterior of the house. The lawn is bumpy, so look out.',
@@ -896,7 +899,7 @@ test('a complete call collects, confirms, submits once, reports success, and end
       deliveries[0].payload.requestSummary,
       [
         '- Service: Exterior Painting',
-        '- Preferred time: Tuesday, August 11, 2099 at 2:00 PM',
+        '- Preferred window: Tuesday, August 11, 2099 — Afternoon',
         '- Address: 123 Main Street, Albany, New York',
         '- Notes: Paint the exterior of the house. The lawn is bumpy, so look out.',
       ].join('\n'),
@@ -905,9 +908,10 @@ test('a complete call collects, confirms, submits once, reports success, and end
     assert.equal(h.submitted.length, 1);
 
     assert.match(latestResponse(h.socket).response.instructions, /request has been submitted/i);
+    assert.match(latestResponse(h.socket).response.instructions, /If it's accepted, the business owner will follow up to confirm the exact date and time/i);
     await finishSpeech(h.socket, {
       responseId: 'success',
-      transcript: "You're all set. Your service request has been submitted.",
+      transcript: "You're all set. Your service request has been submitted. If it's accepted, the business owner will follow up to confirm the exact date and time.",
     });
     assert.match(
       latestResponse(h.socket).response.instructions,
@@ -1241,7 +1245,7 @@ test('a split caller sentence is recombined even when the first analysis already
   }
 });
 
-test('a pause after a schedule lead-in waits for and combines the exact time', async () => {
+test('a pause after a schedule lead-in waits for and combines the time preference', async () => {
   const h = await createHarness({ incompleteTurnRecoveryMs: 200 });
   try {
     await advanceHarnessToScheduleQuestion(h.socket, { idPrefix: 'paused-schedule' });
@@ -1602,7 +1606,7 @@ test('a newer caller turn supersedes stale analysis before the receptionist can 
       args: analysis({ turn_status: 'background_speech' }),
     });
 
-    assert.match(latestResponse(h.socket).response.instructions, /date and exact time/i);
+    assert.match(latestResponse(h.socket).response.instructions, /day or date.*morning or afternoon/i);
     assert.equal(
       h.receptionist.snapshot().state.values.address,
       '197 Lancaster Road, Berlin, Massachusetts',
@@ -1619,7 +1623,7 @@ test('a newer caller turn supersedes stale analysis before the receptionist can 
   }
 });
 
-test('silence repeats the AM-or-PM clarification instead of replacing it with a generic time question', async () => {
+test('silence repeats the morning-or-afternoon clarification', async () => {
   const h = await createHarness({
     context: {
       ...CONTEXT,
@@ -1653,7 +1657,7 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
           address_status: 'complete',
           fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
         }),
-        speech: 'Got it. What date and exact time would you prefer for the service request?',
+        speech: 'Got it. What day or date works best, and would you prefer morning or afternoon?',
       },
     ];
     for (const [index, step] of steps.entries()) {
@@ -1675,10 +1679,10 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
         fields: { preferred_date: 'Next Monday', preferred_time: '6' },
       }),
     });
-    assert.match(latestResponse(h.socket).response.instructions, /Do you mean AM or PM\?/i);
+    assert.match(latestResponse(h.socket).response.instructions, /Would morning or afternoon work better\?/i);
     await finishSpeech(h.socket, {
       responseId: 'meridiem-clarification',
-      transcript: 'Do you mean AM or PM?',
+      transcript: 'Would morning or afternoon work better?',
       audio: '',
     });
 
@@ -1686,8 +1690,8 @@ test('silence repeats the AM-or-PM clarification instead of replacing it with a 
     await wait(80);
     assert.equal(responseCreates(h.socket).length, beforeRepeat + 1);
     const retry = latestResponse(h.socket).response.instructions;
-    assert.match(retry, /Do you mean AM or PM\?/i);
-    assert.doesNotMatch(retry, /What time would work best/i);
+    assert.match(retry, /Would morning or afternoon work better\?/i);
+    assert.doesNotMatch(retry, /AM or PM|exact time/i);
     assert.equal(h.errors.length, 0);
   } finally {
     h.restore();

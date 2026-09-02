@@ -6,6 +6,7 @@ import {
   normalizeCallerName,
   normalizeProjectAddress,
   normalizeRequestedTime,
+  normalizeRequestedTimeWindow,
   resolveRequestedDate,
   sanitizeAdditionalNotes,
 } from '../intake.js';
@@ -28,7 +29,7 @@ const VALID_DRAFT = Object.freeze({
   name: 'Jordan Smith',
   address: '123 Main Street, Albany, NY 12207',
   preferred_date: 'Tuesday',
-  preferred_time: '3:30 PM',
+  preferred_time: 'afternoon',
   additional_notes: '',
   additional_notes_asked: true,
   consent_to_contact: true,
@@ -69,38 +70,34 @@ test('accepts a spoken day of the month and resolves its next occurrence', () =>
   assert.equal(ordinal.spokenDate, 'Monday, August 10, 2026');
 });
 
-test('requires AM or PM for an ambiguous time', () => {
-  assert.throws(() => normalizeRequestedTime('3:30'), /AM or PM/);
-  assert.equal(normalizeRequestedTime('3:30 pm'), '3:30 PM');
+test('asks for a broad window when a clock time is ambiguous', () => {
+  assert.throws(() => normalizeRequestedTimeWindow('3:30'), /morning or afternoon/i);
+  assert.equal(normalizeRequestedTimeWindow('3:30 pm'), 'Afternoon');
+  assert.equal(normalizeRequestedTime('3:30 pm'), 'Afternoon');
 });
 
-test('always requires AM or PM for a bare hour and understands spoken dayparts', () => {
-  assert.throws(() => normalizeRequestedTime('1', CONTEXT), /AM or PM/);
-  assert.throws(() => normalizeRequestedTime('9', CONTEXT), /AM or PM/);
-  assert.throws(() => normalizeRequestedTime('nine', CONTEXT), /AM or PM/);
-  assert.equal(normalizeRequestedTime('nine am', CONTEXT), '9:00 AM');
-  assert.equal(normalizeRequestedTime('10 a.m.', CONTEXT), '10:00 AM');
-  assert.equal(normalizeRequestedTime('7 in the morning', CONTEXT), '7:00 AM');
-  assert.equal(normalizeRequestedTime('7 in the afternoon', CONTEXT), '7:00 PM');
-  assert.equal(normalizeRequestedTime('7 in the evening', CONTEXT), '7:00 PM');
-  assert.equal(normalizeRequestedTime('10 at night', CONTEXT), '10:00 PM');
+test('normalizes broad preferences and volunteered exact times to time windows', () => {
+  assert.throws(() => normalizeRequestedTimeWindow('1'), /morning or afternoon/i);
+  assert.throws(() => normalizeRequestedTimeWindow('nine'), /morning or afternoon/i);
+  assert.equal(normalizeRequestedTimeWindow('nine am'), 'Morning');
+  assert.equal(normalizeRequestedTimeWindow('10 a.m.'), 'Morning');
+  assert.equal(normalizeRequestedTimeWindow('7 in the morning'), 'Morning');
+  assert.equal(normalizeRequestedTimeWindow('3 in the afternoon'), 'Afternoon');
+  assert.equal(normalizeRequestedTimeWindow('after lunch'), 'Afternoon');
+  assert.equal(normalizeRequestedTimeWindow('either morning or afternoon'), 'Flexible');
+  assert.throws(() => normalizeRequestedTimeWindow('in the evening'), /morning or afternoon/i);
 });
 
-test('an explicit daypart outside the service-request window asks for a valid time', () => {
-  assert.throws(
-    () => {
-      const time = normalizeRequestedTime('6 in the afternoon', CONTEXT);
-      const manager = createIntakeManager({
-        context: CONTEXT,
-        callControlId: 'call-123',
-        callerPhone: '+15555550123',
-        deliver: async () => ({ ok: true }),
-        now: () => NOW,
-      });
-      manager.prepare({ ...VALID_DRAFT, preferred_time: time });
-    },
-    /outside the business's service-request hours.*9:00 AM through 4:00 PM/i,
-  );
+test('a volunteered clock time becomes a preference rather than a promised slot', () => {
+  const manager = createIntakeManager({
+    context: CONTEXT,
+    callControlId: 'call-123',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true }),
+    now: () => NOW,
+  });
+  const prepared = manager.prepare({ ...VALID_DRAFT, preferred_time: '6 PM' });
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, afternoon');
 });
 
 test('normalizes conversational names and maps natural service wording without a trade rule', () => {
@@ -182,7 +179,7 @@ test('blocks preparation until notes and standalone consent gates are complete',
   );
 });
 
-test('rejects service-request dates and times outside the business availability', () => {
+test('rejects days outside availability while accepting broad time windows', () => {
   const createManager = () => createIntakeManager({
     context: CONTEXT,
     callControlId: 'call-123',
@@ -195,16 +192,12 @@ test('rejects service-request dates and times outside the business availability'
     () => createManager().prepare({ ...VALID_DRAFT, preferred_date: 'Sunday' }),
     /outside the business's service-request days.*Monday.*Friday/i,
   );
-  assert.throws(
-    () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '5:00 PM' }),
-    /outside the business's service-request hours.*9:00 AM through 4:00 PM/i,
-  );
   assert.doesNotThrow(
-    () => createManager().prepare({ ...VALID_DRAFT, preferred_time: '4:00 PM' }),
+    () => createManager().prepare({ ...VALID_DRAFT, preferred_time: 'afternoon' }),
   );
 });
 
-test('an explicit AM time outside a custom window repeats the accepted hours', () => {
+test('configured clock hours do not turn a caller preference into an exact appointment', () => {
   const manager = createIntakeManager({
     context: {
       ...CONTEXT,
@@ -217,10 +210,8 @@ test('an explicit AM time outside a custom window repeats the accepted hours', (
     now: () => NOW,
   });
 
-  assert.throws(
-    () => manager.prepare({ ...VALID_DRAFT, preferred_time: '1:00 AM' }),
-    /outside the business's service-request hours.*6:00 AM through 7:00 PM/i,
-  );
+  const prepared = manager.prepare({ ...VALID_DRAFT, preferred_time: '1:00 AM' });
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, morning');
 });
 
 test('prepares, confirms, and sends one normalized request to ARC', async () => {
@@ -248,12 +239,12 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
     'name',
     'service',
     'address',
-    'preferredDateAndTime',
+    'preferredDayAndTimeWindow',
     'notes',
   ]);
   assert.equal(
-    prepared.summary.preferredDateAndTime,
-    'Tuesday, August 4, 2026 at 3:30 PM',
+    prepared.summary.preferredDayAndTimeWindow,
+    'Tuesday, August 4, 2026, afternoon',
   );
   assert.equal(prepared.summary.notes, 'The living room has vaulted ceilings.');
   assert.equal('consentToContact' in prepared.summary, false);
@@ -272,12 +263,13 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.requestType, 'service_request');
   assert.equal(deliveries[0].payload.service, 'Interior Painting');
   assert.equal(deliveries[0].payload.requestedDate, '2026-08-04');
-  assert.equal(deliveries[0].payload.requestedTime, '3:30 PM');
+  assert.equal(deliveries[0].payload.requestedTimeWindow, 'Afternoon');
+  assert.equal(deliveries[0].payload.requestedTime, 'Afternoon');
   assert.equal(
     deliveries[0].payload.requestSummary,
     [
       '- Service: Interior Painting',
-      '- Preferred time: Tuesday, August 4, 2026 at 3:30 PM',
+      '- Preferred window: Tuesday, August 4, 2026 — Afternoon',
       '- Address: 123 Main Street, Albany, NY 12207',
       '- Notes: The living room has vaulted ceilings.',
     ].join('\n'),
@@ -288,8 +280,10 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.Phone, '+15555550123');
   assert.equal(deliveries[0].payload.Address, '123 Main Street, Albany, NY 12207');
   assert.equal(deliveries[0].payload.Job, 'Interior Painting');
+  assert.equal(deliveries[0].payload.PreferredDay, '2026-08-04');
   assert.equal(deliveries[0].payload.PreferredDate, '2026-08-04');
-  assert.equal(deliveries[0].payload.PreferredTime, '3:30 PM');
+  assert.equal(deliveries[0].payload.PreferredTimeWindow, 'Afternoon');
+  assert.equal(deliveries[0].payload.PreferredTime, 'Afternoon');
   assert.equal(deliveries[0].payload.Notes, 'The living room has vaulted ceilings.');
   assert.equal(deliveries[0].payload.RequestSummary, deliveries[0].payload.requestSummary);
   assert.match(deliveries[0].options.idempotencyKey, /^[a-f0-9]{64}$/);

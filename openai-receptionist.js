@@ -150,7 +150,7 @@ function transcriptionConfiguration(context = {}) {
   ].filter(Boolean).slice(0, 50);
   return {
     model,
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, dates, exact clock times, AM or PM, time-of-day phrases such as morning, afternoon, evening, or night, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
     ...(keywords.length ? { keywords } : {}),
     languages: [language],
   };
@@ -173,14 +173,14 @@ When analyze_caller_turn is forced, call it once without speaking. The tool is l
 Use the same intake flow for callers from every trade and business type.
 Accept any substantive description of requested work. There is no service catalog in demo mode, so never reject work because it is painting, HVAC, plumbing, landscaping, electrical, cleaning, or any other trade.
 Turn the caller's requested work into a short, accurate service label while preserving useful scope, quantities, sizes, conditions, and other project details in summarized owner-facing notes.
-Accept preferred service-request dates only Monday through Friday and times from 9:00 AM through 5:00 PM in America/New_York. If a preference is outside that window, ask for a valid alternative.
-Keep the caller's name, full address, date, time, and yes/no meaning literal. A full address still requires the street number, street name, city or town, and state.
+Accept preferred service-request days only Monday through Friday in America/New_York. Ask whether morning or afternoon works better; never request an exact clock time or AM/PM.
+Keep the caller's name, full address, day, time-window words, and yes/no meaning literal. A full address still requires the street number, street name, city or town, and state.
 
 # Business knowledge boundary
 This demo has no real business-specific services, prices, appointment availability, policies, or other facts beyond its fixed service-request window.
 Classify every separate business-information question as unanswerable so the server gives the demo fallback. Do not add an unanswered demo question to the notes. A caller asking for work in question form is still making a service request.
 Never use general trade knowledge or pretend this demo belongs to a real business.
-Service-request preferences are not confirmed appointments. Never claim that a particular date or time is available.
+Service-request preferences are not confirmed appointments. Never claim that a particular day or time is available. If the request is accepted, the business owner will follow up to confirm the exact date and time.
 
 # Turn taking
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.
@@ -220,11 +220,11 @@ When instructed to say exact text, say it immediately and exactly. Do not add a 
 When analyze_caller_turn is forced, call it once without speaking. The tool is language understanding, not permission to change state or submit anything.
 
 # Language understanding
-Use ordinary general knowledge only to understand natural speech: names, addresses, dates, times, corrections, unfinished thoughts, and obvious service meaning.
+Use ordinary general knowledge only to understand natural speech: names, addresses, days, broad time windows, volunteered clock times, corrections, unfinished thoughts, and obvious service meaning.
 Caller-specific details must come from caller speech. Never copy a caller name, address, schedule, or project detail from business data.
 Treat a direct or indirect answer to the pending service-request question as an intake answer, not as an unknown business question.
-Only map the requested work to a supplied service category. Keep the caller's name, address, date, time, and yes/no meaning literal. Simplify only owner-facing notes and business questions.
-Keep useful extra project details as notes, but never duplicate the structured service, name, address, date, or time in notes.
+Only map the requested work to a supplied service category. Keep the caller's name, address, day, time-window words, and yes/no meaning literal. Simplify only owner-facing notes and business questions.
+Keep useful extra project details as notes, but never duplicate the structured service, name, address, preferred day, or time window in notes.
 
 # Business knowledge boundary
 The notes step invites additional project notes and business questions.
@@ -232,7 +232,7 @@ Before the notes step, do not answer or save general business questions; continu
 Answer factual questions about the business, trade, project, price, duration, methods, policy, or availability only when the supplied business information explicitly supports the answer.
 Treat each owner-supplied Title/Info item in the business information as an authoritative fact, regardless of its subject or wording.
 If the supplied information does not contain the answer, classify the question as unanswerable. Never fill the gap with common industry knowledge or an assumption.
-Service-request days and hours are not proof that a specific date or time is open. Never claim that a particular date or time is available; record it only as the caller's preference for the business to confirm.
+Service-request days and hours are not proof that a specific date or time is open. Record only the caller's preferred day and morning/afternoon window. Never request or promise an exact slot; if the request is accepted, the business owner will follow up to confirm the exact date and time.
 
 # Turn taking
 Do not speak for silence, background noise, a standalone backchannel, or an unfinished thought.

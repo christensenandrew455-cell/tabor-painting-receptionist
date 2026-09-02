@@ -70,7 +70,7 @@ test('loads the demo locally without requesting an ARC account', async () => {
   assert.equal(demo.profile.businessName, 'AI Receptionist Demo');
 });
 
-test('demo accepts any service only inside its Monday-through-Friday 9-to-5 window', () => {
+test('demo accepts any service with a Monday-through-Friday time-window preference', () => {
   const runtime = runtimeForCalledPhone({}, '+17742316164');
   const context = createBusinessContext(runtime);
   assert.equal(context.businessName, 'AI Receptionist Demo');
@@ -107,28 +107,20 @@ test('demo accepts any service only inside its Monday-through-Friday 9-to-5 wind
     () => manager.prepare({
       ...request,
       preferred_date: 'Sunday',
-      preferred_time: '2:00 PM',
+      preferred_time: 'afternoon',
     }),
     /outside the business's service-request days/i,
-  );
-  assert.throws(
-    () => manager.prepare({
-      ...request,
-      preferred_date: 'Tuesday',
-      preferred_time: '5:01 PM',
-    }),
-    /outside the business's service-request hours/i,
   );
 
   const prepared = manager.prepare({
     ...request,
     preferred_date: 'Tuesday',
-    preferred_time: '5:00 PM',
+    preferred_time: 'afternoon',
   });
 
   assert.equal(prepared.ok, true);
   assert.equal(prepared.summary.service, 'AC repair');
-  assert.equal(prepared.summary.preferredDateAndTime, 'Tuesday, August 4, 2026 at 5:00 PM');
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, afternoon');
 });
 
 test('loads every non-demo number through the unchanged ARC account path', async () => {

@@ -51,8 +51,8 @@ export function summaryInput({ draft = {}, source = {}, demo = false } = {}) {
     structured_fields_read_separately: {
       name: cleanText(draft.name),
       address: cleanText(draft.address),
-      preferred_date: cleanText(draft.preferred_date),
-      preferred_time: cleanText(draft.preferred_time),
+      preferred_day: cleanText(draft.preferred_date),
+      preferred_time_window: cleanText(draft.preferred_time),
     },
   };
 }
@@ -76,7 +76,7 @@ export function buildRealtimeSummaryInstructions({ draft, source, demo = false }
       : `Copy this configured service exactly into service_label: ${JSON.stringify(cleanText(draft?.service))}.`,
     'Write notes_summary as zero to two short owner-facing sentences containing only distinct caller-provided project scope, location on the property, quantity, size, condition, material, color, access, or requested-outcome details.',
     'Remove filler, false starts, repetition, transcript artifacts, and details already fully expressed by service_label.',
-    'Do not include the caller name, service address, preferred date/time, consent, or confirmation. Do not add a diagnosis, solution, object, action, or fact the caller did not provide.',
+    'Do not include the caller name, service address, preferred day/time window, consent, or confirmation. Do not add a diagnosis, solution, object, action, or fact the caller did not provide.',
     `FINAL_SUMMARY_INPUT=${JSON.stringify(summaryInput({ draft, source, demo }))}`,
   ].join('\n');
 }
@@ -100,7 +100,7 @@ export function buildSummaryRequest({ draft, source, demo = false, model } = {})
           'Write notes_summary as zero to two short, natural, owner-facing sentences.',
           'Preserve distinct scope, location on the property, quantity, size, condition, material, color, access, and requested outcome details.',
           'Remove filler, repetition, transcript artifacts, and details already fully expressed by service_label.',
-          'Do not include the caller name, service address, preferred date or time, consent, or confirmation in notes_summary because the server reads those separately.',
+          'Do not include the caller name, service address, preferred day or time window, consent, or confirmation in notes_summary because the server reads those separately.',
           'Do not diagnose a cause, prescribe a solution, substitute a different object or action, or add any fact not supported by the caller evidence.',
           'If there are no distinct project notes beyond the service label, return an empty notes_summary.',
         ].join(' '),

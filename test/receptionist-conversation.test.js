@@ -86,8 +86,8 @@ function completeThroughSchedule(conversation) {
     address_status: 'complete',
     fields: { address: '123 Main Street, Albany, New York' },
   });
-  return analyzedTurn(conversation, 'Tuesday at 1 PM.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: '1 PM' },
+  return analyzedTurn(conversation, 'Tuesday afternoon.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
   });
 }
 
@@ -100,7 +100,7 @@ function completeToSummary(conversation) {
     name: 'Jordan Smith',
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
-    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
     notes: 'None',
   });
 }
@@ -127,12 +127,12 @@ test('one authoritative state advances through the required field order exactly 
   });
   assert.equal(
     action.text,
-    'Got it. What date and exact time would you prefer for the service request?',
+    'Got it. What day or date works best, and would you prefer morning or afternoon?',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'Tuesday at 1 PM.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: '1 PM' },
+  action = analyzedTurn(conversation, 'Tuesday afternoon.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
   });
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
@@ -533,7 +533,7 @@ test('service scope and later notes stay summarized through readback and deliver
     name: 'Jordan Smith',
     service: 'Mulching',
     address: '123 Main Street, Albany, New York',
-    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
     notes: conversation.intakeArguments().additional_notes,
   });
   assert.match(readback, /Five mulch pits need to be done/);
@@ -934,7 +934,7 @@ test('a spoken schedule correction updates the locked preference and never becom
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(conversation.snapshot().values.preferredDate, '12');
-  assert.equal(conversation.snapshot().values.preferredTime, '1 PM');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
   assert.deepEqual(conversation.snapshot().notes, []);
 
   action = analyzedTurn(conversation, 'Não.');
@@ -962,7 +962,7 @@ test('an ordinal day-of-month answer completes the date instead of becoming a no
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(
     action.text,
-    'What exact time would work best for the service request?',
+    'Would morning or afternoon work better for the service request?',
   );
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -984,8 +984,8 @@ test('a question-shaped date request records only a preference and never claims 
     business_answer_status: 'unanswerable',
   });
 
-  assert.match(action.text, /put the 10th down as your preferred date/i);
-  assert.match(action.text, /business will confirm the appointment/i);
+  assert.match(action.text, /put the 10th down as your preferred day/i);
+  assert.match(action.text, /business owner will confirm the exact date and time/i);
   assert.doesNotMatch(action.text, /(?:date|10th) is available/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'the 10th');
   assert.deepEqual(conversation.snapshot().notes, []);
@@ -1010,9 +1010,9 @@ test('service-request-window questions use app constraints without promising ava
 
   assert.match(action.text, /accepts service requests/i);
   assert.match(action.text, /9:00 AM to 4:00 PM/i);
-  assert.match(action.text, /business will confirm the request/i);
+  assert.match(action.text, /business owner will follow up to confirm the exact date and time/i);
   assert.doesNotMatch(action.text, /available/i);
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /preferred day.*morning or afternoon/i);
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -1050,7 +1050,7 @@ test('field reason questions get a short explanation and repeat only the pending
     fields: { address: '123 Main Street, Albany, New York' },
   });
   action = analyzedTurn(conversation, 'Why do you need the date and time?');
-  assert.match(action.text, /preferred day and time.*What date and exact time/i);
+  assert.match(action.text, /preferred day and time window.*day or date.*morning or afternoon/i);
 
   analyzedTurn(conversation, 'Tuesday at 2 PM.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '2 PM' },
@@ -1271,7 +1271,7 @@ test('a literal caller name advances even when analysis incorrectly calls it uni
   assert.equal(conversation.snapshot().pendingField, 'address');
 });
 
-test('a bare hour always asks for AM or PM and a meridiem-only reply completes it', () => {
+test('a bare hour asks for a morning-or-afternoon window and a window reply completes it', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1288,12 +1288,12 @@ test('a bare hour always asks for AM or PM and a meridiem-only reply completes i
   let action = analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
   });
-  assert.equal(action.text, 'Do you mean AM or PM?');
+  assert.equal(action.text, 'Would morning or afternoon work better?');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'PM.');
+  action = analyzedTurn(conversation, 'Afternoon.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '1 pm');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1314,14 +1314,14 @@ test('a natural daypart-only clarification completes a previously bare hour', ()
   let action = analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
   });
-  assert.equal(action.text, 'Do you mean AM or PM?');
+  assert.equal(action.text, 'Would morning or afternoon work better?');
 
   action = analyzedTurn(conversation, 'In the afternoon.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '1 pm');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
 });
 
-test('a noisy ASR meridiem reply completes the saved hour without asking for it again', () => {
+test('a noisy ASR window reply completes the preference without asking again', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1338,12 +1338,12 @@ test('a noisy ASR meridiem reply completes the saved hour without asking for it 
   let action = analyzedTurn(conversation, 'Tuesday at 10.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '10' },
   });
-  assert.equal(action.text, 'Do you mean AM or PM?');
+  assert.equal(action.text, 'Would morning or afternoon work better?');
 
-  action = analyzedTurn(conversation, 'You AM.');
+  action = analyzedTurn(conversation, 'You morning.');
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /exact time|AM or PM/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '10 am');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Morning');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1367,14 +1367,14 @@ test('Tuesday at 3 in the afternoon advances when the analyzer drops the time', 
 
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
-  assert.equal(conversation.snapshot().values.preferredTime, '3 in the afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
 test('an explicit AM or morning phrase wins when analysis drops the time of day', () => {
   for (const [transcript, expectedTime] of [
-    ['Tuesday at 10 a.m.', '10 am'],
-    ['Tuesday sometime in the morning, like 10 in the morning.', '10 in the morning'],
+    ['Tuesday at 10 a.m.', 'Morning'],
+    ['Tuesday sometime in the morning, like 10 in the morning.', 'Morning'],
   ]) {
     const conversation = createReceptionistConversation({ context: CONTEXT });
     analyzedTurn(conversation, 'Exterior painting.', {
@@ -1400,7 +1400,7 @@ test('an explicit AM or morning phrase wins when analysis drops the time of day'
   }
 });
 
-test('a bare time-only reply asks for AM or PM after saving the date', () => {
+test('a bare time-only reply asks for morning or afternoon after saving the date', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1419,16 +1419,16 @@ test('a bare time-only reply asks for AM or PM after saving the date', () => {
   });
   assert.equal(
     action.text,
-    'What exact time would work best for the service request?',
+    'Would morning or afternoon work better for the service request?',
   );
 
   action = analyzedTurn(conversation, '3.');
-  assert.equal(action.text, 'Do you mean AM or PM?');
+  assert.equal(action.text, 'Would morning or afternoon work better?');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'PM.');
+  action = analyzedTurn(conversation, 'Afternoon.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '3 pm');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1453,11 +1453,11 @@ test('a clearly spoken exact time wins over a false unintelligible analysis', ()
 
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /didn't catch|what time would work best/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '3 pm');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
-test('an exact time stays structured while a separate timing detail becomes a concise note', () => {
+test('a volunteered exact time becomes a window while a separate timing detail becomes a concise note', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1479,12 +1479,12 @@ test('an exact time stays structured while a separate timing detail becomes a co
   );
 
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, '9 a.m.');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Morning');
   assert.deepEqual(conversation.snapshot().notes, ['Can come an hour earlier.']);
   assert.doesNotMatch(conversation.snapshot().notes.join(' '), /9\s*a\.?m/i);
 });
 
-test('a bare hour asks for AM or PM before checking the service-request window', () => {
+test('a broad preference is recorded without treating configured hours as an exact slot', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Interior painting.', {
     service_status: 'complete',
@@ -1501,15 +1501,12 @@ test('a bare hour asks for AM or PM before checking the service-request window',
   let action = analyzedTurn(conversation, 'Next Monday at 6.', {
     fields: { preferred_date: 'Next Monday', preferred_time: '6' },
   });
-  assert.equal(action.text, 'Do you mean AM or PM?');
+  assert.equal(action.text, 'Would morning or afternoon work better?');
 
-  action = analyzedTurn(conversation, 'PM.');
-  assert.equal(
-    action.text,
-    "I'm sorry, I need a time between 9:00 AM and 4:00 PM. What time in that range would you prefer?",
-  );
+  action = analyzedTurn(conversation, 'Afternoon.');
+  assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'Next Monday');
-  assert.equal(conversation.snapshot().values.preferredTime, '');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
 });
 
 test('an unavailable day stays pending with a useful replacement question', () => {
@@ -2005,7 +2002,7 @@ test('a summary correction wins over a leading yes and cannot accidentally submi
   assert.equal(conversation.snapshot().values.address, '456 Oak Avenue, Albany, New York');
 });
 
-test('correcting only the summary time preserves the already confirmed day', () => {
+test('correcting only the summary time window preserves the already confirmed day', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeToSummary(conversation);
   const action = analyzedTurn(conversation, 'No, make that 3 PM.', {
@@ -2015,7 +2012,7 @@ test('correcting only the summary time preserves the already confirmed day', () 
   });
   assert.equal(action.type, 'prepare');
   assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
-  assert.equal(conversation.snapshot().values.preferredTime, '3 PM');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
 });
 
 test('only a separate yes to the complete readback permits submission', () => {
@@ -2031,7 +2028,7 @@ test('summary speech omits empty notes and includes actual notes once', () => {
     name: 'Jordan Smith',
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
-    preferredDateAndTime: 'Tuesday, August 11, 2099 at 1:00 PM',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
   };
   const empty = buildSummarySpeech({ ...base, notes: 'None' });
   assert.doesNotMatch(empty, /notes/i);

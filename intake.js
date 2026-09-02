@@ -27,21 +27,6 @@ const MONTHS = Object.freeze({
   december: 12,
 });
 
-const SPOKEN_HOURS = Object.freeze({
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12,
-});
-
 function fail(message, field = '') {
   const error = new Error(message);
   error.field = field;
@@ -201,95 +186,40 @@ export function resolveRequestedDate(value, { now = new Date(), timeZone = 'Amer
   return Object.freeze({ input: cleanText(value), exactDate, spokenDate });
 }
 
-export function normalizeRequestedTime(value, context = {}) {
-  let input = cleanText(value)
+export function normalizeRequestedTimeWindow(value) {
+  const input = cleanText(value)
     .toLowerCase()
     .replace(/\./g, '')
-    .replace(/\bo\s*'?clock\b/g, '')
-    .replace(/^(?:at|around|about)\s+/, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!input) fail('Ask the caller for their preferred service-request time.', 'preferred_time');
-
-  const dayparts = [...input.matchAll(/\b(morning|afternoon|evening|night)\b/g)]
-    .map((match) => (match[1] === 'morning' ? 'am' : 'pm'));
-  const daypartMeridiems = new Set(dayparts);
-  if (daypartMeridiems.size > 1) {
-    fail('That time of day was unclear. Ask whether they mean AM or PM.', 'preferred_time');
-  }
-  const daypartMeridiem = [...daypartMeridiems][0] || '';
-  if (daypartMeridiem) {
-    const explicitMeridiem = input.match(/\b(am|pm)\b/)?.[1] || '';
-    if (explicitMeridiem && explicitMeridiem !== daypartMeridiem) {
-      fail('That time of day conflicts with AM or PM. Ask which one they mean.', 'preferred_time');
-    }
-    input = input
-      .replace(/\b(?:(?:in|during)\s+(?:the\s+)?|(?:this|that)\s+|at\s+)?(?:morning|afternoon|evening|night)\b/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!explicitMeridiem) input = `${input} ${daypartMeridiem}`.trim();
-  }
-  if (input === 'noon') input = '12 pm';
-  if (input === 'midnight') input = '12 am';
-
-  const spoken = input.match(/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s*(am|pm))?$/);
-  if (spoken) {
-    input = `${SPOKEN_HOURS[spoken[1]]}${spoken[2] ? ` ${spoken[2]}` : ''}`;
+  if (!input) {
+    fail('Ask whether the caller prefers morning or afternoon.', 'preferred_time');
   }
 
-  const match = input.match(/^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)?$/);
-  if (!match) fail('That time was unclear. Ask what time they prefer.', 'preferred_time');
-
-  let hour = Number(match[1]);
-  const minute = Number(match[2] || 0);
-  const meridiem = match[3];
-  if (!meridiem && hour >= 1 && hour <= 12) {
-    fail('Ask the caller whether that time is AM or PM.', 'preferred_time');
+  if (/\b(?:any ?time|either|no preference|whenever|flexible)\b/.test(input)
+    || /\bmorning\s+or\s+afternoon\b/.test(input)) {
+    return 'Flexible';
   }
-  if (meridiem && (hour < 1 || hour > 12)) {
-    fail('That time is invalid. Ask for a valid AM or PM time.', 'preferred_time');
-  }
-  if (!meridiem && (hour < 0 || hour > 23)) {
-    fail('That time is invalid. Ask for a valid time.', 'preferred_time');
+  if (/\b(?:evening|night|midnight|tonight)\b/.test(input)) {
+    fail('Ask whether morning or afternoon would work instead.', 'preferred_time');
   }
 
-  if (meridiem) {
-    if (hour === 12) hour = 0;
-    if (meridiem === 'pm') hour += 12;
+  const morning = /\b(?:morning|am|before lunch|first thing)\b/.test(input);
+  const afternoon = /\b(?:afternoon|pm|noon|after lunch)\b/.test(input);
+  if (morning && afternoon) {
+    fail('That time window was unclear. Ask whether morning or afternoon works better.', 'preferred_time');
   }
-  const displayHour = hour % 12 || 12;
-  const displayMeridiem = hour >= 12 ? 'PM' : 'AM';
-  return `${displayHour}:${String(minute).padStart(2, '0')} ${displayMeridiem}`;
+  if (morning) return 'Morning';
+  if (afternoon) return 'Afternoon';
+
+  if (/\b(?:\d{1,2}(?::[0-5]\d)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s+o'?clock)?\b/.test(input)) {
+    fail('Ask whether that should be recorded as morning or afternoon.', 'preferred_time');
+  }
+  fail('That time window was unclear. Ask whether morning or afternoon works better.', 'preferred_time');
 }
 
-function timeInMinutes(value) {
-  const match = cleanText(value).match(/^(1[0-2]|[1-9]):([0-5]\d)\s+(AM|PM)$/i);
-  if (!match) return null;
-  let hour = Number(match[1]) % 12;
-  if (match[3].toUpperCase() === 'PM') hour += 12;
-  return hour * 60 + Number(match[2]);
-}
-
-function businessRequestTime(value) {
-  const text = cleanText(value);
-  const twentyFourHour = text.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
-  if (twentyFourHour) {
-    const hour = Number(twentyFourHour[1]);
-    const minute = Number(twentyFourHour[2]);
-    const displayHour = hour % 12 || 12;
-    const meridiem = hour >= 12 ? 'PM' : 'AM';
-    return {
-      display: `${displayHour}:${String(minute).padStart(2, '0')} ${meridiem}`,
-      minutes: hour * 60 + minute,
-    };
-  }
-
-  try {
-    const display = normalizeRequestedTime(text);
-    return { display, minutes: timeInMinutes(display) };
-  } catch {
-    return null;
-  }
+export function normalizeRequestedTime(value) {
+  return normalizeRequestedTimeWindow(value);
 }
 
 function titleCase(value) {
@@ -304,7 +234,7 @@ function readableWeekdays(weekdays) {
   return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
 }
 
-export function validateServiceRequestAvailability(date, requestedTime, context = {}) {
+export function validateServiceRequestAvailability(date, _requestedTimeWindow, context = {}) {
   const configuredWeekdays = context.serviceRequestWeekdays || context.estimateWeekdays;
   const requestWeekdays = Array.isArray(configuredWeekdays)
     ? configuredWeekdays.map((day) => cleanText(day).toLowerCase()).filter(Boolean)
@@ -321,24 +251,6 @@ export function validateServiceRequestAvailability(date, requestedTime, context 
     );
   }
 
-  const earliest = businessRequestTime(
-    context.earliestServiceRequestStart || context.earliestEstimateStart,
-  );
-  const latest = businessRequestTime(
-    context.latestServiceRequestStart || context.latestEstimateStart,
-  );
-  const requestedMinutes = timeInMinutes(requestedTime);
-  const beforeOpening = earliest && requestedMinutes < earliest.minutes;
-  const afterClosing = latest && requestedMinutes > latest.minutes;
-  if (beforeOpening || afterClosing) {
-    const allowedHours = earliest && latest
-      ? `${earliest.display} through ${latest.display}`
-      : (earliest ? `${earliest.display} or later` : `${latest.display} or earlier`);
-    fail(
-      `${requestedTime} is outside the business's service-request hours. Ask for ${allowedHours}.`,
-      'preferred_time',
-    );
-  }
 }
 
 function normalizedService(value) {
@@ -446,8 +358,10 @@ export function normalizeServiceRequestDraft(args = {}, context, now = new Date(
     now,
     timeZone: context.timeZone,
   });
-  const requestedTime = normalizeRequestedTime(args.preferred_time, context);
-  validateServiceRequestAvailability(date, requestedTime, context);
+  const requestedTimeWindow = normalizeRequestedTimeWindow(
+    args.preferred_time_window || args.preferred_time,
+  );
+  validateServiceRequestAvailability(date, requestedTimeWindow, context);
   return Object.freeze({
     service: matchService(args.service, context.services),
     name: normalizeCallerName(args.name),
@@ -455,7 +369,8 @@ export function normalizeServiceRequestDraft(args = {}, context, now = new Date(
     requestedDateInput: date.input,
     requestedDate: date.exactDate,
     requestedDateSpoken: date.spokenDate,
-    requestedTime,
+    requestedTimeWindow,
+    requestedTime: requestedTimeWindow,
     additionalNotes: sanitizeAdditionalNotes(args.additional_notes).slice(0, 1_000),
     consentToContact: true,
     customerResistanceCount: Math.max(
@@ -470,7 +385,7 @@ export function serviceRequestSummary(draft) {
     name: draft.name,
     service: draft.service,
     address: draft.address,
-    preferredDateAndTime: `${draft.requestedDateSpoken} at ${draft.requestedTime}`,
+    preferredDayAndTimeWindow: `${draft.requestedDateSpoken}, ${draft.requestedTimeWindow.toLowerCase()}`,
     notes: draft.additionalNotes || 'None',
   });
 }
@@ -478,7 +393,7 @@ export function serviceRequestSummary(draft) {
 export function savedServiceRequestSummary(draft) {
   return [
     `- Service: ${draft.service}`,
-    `- Preferred time: ${draft.requestedDateSpoken} at ${draft.requestedTime}`,
+    `- Preferred window: ${draft.requestedDateSpoken} — ${draft.requestedTimeWindow}`,
     `- Address: ${draft.address}`,
     `- Notes: ${draft.additionalNotes || 'None'}`,
   ].join('\n');
@@ -504,6 +419,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     name: draft.name,
     address: draft.address,
     requestedDate: draft.requestedDate,
+    requestedTimeWindow: draft.requestedTimeWindow,
     requestedTime: draft.requestedTime,
     additionalNotes: draft.additionalNotes,
     requestSummary,
@@ -515,7 +431,9 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     Phone: phone,
     Address: draft.address,
     Job: draft.service,
+    PreferredDay: draft.requestedDate,
     PreferredDate: draft.requestedDate,
+    PreferredTimeWindow: draft.requestedTimeWindow,
     PreferredTime: draft.requestedTime,
     Notes: draft.additionalNotes,
     RequestSummary: requestSummary,

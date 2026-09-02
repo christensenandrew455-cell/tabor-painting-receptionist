@@ -14,7 +14,7 @@ const DRAFT = Object.freeze({
   name: 'Jordan Smith',
   address: '123 Main Street, Albany, New York',
   preferred_date: 'August 11 2099',
-  preferred_time: '2 PM',
+  preferred_time: 'Afternoon',
   additional_notes: 'Uh, the rear siding is peeling, and, you know, the back gate is locked.',
 });
 
@@ -52,7 +52,7 @@ test('the Luna request uses strict structured output and the complete caller evi
   assert.deepEqual(input.sidecar_asr_transcripts, SOURCE.callerTranscripts);
   assert.equal(input.structured_fields_read_separately.name, 'Jordan Smith');
   assert.match(request.input[0].content, /live-audio interpretations as the primary evidence/i);
-  assert.match(request.input[0].content, /Do not include the caller name, service address, preferred date or time/i);
+  assert.match(request.input[0].content, /Do not include the caller name, service address, preferred day or time window/i);
 });
 
 test('regular summaries cannot replace the configured service', () => {
@@ -83,7 +83,8 @@ test('summary input keeps structured fields separate from summarizable project e
   const input = summaryInput({ draft: DRAFT, source: SOURCE });
   assert.equal(input.current_project_notes, DRAFT.additional_notes);
   assert.equal(input.structured_fields_read_separately.address, DRAFT.address);
-  assert.equal(input.structured_fields_read_separately.preferred_time, '2 PM');
+  assert.equal(input.structured_fields_read_separately.preferred_day, 'August 11 2099');
+  assert.equal(input.structured_fields_read_separately.preferred_time_window, 'Afternoon');
 });
 
 test('the dedicated summarizer retries a temporary Responses API failure once', async () => {
