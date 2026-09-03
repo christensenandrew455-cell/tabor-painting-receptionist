@@ -230,7 +230,6 @@ async function beginCall(body, id, runtimeForward = {}) {
     connectedAt: null,
     leadSaved: false,
     openAiUsage: null,
-    transcript: [],
     phoneLookupPromise: null,
   };
   calls.set(id, call);
@@ -296,14 +295,6 @@ function endCall(id, reason = 'hangup') {
   call.receptionist?.close();
   call.receptionist = null;
   calls.delete(id);
-  if (!isDemoRuntime(call.runtime)) {
-    console.log('[Call transcript]', JSON.stringify({
-      reason: finalReason,
-      callControlId: call.id,
-      callerPhone: call.callerPhone,
-      entries: call.transcript,
-    }));
-  }
   if (call.openAiUsage) {
     console.log('[Call OpenAI usage]', JSON.stringify({
       reason: finalReason,
@@ -344,29 +335,6 @@ app.post('/voice-api-webhook', (req, res) => {
   if (type === 'call.hangup') endCall(id, calls.get(id)?.endReason || 'hangup');
 });
 
-app.post('/arc/send', async (req, res) => {
-  try {
-    const rawPayload = req.body?.payload ?? req.body;
-    const id = clean(req.body?.callControlId || rawPayload?.callControlId);
-    const call = calls.get(id);
-    const payload = call
-      ? await addRiskAssessmentToServiceRequest({
-        payload: rawPayload,
-        context: call.context,
-        phoneLookupPromise: phoneLookupForCall(call),
-      })
-      : rawPayload;
-    const data = await sendArcData(
-      call?.runtime,
-      payload,
-      { idempotencyKey: clean(req.get('Idempotency-Key')) },
-    );
-    res.json({ ok: true, data });
-  } catch (error) {
-    res.status(502).json({ ok: false, error: error.message });
-  }
-});
-
 const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
@@ -390,24 +358,6 @@ wss.on('connection', (telnyx, request) => {
     if (telnyx.readyState !== WebSocket.OPEN) return false;
     telnyx.send(JSON.stringify(value));
     return true;
-  }
-
-  function recordTranscript(entry = {}) {
-    if (!call || call.ended || isDemoRuntime(call.runtime)) return;
-    const text = String(entry.text ?? '').trim();
-    if (!text) return;
-    const saved = {
-      at: new Date().toISOString(),
-      speaker: entry.speaker === 'caller' ? 'caller' : 'receptionist',
-      text,
-      ...(clean(entry.itemId) ? { itemId: clean(entry.itemId) } : {}),
-      ...(clean(entry.responseId) ? { responseId: clean(entry.responseId) } : {}),
-    };
-    call.transcript.push(saved);
-    console.log('[Call transcript line]', JSON.stringify({
-      callControlId: call.id,
-      ...saved,
-    }));
   }
 
   function finishAfterGoodbye() {
@@ -482,7 +432,6 @@ wss.on('connection', (telnyx, request) => {
       onReady: () => {
         if (call.status === 'streaming') call.status = 'active';
       },
-      onTranscript: recordTranscript,
       onGoodbyeComplete: finishAfterGoodbye,
       onCostLimit: ({ reason }) => stopForCostLimit(call, reason),
       onUsage: (usage) => { call.openAiUsage = usage; },
