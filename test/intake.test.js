@@ -24,6 +24,22 @@ const CONTEXT = Object.freeze({
   ],
 });
 
+const EMERGENCY_CONTEXT = Object.freeze({
+  ...CONTEXT,
+  serviceRequestRouting: Object.freeze({
+    mode: 'asap-or-scheduled',
+    timingQuestion: 'Do you need help as soon as possible, or would you prefer to schedule a time?',
+    scheduled: Object.freeze({ enabled: true }),
+    emergency: Object.freeze({
+      enabled: true,
+      availability: '24/7',
+      intakeField: 'requestUrgency',
+      intakeValue: 'emergency',
+      requestedTimeWindow: 'As soon as possible',
+    }),
+  }),
+});
+
 const VALID_DRAFT = Object.freeze({
   service: 'interior painting',
   name: 'Jordan Smith',
@@ -291,4 +307,83 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   const repeated = await manager.submit({ caller_confirmed: true });
   assert.equal(repeated.status, 'already_submitted');
   assert.equal(deliveries.length, 1);
+});
+
+test('prepares and sends an explicit emergency request without inventing a scheduled date', async () => {
+  const deliveries = [];
+  const manager = createIntakeManager({
+    context: EMERGENCY_CONTEXT,
+    callControlId: 'call-emergency-123',
+    callerPhone: '+15555550123',
+    deliver: async (payload) => {
+      deliveries.push(payload);
+      return { ok: true };
+    },
+    now: () => NOW,
+  });
+
+  const prepared = manager.prepare({
+    ...VALID_DRAFT,
+    request_urgency: 'emergency',
+    preferred_date: '',
+    preferred_time: '',
+    additional_notes: 'Water is entering the basement.',
+  });
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'As soon as possible');
+
+  await manager.submit({ caller_confirmed: true });
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].requestUrgency, 'emergency');
+  assert.equal(deliveries[0].RequestUrgency, 'emergency');
+  assert.equal(deliveries[0].requestedDate, '');
+  assert.equal(deliveries[0].PreferredDay, '');
+  assert.equal(deliveries[0].requestedTimeWindow, 'As soon as possible');
+  assert.equal(deliveries[0].PreferredTimeWindow, 'As soon as possible');
+  assert.equal(
+    deliveries[0].requestSummary,
+    [
+      '- Service: Interior Painting',
+      '- Priority: Emergency / ASAP',
+      '- Preferred window: As soon as possible',
+      '- Address: 123 Main Street, Albany, NY 12207',
+      '- Notes: Water is entering the basement.',
+    ].join('\n'),
+  );
+});
+
+test('an emergency-enabled business still sends scheduled requests without urgency fields', async () => {
+  const deliveries = [];
+  const manager = createIntakeManager({
+    context: EMERGENCY_CONTEXT,
+    callControlId: 'call-scheduled-123',
+    callerPhone: '+15555550123',
+    deliver: async (payload) => {
+      deliveries.push(payload);
+      return { ok: true };
+    },
+    now: () => NOW,
+  });
+
+  manager.prepare(VALID_DRAFT);
+  await manager.submit({ caller_confirmed: true });
+
+  assert.equal('requestUrgency' in deliveries[0], false);
+  assert.equal('RequestUrgency' in deliveries[0], false);
+  assert.equal(deliveries[0].requestedDate, '2026-08-04');
+  assert.equal(deliveries[0].requestedTimeWindow, 'Afternoon');
+});
+
+test('rejects an emergency marker when ARC did not enable emergency routing', () => {
+  const manager = createIntakeManager({
+    context: CONTEXT,
+    callControlId: 'call-disabled-emergency',
+    callerPhone: '+15555550123',
+    deliver: async () => ({ ok: true }),
+    now: () => NOW,
+  });
+
+  assert.throws(
+    () => manager.prepare({ ...VALID_DRAFT, request_urgency: 'emergency' }),
+    /emergency service is not enabled/i,
+  );
 });

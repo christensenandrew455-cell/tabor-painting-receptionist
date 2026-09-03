@@ -4,6 +4,8 @@ const RECEPTIONIST_CONTROL_KEY = /^(?:(?:ai[\s_-]*)?receptionist(?:[\s_-]*name)?
 const PRIVATE_BUSINESS_DATA_KEY = /(?:phone|telephone|email)$/i;
 const OBSOLETE_BUSINESS_FACT_KEY = /^(about|extraInformation|businessHours|hours)$/i;
 const DEFAULT_MAX_KNOWLEDGE_CHARACTERS = 12_000;
+const DEFAULT_EMERGENCY_TIMING_QUESTION = 'Do you need help as soon as possible, or would you prefer to schedule a time?';
+const DEFAULT_ASAP_TIME_WINDOW = 'As soon as possible';
 const WEEKDAY_NAMES = Object.freeze([
   'sunday',
   'monday',
@@ -28,6 +30,33 @@ function knowledgeCharacterLimit() {
 
 export function cleanText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+export function normalizeServiceRequestRouting(value = {}) {
+  const routing = objectValue(value);
+  const emergency = objectValue(routing.emergency);
+  if (cleanText(routing.mode) !== 'asap-or-scheduled' || emergency.enabled !== true) {
+    return Object.freeze({
+      mode: 'scheduled-only',
+      timingQuestion: '',
+      scheduled: Object.freeze({ enabled: true }),
+    });
+  }
+
+  return Object.freeze({
+    mode: 'asap-or-scheduled',
+    timingQuestion: cleanText(routing.timingQuestion) || DEFAULT_EMERGENCY_TIMING_QUESTION,
+    scheduled: Object.freeze({ enabled: true }),
+    emergency: Object.freeze({
+      enabled: true,
+      availability: cleanText(emergency.availability) === '24/7'
+        ? '24/7'
+        : 'regular-service-hours',
+      intakeField: 'requestUrgency',
+      intakeValue: 'emergency',
+      requestedTimeWindow: cleanText(emergency.requestedTimeWindow) || DEFAULT_ASAP_TIME_WINDOW,
+    }),
+  });
 }
 
 function objectValue(value) {
@@ -305,6 +334,7 @@ function publicRuntimeData(runtime, services) {
     'serviceAreaStates',
     'serviceAreaCounties',
     'businessInformation',
+    'serviceRequestRouting',
   ];
   for (const field of topLevelFields) {
     if (runtime[field] !== undefined) selected[field] = runtime[field];
@@ -451,6 +481,13 @@ export function createBusinessContext(runtime = {}) {
     'business.county',
     'businessInfo.county',
   ]);
+  const serviceRequestRouting = normalizeServiceRequestRouting(firstValue(normalizedRuntime, [
+    'profile.serviceRequestRouting',
+    'business.serviceRequestRouting',
+    'businessInfo.serviceRequestRouting',
+    'config.serviceRequestRouting',
+    'serviceRequestRouting',
+  ]));
 
   const publicData = publicRuntimeData(normalizedRuntime, services);
   let knowledgeJson = JSON.stringify(publicData, null, 2);
@@ -473,6 +510,7 @@ export function createBusinessContext(runtime = {}) {
     serviceAreaStates: Object.freeze(serviceAreaStates),
     serviceAreaCounties: Object.freeze(serviceAreaCounties),
     businessCounty,
+    serviceRequestRouting,
     clientId: firstText(normalizedRuntime, ['clientId', 'profile.clientId', 'business.clientId']),
     services: Object.freeze(services.map((service) => Object.freeze({ ...service }))),
     businessInformation: Object.freeze(

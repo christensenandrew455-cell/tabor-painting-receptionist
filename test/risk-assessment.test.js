@@ -426,3 +426,46 @@ test('the receptionist enriches the service-request payload before ARC delivery'
   });
   assert.deepEqual(result.riskFactors, []);
 });
+
+test('service-area and phone-state mismatches survive the receptionist delivery boundary', async () => {
+  const result = await addRiskAssessmentToServiceRequest({
+    payload: {
+      type: 'service_request',
+      name: 'Jordan Smith',
+      address: '123 Main Street, Albany, NY 12207',
+      customerResistanceCount: 0,
+    },
+    context: { serviceAreas: ['Worcester County'] },
+    phoneLookupPromise: Promise.resolve({ ...VERIFIED_PHONE, state: 'MA' }),
+    googleApiKey: 'test-google-key',
+    fetchImpl: async () => jsonResponse({
+      result: {
+        verdict: { addressComplete: true, validationGranularity: 'PREMISE' },
+        address: {
+          formattedAddress: VERIFIED_ADDRESS.formattedAddress,
+          postalAddress: {
+            locality: VERIFIED_ADDRESS.locality,
+            administrativeArea: VERIFIED_ADDRESS.state,
+            postalCode: VERIFIED_ADDRESS.postalCode,
+            regionCode: 'US',
+          },
+          addressComponents: [
+            {
+              componentType: 'administrative_area_level_2',
+              componentName: { text: VERIFIED_ADDRESS.county },
+              confirmationLevel: 'CONFIRMED',
+            },
+          ],
+        },
+      },
+    }),
+  });
+
+  assert.equal(result.riskScore, 2);
+  assert.equal(result.riskAssessment.outsideServiceArea, true);
+  assert.equal(result.riskAssessment.phoneLocationMismatch, true);
+  assert.deepEqual(result.riskFactors.map((item) => item.code), [
+    'outside_service_area',
+    'phone_location_mismatch',
+  ]);
+});

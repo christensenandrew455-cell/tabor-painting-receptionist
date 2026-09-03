@@ -127,6 +127,7 @@ function analysis(overrides = {}) {
     turn_status: 'complete',
     address_status: 'not_addressed',
     service_status: 'not_addressed',
+    request_timing: 'not_answered',
     project_note: '',
     notes_complete: false,
     contact_consent: 'not_answered',
@@ -389,7 +390,7 @@ test('session uses responsive semantic turn detection without caller barge-in', 
   assert.equal(event.session.audio.output.voice, 'marin');
   assert.deepEqual(event.session.audio.input.transcription, {
     model: 'gpt-live-transcribe',
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, explicit emergency or ASAP wording, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
     keywords: ['Tabor Painting', 'Exterior Painting', 'Interior Painting'],
     languages: ['en'],
   });
@@ -419,7 +420,20 @@ test('prompt has one state owner and a short, explicit knowledge boundary', () =
   assert.match(prompt, /keep the caller's name, address, day, time-window words, and yes\/no meaning literal/i);
   assert.match(prompt, /simplify only owner-facing notes and business questions/i);
   assert.match(prompt, /never duplicate the structured service, name, address, preferred day, or time window in notes/i);
+  assert.match(prompt, /scheduled requests only/i);
   assert.doesNotMatch(prompt, /delete|blocked output|repair attempts|completedIntakeFields/i);
+
+  const emergencyPrompt = buildReceptionistInstructions({
+    ...CONTEXT,
+    serviceRequestRouting: {
+      mode: 'asap-or-scheduled',
+      timingQuestion: 'Do you need help as soon as possible, or would you prefer to schedule a time?',
+      emergency: { enabled: true, availability: '24/7' },
+    },
+  });
+  assert.match(emergencyPrompt, /Do you need help as soon as possible.*schedule a time/i);
+  assert.match(emergencyPrompt, /Only an explicit caller choice for ASAP help/i);
+  assert.match(emergencyPrompt, /Never promise dispatch, arrival, acceptance, or a response time/i);
 });
 
 test('demo session is neutral, accepts every trade, and contains no Tabor Painting rules', () => {
