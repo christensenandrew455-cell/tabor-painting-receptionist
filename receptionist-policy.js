@@ -12,6 +12,7 @@ export const INTAKE_FIELD_ORDER = Object.freeze([
 export const SERVICE_QUESTION = 'What kind of work are you looking to have done?';
 export const NAME_QUESTION = 'What name should I use for the service request?';
 export const PROJECT_ADDRESS_QUESTION = "What's the full address where the service is needed?";
+export const EMERGENCY_TIMING_QUESTION = 'Do you need help as soon as possible, or would you prefer to schedule a time?';
 export const SCHEDULE_QUESTION = 'What day or date works best, and would you prefer morning or afternoon?';
 export const ADDITIONAL_NOTES_PROMPT = 'Do you have any additional notes and/or business questions?';
 export const MORE_NOTES_PROMPT = 'Do you have any other notes or business questions?';
@@ -21,6 +22,7 @@ export const DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE = "I'm sorry, I don't know 
 export const UNCLEAR_CALLER_RESPONSE = "I'm sorry, I didn't catch that.";
 export const SUBMISSION_START_RESPONSE = "I'm sending it in now.";
 export const SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your service request has been submitted. If it's accepted, the business owner will follow up to confirm the exact date and time.";
+export const EMERGENCY_SUBMISSION_SUCCESS_RESPONSE = "You're all set. Your emergency service request has been submitted. The business will follow up to confirm whether it can accept the request.";
 export const SUBMISSION_FAILURE_RESPONSE = "I'm sorry, I can't send the service request.";
 
 const STANDALONE_BACKCHANNELS = new Set([
@@ -164,6 +166,28 @@ export function normalizedCallerText(value) {
     .trim();
 }
 
+export function emergencyTimingChoiceFromCallerText(value) {
+  const text = normalizedCallerText(value);
+  if (!text) return '';
+  if (
+    /\b(?:not|is not|isn't|isnt)\s+(?:an?\s+)?(?:emergency|urgent)\b/.test(text)
+    || /\b(?:no|not in a)\s+rush\b/.test(text)
+    || /\b(?:do not|don't|dont|does not|doesn't|doesnt)\s+need\b.{0,24}\b(?:now|immediately|right away|asap)\b/.test(text)
+    || /\b(?:not right now|it can wait|this can wait|i can wait)\b/.test(text)
+    || /\b(?:the )?(?:second|latter)\s+(?:one|option)\b/.test(text)
+  ) return 'scheduled';
+  if (
+    /\b(?:asap|as soon as possible|right away|immediately|emergency|urgent|urgently|now|soonest|earliest possible|first available)\b/.test(text)
+    || /\bas soon as (?:you|they|someone|the business)?\s*can\b/.test(text)
+    || /\b(?:the )?first\s+(?:one|option)\b/.test(text)
+    || /\b(?:come|get|send)\b.{0,30}\b(?:here|out|over)?\s*(?:now|quickly|soon)\b/.test(text)
+  ) return 'asap';
+  if (
+    /\b(?:schedule|scheduled|scheduling|appointment|book|booking|later|pick (?:a|the) time|choose (?:a|the) time|specific (?:day|date|time))\b/.test(text)
+  ) return 'scheduled';
+  return '';
+}
+
 export function isStandaloneBackchannel(value) {
   return STANDALONE_BACKCHANNELS.has(normalizedCallerText(value));
 }
@@ -277,7 +301,7 @@ export function requestedFieldExplanation(value, pendingField = '') {
     || /\bwhy (?:do|would|should|must) i (?:need|have) to (?:give|provide|share|tell)\b/.test(text)
     || /\bwhy are you asking (?:me )?(?:for )?(?:that|this|it)\b/.test(text)
   ) {
-    return ['service', 'name', 'address', 'schedule', 'notes', 'consent'].includes(pendingField)
+    return ['service', 'name', 'address', 'timing', 'schedule', 'notes', 'consent'].includes(pendingField)
       ? pendingField
       : '';
   }
@@ -285,7 +309,7 @@ export function requestedFieldExplanation(value, pendingField = '') {
 }
 
 export function isRequiredInformationRefusal(value, pendingField = '') {
-  if (!['service', 'name', 'address', 'schedule', 'consent'].includes(pendingField)) return false;
+  if (!['service', 'name', 'address', 'timing', 'schedule', 'consent'].includes(pendingField)) return false;
   const text = normalizedCallerText(value);
   if (!text) return false;
   return /\b(?:do not|don't|won't|will not|can't|cannot)\s+(?:want to\s+)?(?:give|provide|share|tell)\b/.test(text)

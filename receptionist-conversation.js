@@ -1,5 +1,6 @@
 import { cleanText } from './business-context.js';
 import {
+  emergencyRequestEnabled,
   matchService,
   normalizeCallerName,
   normalizeRequestedTimeWindow,
@@ -11,6 +12,7 @@ import {
   ADDITIONAL_NOTES_DETAILS_PROMPT,
   ADDITIONAL_NOTES_PROMPT,
   DEMO_UNKNOWN_BUSINESS_QUESTION_RESPONSE,
+  EMERGENCY_TIMING_QUESTION,
   MORE_NOTES_PROMPT,
   NAME_QUESTION,
   PROJECT_ADDRESS_QUESTION,
@@ -21,6 +23,7 @@ import {
   addressPartsFromCallerText,
   classifyCallerTranscript,
   contactConsentQuestion,
+  emergencyTimingChoiceFromCallerText,
   fullAddressFromCallerHistory,
   fullAddressFromCallerText,
   hasUsableNameAnswer,
@@ -44,6 +47,7 @@ const FIELD_NAMES = Object.freeze([
   'service',
   'name',
   'address',
+  'timing',
   'schedule',
   'notes',
 ]);
@@ -136,6 +140,11 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
         enum: ['not_addressed', 'complete', 'ambiguous', 'not_offered'],
         description: 'Whether requested work maps to one supplied service, needs a small clarification, or clearly is not offered.',
       },
+      request_timing: {
+        type: 'string',
+        enum: ['not_answered', 'asap', 'scheduled'],
+        description: 'The caller\'s explicit choice between help as soon as possible and scheduling a day/time. Use asap only when the caller explicitly chooses immediate, urgent, emergency, or ASAP help. Never infer asap from the type or severity of the work. Use scheduled when the caller chooses scheduling or supplies a preferred date/time. Otherwise not_answered.',
+      },
       project_note: {
         type: 'string',
         description: 'A concise caller-grounded project-detail fragment from this turn for the dedicated final summarizer. Capture useful action, quantity, scope, location on the property, condition, material, color, access, or desired-outcome details. Remove first-person lead-ins, fillers, false starts, and repetition, but do not try to summarize the complete request here. Never replace the requested work or object with a different diagnosis, cause, solution, service, or project detail. Never invent a detail or put a name, service address, preferred date/time, consent answer, conversation repair, or field question here. Empty only when this turn contains no project detail.',
@@ -156,7 +165,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       },
       correction_field: {
         type: 'string',
-        enum: ['none', 'service', 'name', 'address', 'schedule', 'notes'],
+        enum: ['none', 'service', 'name', 'address', 'timing', 'schedule', 'notes'],
         description: 'The one field the caller explicitly corrected during intake or final-summary review. Otherwise none.',
       },
       business_answer_status: {
@@ -194,6 +203,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
       'address_parts',
       'address_status',
       'service_status',
+      'request_timing',
       'project_note',
       'notes_complete',
       'contact_consent',
@@ -710,6 +720,7 @@ function fieldExplanationSpeech(field) {
   if (field === 'service') return 'So the business knows what kind of work you need.';
   if (field === 'name') return 'So the business knows who the service request is for.';
   if (field === 'address') return 'So the business knows where the service is needed.';
+  if (field === 'timing') return 'So the business knows whether you need help as soon as possible or prefer to schedule.';
   if (field === 'schedule') return 'So the business knows your preferred day and time window.';
   if (field === 'notes') return 'So you can pass along any other project details the business should know.';
   if (field === 'consent') return 'So the business has your permission to contact you about the service request.';
@@ -840,6 +851,7 @@ function joinSpeech(...parts) {
 
 function spokenPreparationError(error, field) {
   const message = cleanText(error?.message);
+  if (field === 'request_urgency' || field === 'timing') return EMERGENCY_TIMING_QUESTION;
   if (field === 'preferred_time' && /morning or afternoon/i.test(message)) {
     return 'Would morning or afternoon work better?';
   }
@@ -892,6 +904,9 @@ function safeAnalysis(value = {}) {
     },
     address_status: cleanText(value.address_status) || 'not_addressed',
     service_status: cleanText(value.service_status) || 'not_addressed',
+    request_timing: ['asap', 'scheduled'].includes(cleanText(value.request_timing))
+      ? cleanText(value.request_timing)
+      : 'not_answered',
     project_note: cleanText(value.project_note),
     notes_complete: value.notes_complete === true,
     contact_consent: cleanText(value.contact_consent) || 'not_answered',
@@ -925,8 +940,8 @@ export function buildTurnAnalysisInstructions({
     description: service.description,
   }));
   const structuredFieldRule = demo
-    ? 'Turn any meaningful problem, condition, desired outcome, or work statement into a concise service label without requiring a category or clarification. Copy the caller\'s name, address, preferred day, preferred time window, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for the demo service label, project_note, and business_question.'
-    : 'Only the requested service may be semantically mapped to a supplied category. Copy the caller\'s name, address, preferred day, preferred time window, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for project_note and business_question.';
+    ? 'Turn any meaningful problem, condition, desired outcome, or work statement into a concise service label without requiring a category or clarification. Copy the caller\'s name, address, preferred day, preferred time window, request-timing choice, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for the demo service label, project_note, and business_question.'
+    : 'Only the requested service may be semantically mapped to a supplied category. Copy the caller\'s name, address, preferred day, preferred time window, request-timing choice, and yes/no meaning literally into their dedicated fields. Never simplify, paraphrase, translate, autocorrect, or move those structured values into project_note. Simplification is allowed only for project_note and business_question.';
   const serviceRule = demo
     ? 'The demo has no service catalog. While service is pending, every meaningful problem, condition, desired outcome, or work statement completes the service field, even when the caller does not name a trade, category, or solution. Summarize what the caller said into a short, accurate service label, set service_status to complete, and never ask for more detail about the work. Never use ambiguous or not_offered in demo mode.'
     : 'The caller may name a supplied category or describe the needed outcome naturally; either can complete the service field when its meaning maps to one supplied service. Map only to the supplied service list and never assume a trade or capability that was not supplied for this business.';
@@ -942,6 +957,8 @@ export function buildTurnAnalysisInstructions({
     'Decision priority: first interpret the turn as an answer to the pending service-request field; second extract any extra project detail into project_note; only then classify a separate request for information as a business question. A valid intake answer or useful project statement is not an unknown business question.',
     structuredFieldRule,
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
+    'If timing is pending, set request_timing to asap only when the caller explicitly chooses help now, immediately, urgently, as soon as possible, or describes their choice as an emergency. Set it to scheduled when the caller chooses to schedule or supplies a preferred day/time. Never infer urgency from the service, problem, damage, notes, tone, or apparent severity.',
+    'When request_timing is asap, leave preferred_date and preferred_time empty unless the caller is explicitly correcting the choice to scheduled service. Never promise dispatch, arrival, availability, or a response time for an ASAP request.',
     'When schedule is pending, retain both parts of a combined answer. “Tuesday afternoon” means preferred_date is “Tuesday” and preferred_time is “afternoon”. If the caller volunteers an exact clock time, preserve it literally and never ask whether it is AM or PM; the server will request morning or afternoon only when a broad window is still unclear.',
     serviceRule,
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
@@ -967,6 +984,7 @@ export function buildTurnAnalysisInstructions({
       earliestStart: context.earliestServiceRequestStart || context.earliestEstimateStart || '',
       latestStart: context.latestServiceRequestStart || context.latestEstimateStart || '',
     })}`,
+    `SERVICE_REQUEST_ROUTING=${JSON.stringify(context.serviceRequestRouting || { mode: 'scheduled-only' })}`,
     'PLATFORM_BUSINESS_RULES={"leadResponseDeadline":"The caller should hear back from the business within one week after the service request is submitted."}',
   ].join('\n');
 }
@@ -980,9 +998,12 @@ export function buildSummarySpeech(summary = {}) {
   const notesSentence = notes && normalized(notes) !== 'none'
     ? `The notes are: ${notes.replace(/[.?!]+$/g, '')}.`
     : '';
+  const timingSentence = normalized(schedule) === 'as soon as possible'
+    ? 'This is marked as an emergency request for help as soon as possible.'
+    : `The preferred day and time window is ${schedule}.`;
   return joinSpeech(
     `Okay, here's the summary. ${name} is requesting ${service} at ${address}.`,
-    `The preferred day and time window is ${schedule}.`,
+    timingSentence,
     notesSentence,
     'Does that all sound right?',
   );
@@ -997,21 +1018,32 @@ export function buildSummaryRecoverySpeech(summary = {}) {
   const notesSentence = notes && normalized(notes) !== 'none'
     ? 'I also included the additional notes you gave me.'
     : '';
+  const emergency = normalized(schedule) === 'as soon as possible';
+  const requestSentence = emergency
+    ? `${name} is requesting ${service} at ${address}.`
+    : `${name} is requesting ${service} at ${address}, with a preferred day and time window of ${schedule}.`;
+  const timingSentence = emergency
+    ? 'This is marked as an emergency request for help as soon as possible.'
+    : '';
   return joinSpeech(
     'Sorry, the readback was cut off.',
-    `${name} is requesting ${service} at ${address}, with a preferred day and time window of ${schedule}.`,
+    requestSentence,
+    timingSentence,
     notesSentence,
     'Does that all sound right?',
   );
 }
 
 export function createReceptionistConversation({ context, demo = false }) {
+  const supportsEmergency = !demo && emergencyRequestEnabled(context);
   const callerTranscripts = [];
   const understoodCallerTurns = [];
   const values = {
     service: '',
     name: '',
     address: '',
+    requestTiming: '',
+    requestUrgency: '',
     preferredDate: '',
     preferredTime: '',
   };
@@ -1060,7 +1092,10 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (!values.service) return 'service';
     if (!values.name) return 'name';
     if (!values.address) return 'address';
-    if (!values.preferredDate || !values.preferredTime) return 'schedule';
+    if (supportsEmergency && !values.requestTiming) return 'timing';
+    if (values.requestTiming !== 'asap' && (!values.preferredDate || !values.preferredTime)) {
+      return 'schedule';
+    }
     if (!notesComplete) return 'notes';
     if (!consentGranted) return 'consent';
     return 'preparing';
@@ -1071,6 +1106,10 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (field === 'name') return NAME_QUESTION;
     if (field === 'address') {
       return addressFollowupQuestion();
+    }
+    if (field === 'timing') {
+      return cleanText(context.serviceRequestRouting?.timingQuestion)
+        || EMERGENCY_TIMING_QUESTION;
     }
     if (field === 'schedule') {
       if (pendingTimeWithoutWindow) return 'Would morning or afternoon work better?';
@@ -1099,6 +1138,7 @@ export function createReceptionistConversation({ context, demo = false }) {
   function advancingQuestion(field = pendingField()) {
     if (field === 'name') return `Okay, ${NAME_QUESTION.toLowerCase()}`;
     if (field === 'address') return `Thanks. ${PROJECT_ADDRESS_QUESTION}`;
+    if (field === 'timing') return `Got it. ${bareQuestion('timing')}`;
     if (field === 'schedule') return `Got it. ${bareQuestion('schedule')}`;
     if (field === 'notes') {
       notesAsked = true;
@@ -1181,11 +1221,12 @@ export function createReceptionistConversation({ context, demo = false }) {
   function analysisSuppliesIntakeAnswer(analysis, before) {
     if (before === 'notes') {
       return analysis.notes_complete
-        || ['service', 'name', 'address', 'schedule', 'notes'].includes(
+        || ['service', 'name', 'address', 'timing', 'schedule', 'notes'].includes(
           analysis.correction_field,
         );
     }
     if (before === 'consent') return analysis.contact_consent !== 'not_answered';
+    if (before === 'timing') return analysis.request_timing !== 'not_answered';
     const fields = analysis.fields || EMPTY_FIELDS;
     return Object.values(fields).some(Boolean)
       || analysis.service_status !== 'not_addressed'
@@ -1206,6 +1247,7 @@ export function createReceptionistConversation({ context, demo = false }) {
   }
 
   function validateSchedule() {
+    if (values.requestTiming === 'asap') return null;
     if (!values.preferredDate || !values.preferredTime) return null;
     try {
       const date = resolveRequestedDate(values.preferredDate, { timeZone: context.timeZone });
@@ -1224,6 +1266,22 @@ export function createReceptionistConversation({ context, demo = false }) {
     let changed = false;
     let error = null;
     const canWrite = (field) => !values[field] || overwriteField === field;
+
+    if (
+      supportsEmergency
+      && ['asap', 'scheduled'].includes(analysis.request_timing)
+      && (!values.requestTiming || overwriteField === 'timing')
+      && (pendingField() === 'timing' || overwriteField === 'timing')
+    ) {
+      values.requestTiming = analysis.request_timing;
+      values.requestUrgency = analysis.request_timing === 'asap' ? 'emergency' : '';
+      if (analysis.request_timing === 'asap') {
+        values.preferredDate = '';
+        values.preferredTime = '';
+        pendingTimeWithoutWindow = '';
+      }
+      changed = true;
+    }
 
     if (analysis.fields.service && canWrite('service')) {
       try {
@@ -1280,13 +1338,21 @@ export function createReceptionistConversation({ context, demo = false }) {
       }
     }
 
-    if (analysis.fields.preferred_date && (!values.preferredDate || overwriteField === 'schedule')) {
+    if (
+      values.requestTiming !== 'asap'
+      && analysis.fields.preferred_date
+      && (!values.preferredDate || overwriteField === 'schedule')
+    ) {
       if (isGroundedInCallerEvidence(analysis.fields.preferred_date, [transcript])) {
         values.preferredDate = analysis.fields.preferred_date;
         changed = true;
       }
     }
-    if (analysis.fields.preferred_time && (!values.preferredTime || overwriteField === 'schedule')) {
+    if (
+      values.requestTiming !== 'asap'
+      && analysis.fields.preferred_time
+      && (!values.preferredTime || overwriteField === 'schedule')
+    ) {
       const suppliedWindow = timeWindowOnlyCandidate(transcript);
       const completesPendingTime = pendingTimeWithoutWindow
         && suppliedWindow
@@ -1416,7 +1482,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     }
     const explanationField = requestedFieldExplanation(text, current);
     if (explanationField) {
-      if (['service', 'name', 'address', 'schedule', 'consent'].includes(current)) {
+      if (['service', 'name', 'address', 'timing', 'schedule', 'consent'].includes(current)) {
         customerResistanceCount += 1;
       }
       return {
@@ -1502,7 +1568,17 @@ export function createReceptionistConversation({ context, demo = false }) {
       return { type: 'prepare' };
     }
 
-    const valueKey = correction === 'schedule' ? '' : correction;
+    if (correction === 'timing') {
+      values.requestTiming = '';
+      values.requestUrgency = '';
+    }
+    if (correction === 'schedule') {
+      if (values.requestTiming === 'asap') {
+        values.requestTiming = 'scheduled';
+        values.requestUrgency = '';
+      }
+    }
+    const valueKey = ['timing', 'schedule'].includes(correction) ? '' : correction;
     if (valueKey) values[valueKey] = '';
     const applied = applyCollectingFields(analysis, transcript, { overwriteField: correction });
     if (applied.error) {
@@ -1520,6 +1596,14 @@ export function createReceptionistConversation({ context, demo = false }) {
       phase = 'collecting';
       return { type: 'speak', text: bareQuestion(correction) };
     }
+    if (
+      ['timing', 'schedule'].includes(correction)
+      && values.requestTiming !== 'asap'
+      && (!values.preferredDate || !values.preferredTime)
+    ) {
+      phase = 'collecting';
+      return { type: 'speak', text: bareQuestion('schedule') };
+    }
     phase = 'preparing';
     return { type: 'prepare' };
   }
@@ -1527,6 +1611,20 @@ export function createReceptionistConversation({ context, demo = false }) {
   function applyAnalysis(rawAnalysis, transcript) {
     const analysis = safeAnalysis(rawAnalysis);
     const currentField = pendingField();
+    const timingTurn = supportsEmergency && (
+      currentField === 'timing' || analysis.correction_field === 'timing'
+    );
+    const explicitTimingChoice = timingTurn
+      ? emergencyTimingChoiceFromCallerText(transcript)
+      : '';
+    if (!timingTurn) {
+      analysis.request_timing = 'not_answered';
+    } else if (explicitTimingChoice) {
+      analysis.request_timing = explicitTimingChoice;
+    } else if (analysis.request_timing === 'asap') {
+      // Urgency must be explicit in caller speech; never derive it from the problem itself.
+      analysis.request_timing = 'not_answered';
+    }
     const demoService = demoServiceFromCallerText(transcript);
     if (
       demo
@@ -1640,6 +1738,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       dateCandidate: detectedDate,
       allowBare: Boolean(values.preferredDate || detectedDate) && (
         currentField === 'schedule'
+        || currentField === 'timing'
         || analysis.correction_field === 'schedule'
         || isExplicitCorrectionRequest(transcript)
       ),
@@ -1661,6 +1760,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     }
     const shouldCaptureDetectedDate = detectedDate && (
       currentField === 'schedule'
+      || currentField === 'timing'
       || analysis.correction_field === 'schedule'
       || isDateOnlyScheduleTurn(transcript, detectedDate)
       || isSpecificDateAppointmentQuestion(transcript, detectedDate)
@@ -1671,6 +1771,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     }
     const shouldCaptureDetectedTime = detectedTime && (
       currentField === 'schedule'
+      || currentField === 'timing'
       || analysis.correction_field === 'schedule'
       || Boolean(dateCandidate)
     );
@@ -1688,6 +1789,17 @@ export function createReceptionistConversation({ context, demo = false }) {
     ) {
       analysis.fields.preferred_time = detectedTime;
     }
+    if (
+      timingTurn
+      && analysis.request_timing === 'not_answered'
+      && (
+        analysis.fields.preferred_date
+        || analysis.fields.preferred_time
+        || dateCandidate
+      )
+    ) {
+      analysis.request_timing = 'scheduled';
+    }
 
     if (
       currentField === 'name'
@@ -1701,6 +1813,7 @@ export function createReceptionistConversation({ context, demo = false }) {
 
     const literalStructuredAnswer = Boolean(
       (currentField === 'name' && analysis.fields.name)
+      || (currentField === 'timing' && analysis.request_timing !== 'not_answered')
       || (currentField === 'schedule' && (
         analysis.fields.preferred_date || analysis.fields.preferred_time
       ))
@@ -1736,7 +1849,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     if (phase !== 'collecting') return { type: 'wait' };
 
     const before = pendingField();
-    const collectingCorrection = ['service', 'name', 'address', 'schedule'].includes(
+    const collectingCorrection = ['service', 'name', 'address', 'timing', 'schedule'].includes(
       analysis.correction_field,
     ) ? analysis.correction_field : '';
     const scheduleTurn = before === 'schedule'
@@ -1745,7 +1858,7 @@ export function createReceptionistConversation({ context, demo = false }) {
     const callerFinishedNotesBeforeCorrection = before === 'notes'
       && (
         analysis.notes_complete
-        || (collectingCorrection !== 'schedule' && isClearNegative(transcript))
+        || (!['timing', 'schedule'].includes(collectingCorrection) && isClearNegative(transcript))
       );
     const projectDetail = before === 'notes' && !collectingCorrection
       ? notesTurnProjectDetail(analysis, transcript, dateCandidate)
@@ -1826,15 +1939,16 @@ export function createReceptionistConversation({ context, demo = false }) {
     }
 
     if (before === 'notes') {
-      const scheduleWasCorrected = collectingCorrection === 'schedule' && correctionResult.changed;
+      const timingWasCorrected = ['timing', 'schedule'].includes(collectingCorrection)
+        && correctionResult.changed;
       const callerFinishedNotes = analysis.notes_complete
-        || (!scheduleWasCorrected && isClearNegative(transcript));
-      const noteAdded = scheduleWasCorrected
+        || (!timingWasCorrected && isClearNegative(transcript));
+      const noteAdded = timingWasCorrected
         || callerFinishedNotes
         || (question.hadQuestion && projectDetailOverridesQuestion)
         ? false
         : (projectDetail ? addNote(projectDetail) : false);
-      const correctionPrefix = scheduleWasCorrected && !question.prefix
+      const correctionPrefix = timingWasCorrected && !question.prefix
         ? 'Okay, I updated that preference.'
         : '';
       if (callerFinishedNotes) {
@@ -1848,7 +1962,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       if (isClearAffirmative(transcript) && !noteAdded && !question.hadQuestion) {
         return { type: 'speak', text: ADDITIONAL_NOTES_DETAILS_PROMPT };
       }
-      const followup = noteAdded || (question.hadQuestion && !scheduleWasCorrected)
+      const followup = noteAdded || (question.hadQuestion && !timingWasCorrected)
         ? MORE_NOTES_PROMPT
         : ADDITIONAL_NOTES_PROMPT;
       notesAsked = true;
@@ -1890,11 +2004,13 @@ export function createReceptionistConversation({ context, demo = false }) {
     const hasOtherStructuredField = Boolean(
       analysis.fields.name
       || analysis.fields.address
+      || analysis.request_timing !== 'not_answered'
       || analysis.fields.preferred_date
       || analysis.fields.preferred_time,
     );
     const preferCodeOwnedServiceNote = serviceWasMissing && !hasOtherStructuredField;
-    let projectNoteAdded = collectingCorrection === 'schedule' || preferCodeOwnedServiceNote
+    let projectNoteAdded = ['timing', 'schedule'].includes(collectingCorrection)
+      || preferCodeOwnedServiceNote
       ? false
       : addGroundedProjectNote(
         analysis.project_note,
@@ -1988,6 +2104,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       service: values.service,
       name: values.name,
       address: values.address,
+      request_urgency: values.requestUrgency,
       preferred_date: values.preferredDate,
       preferred_time: values.preferredTime,
       additional_notes: notes.join(' '),
@@ -2012,6 +2129,10 @@ export function createReceptionistConversation({ context, demo = false }) {
       values.address = '';
       clearPartialAddress();
     }
+    if (field === 'request_urgency') {
+      values.requestTiming = '';
+      values.requestUrgency = '';
+    }
     if (field === 'preferred_date') values.preferredDate = '';
     if (field === 'preferred_time') values.preferredTime = '';
     if (field === 'preferred_time') pendingTimeWithoutWindow = '';
@@ -2032,7 +2153,8 @@ export function createReceptionistConversation({ context, demo = false }) {
         service: Boolean(values.service),
         name: Boolean(values.name),
         address: Boolean(values.address),
-        schedule: Boolean(values.preferredDate && values.preferredTime),
+        schedule: values.requestTiming === 'asap'
+          || Boolean(values.preferredDate && values.preferredTime),
         notes: notesComplete,
         consent: consentGranted,
       },

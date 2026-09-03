@@ -11,6 +11,7 @@ import {
 } from './receptionist-conversation.js';
 import {
   SERVICE_QUESTION,
+  EMERGENCY_SUBMISSION_SUCCESS_RESPONSE,
   SUBMISSION_FAILURE_RESPONSE,
   SUBMISSION_START_RESPONSE,
   SUBMISSION_SUCCESS_RESPONSE,
@@ -136,6 +137,19 @@ function serviceGuide(context) {
     .join('\n');
 }
 
+function requestRoutingGuide(context = {}) {
+  const routing = context.serviceRequestRouting || {};
+  if (routing.mode !== 'asap-or-scheduled' || routing.emergency?.enabled !== true) {
+    return 'This business accepts scheduled requests only. Do not mention, ask about, infer, or mark emergency/ASAP service.';
+  }
+  return [
+    `The server will ask this exact timing question: ${JSON.stringify(routing.timingQuestion)}.`,
+    'Only an explicit caller choice for ASAP help may be marked as an emergency; never infer urgency from the work or apparent severity.',
+    `Emergency availability is ${routing.emergency.availability}.`,
+    'Regular scheduling always remains available. Never promise dispatch, arrival, acceptance, or a response time.',
+  ].join(' ');
+}
+
 function transcriptionConfiguration(context = {}) {
   const model = cleanText(process.env.OPENAI_TRANSCRIPTION_MODEL)
     || DEFAULT_TRANSCRIPTION_MODEL;
@@ -150,7 +164,7 @@ function transcriptionConfiguration(context = {}) {
   ].filter(Boolean).slice(0, 50);
   return {
     model,
-    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
+    prompt: 'A telephone call collecting a service request. Preserve names, United States addresses, explicit emergency or ASAP wording, requested days, broad time-window phrases such as morning or afternoon, any clock time the caller volunteers, and short yes or no answers.',
     ...(keywords.length ? { keywords } : {}),
     languages: [language],
   };
@@ -242,6 +256,9 @@ Let callers describe their work in their own words. Interpret it only through th
 
 # Supplied services
 ${serviceGuide(context)}
+
+# Service-request timing
+${requestRoutingGuide(context)}
 
 # Business information supplied for this call
 <business_information>
@@ -980,8 +997,12 @@ export function createOpenAiReceptionist({
     }
     submitted = true;
     sendSessionUpdate();
-    onSubmitted?.(intake.snapshot());
-    requestSpeech(SUBMISSION_SUCCESS_RESPONSE, { after: 'goodbye', turn });
+    const intakeSnapshot = intake.snapshot();
+    onSubmitted?.(intakeSnapshot);
+    const successResponse = intakeSnapshot.draft?.requestUrgency === 'emergency'
+      ? EMERGENCY_SUBMISSION_SUCCESS_RESPONSE
+      : SUBMISSION_SUCCESS_RESPONSE;
+    requestSpeech(successResponse, { after: 'goodbye', turn });
   }
 
   function handleConversationAction(action, turn) {

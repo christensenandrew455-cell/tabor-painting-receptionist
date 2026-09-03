@@ -26,6 +26,8 @@ const MONTHS = Object.freeze({
   november: 11,
   december: 12,
 });
+const EMERGENCY_REQUEST_URGENCY = 'emergency';
+const DEFAULT_ASAP_TIME_WINDOW = 'As soon as possible';
 
 function fail(message, field = '') {
   const error = new Error(message);
@@ -329,6 +331,20 @@ function requiredText(value, field, label, maxLength) {
   return text;
 }
 
+export function emergencyRequestEnabled(context = {}) {
+  return context?.serviceRequestRouting?.mode === 'asap-or-scheduled'
+    && context?.serviceRequestRouting?.emergency?.enabled === true;
+}
+
+function normalizeRequestUrgency(value, context = {}) {
+  const urgency = cleanText(value).toLowerCase();
+  if (!urgency) return '';
+  if (urgency !== EMERGENCY_REQUEST_URGENCY || !emergencyRequestEnabled(context)) {
+    fail('Emergency service is not enabled for this business.', 'request_urgency');
+  }
+  return EMERGENCY_REQUEST_URGENCY;
+}
+
 export function normalizeProjectAddress(value) {
   const address = requiredText(value, 'address', 'the project address', 300)
     .replace(/[.!]+$/g, '')
@@ -354,21 +370,28 @@ export function normalizeServiceRequestDraft(args = {}, context, now = new Date(
     fail('The request cannot be prepared without the caller explicitly consenting to business contact.', 'consent_to_contact');
   }
 
-  const date = resolveRequestedDate(args.preferred_date, {
+  const requestUrgency = normalizeRequestUrgency(
+    args.request_urgency || args.requestUrgency,
+    context,
+  );
+  const emergency = requestUrgency === EMERGENCY_REQUEST_URGENCY;
+  const date = emergency ? null : resolveRequestedDate(args.preferred_date, {
     now,
     timeZone: context.timeZone,
   });
-  const requestedTimeWindow = normalizeRequestedTimeWindow(
-    args.preferred_time_window || args.preferred_time,
-  );
-  validateServiceRequestAvailability(date, requestedTimeWindow, context);
+  const requestedTimeWindow = emergency
+    ? cleanText(context.serviceRequestRouting.emergency.requestedTimeWindow)
+      || DEFAULT_ASAP_TIME_WINDOW
+    : normalizeRequestedTimeWindow(args.preferred_time_window || args.preferred_time);
+  if (date) validateServiceRequestAvailability(date, requestedTimeWindow, context);
   return Object.freeze({
     service: matchService(args.service, context.services),
     name: normalizeCallerName(args.name),
     address: normalizeProjectAddress(args.address),
-    requestedDateInput: date.input,
-    requestedDate: date.exactDate,
-    requestedDateSpoken: date.spokenDate,
+    requestUrgency,
+    requestedDateInput: date?.input || '',
+    requestedDate: date?.exactDate || '',
+    requestedDateSpoken: date?.spokenDate || '',
     requestedTimeWindow,
     requestedTime: requestedTimeWindow,
     additionalNotes: sanitizeAdditionalNotes(args.additional_notes).slice(0, 1_000),
@@ -385,7 +408,9 @@ export function serviceRequestSummary(draft) {
     name: draft.name,
     service: draft.service,
     address: draft.address,
-    preferredDayAndTimeWindow: `${draft.requestedDateSpoken}, ${draft.requestedTimeWindow.toLowerCase()}`,
+    preferredDayAndTimeWindow: draft.requestUrgency === EMERGENCY_REQUEST_URGENCY
+      ? draft.requestedTimeWindow
+      : `${draft.requestedDateSpoken}, ${draft.requestedTimeWindow.toLowerCase()}`,
     notes: draft.additionalNotes || 'None',
   });
 }
@@ -393,7 +418,9 @@ export function serviceRequestSummary(draft) {
 export function savedServiceRequestSummary(draft) {
   return [
     `- Service: ${draft.service}`,
-    `- Preferred window: ${draft.requestedDateSpoken} — ${draft.requestedTimeWindow}`,
+    ...(draft.requestUrgency === EMERGENCY_REQUEST_URGENCY
+      ? ['- Priority: Emergency / ASAP', `- Preferred window: ${draft.requestedTimeWindow}`]
+      : [`- Preferred window: ${draft.requestedDateSpoken} — ${draft.requestedTimeWindow}`]),
     `- Address: ${draft.address}`,
     `- Notes: ${draft.additionalNotes || 'None'}`,
   ].join('\n');
@@ -421,6 +448,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     requestedDate: draft.requestedDate,
     requestedTimeWindow: draft.requestedTimeWindow,
     requestedTime: draft.requestedTime,
+    ...(draft.requestUrgency ? { requestUrgency: draft.requestUrgency } : {}),
     additionalNotes: draft.additionalNotes,
     requestSummary,
     consentToContact: true,
@@ -435,6 +463,7 @@ export function buildWebsitePayload({ context, callControlId, callerPhone, draft
     PreferredDate: draft.requestedDate,
     PreferredTimeWindow: draft.requestedTimeWindow,
     PreferredTime: draft.requestedTime,
+    ...(draft.requestUrgency ? { RequestUrgency: draft.requestUrgency } : {}),
     Notes: draft.additionalNotes,
     RequestSummary: requestSummary,
   });

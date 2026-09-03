@@ -188,3 +188,50 @@ test('caps website knowledge included in the model prompt', () => {
     else process.env.MAX_WEBSITE_KNOWLEDGE_CHARACTERS = previousLimit;
   }
 });
+
+test('accepts only the explicit ARC emergency-routing contract and otherwise fails closed', () => {
+  const enabled = createBusinessContext({
+    profile: {
+      businessName: 'Emergency Plumbing',
+      serviceRequestRouting: {
+        mode: 'asap-or-scheduled',
+        timingQuestion: 'Do you need help as soon as possible, or would you prefer to schedule a time?',
+        scheduled: { enabled: true },
+        emergency: {
+          enabled: true,
+          availability: '24/7',
+          intakeField: 'requestUrgency',
+          intakeValue: 'emergency',
+          requestedTimeWindow: 'As soon as possible',
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(enabled.serviceRequestRouting, {
+    mode: 'asap-or-scheduled',
+    timingQuestion: 'Do you need help as soon as possible, or would you prefer to schedule a time?',
+    scheduled: { enabled: true },
+    emergency: {
+      enabled: true,
+      availability: '24/7',
+      intakeField: 'requestUrgency',
+      intakeValue: 'emergency',
+      requestedTimeWindow: 'As soon as possible',
+    },
+  });
+
+  const disabled = createBusinessContext({
+    profile: {
+      emergencyServiceEnabled: true,
+      emergencyService24Hours: true,
+      serviceRequestRouting: { mode: 'scheduled-only', timingQuestion: '' },
+    },
+  });
+  assert.deepEqual(disabled.serviceRequestRouting, {
+    mode: 'scheduled-only',
+    timingQuestion: '',
+    scheduled: { enabled: true },
+  });
+  assert.equal('emergency' in disabled.serviceRequestRouting, false);
+});

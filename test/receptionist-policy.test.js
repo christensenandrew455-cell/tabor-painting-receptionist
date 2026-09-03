@@ -5,6 +5,7 @@ import {
   addressPartsFromCallerText,
   callerVolunteeredName,
   classifyCallerTranscript,
+  emergencyTimingChoiceFromCallerText,
   fullAddressFromCallerHistory,
   fullAddressFromCallerText,
   hasUsableNameAnswer,
@@ -37,6 +38,27 @@ test('uses one canonical field order for every business', () => {
     'notes',
     'consent',
   ]);
+});
+
+test('recognizes explicit ASAP versus scheduled choices without using project severity', () => {
+  for (const value of [
+    'As soon as possible.',
+    'This is an emergency.',
+    'I need someone out right away.',
+    'The first option.',
+  ]) {
+    assert.equal(emergencyTimingChoiceFromCallerText(value), 'asap', value);
+  }
+  for (const value of [
+    "I'd prefer to schedule a time.",
+    "It isn't an emergency.",
+    "I don't need anyone right now; I'd rather schedule it.",
+    'No rush.',
+    'The second option.',
+  ]) {
+    assert.equal(emergencyTimingChoiceFromCallerText(value), 'scheduled', value);
+  }
+  assert.equal(emergencyTimingChoiceFromCallerText('The basement pipe burst.'), '');
 });
 
 test('accepts substantive service descriptions without hardcoding one trade', () => {
@@ -313,6 +335,7 @@ test('recognizes AI identity questions and field-reason questions', () => {
   assert.equal(requestedFieldExplanation('Why do you need my name?', 'name'), 'name');
   assert.equal(requestedFieldExplanation('What do you need my address for?', 'address'), 'address');
   assert.equal(requestedFieldExplanation('Why do you need the date and time?', 'schedule'), 'schedule');
+  assert.equal(requestedFieldExplanation('Why are you asking me that?', 'timing'), 'timing');
   assert.equal(requestedFieldExplanation('Why do you need my consent?', 'consent'), 'consent');
   assert.equal(requestedFieldExplanation('Why?', 'notes'), 'notes');
   assert.equal(requestedFieldExplanation('Why are you closed on Sunday?', 'service'), '');

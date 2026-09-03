@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CALLER_TURN_ANALYSIS_TOOL,
   buildSummaryRecoverySpeech,
   buildSummarySpeech,
   buildTurnAnalysisInstructions,
@@ -40,12 +41,29 @@ const CONTEXT = Object.freeze({
   }),
 });
 
+const EMERGENCY_CONTEXT = Object.freeze({
+  ...CONTEXT,
+  serviceRequestRouting: Object.freeze({
+    mode: 'asap-or-scheduled',
+    timingQuestion: 'Do you need help as soon as possible, or would you prefer to schedule a time?',
+    scheduled: Object.freeze({ enabled: true }),
+    emergency: Object.freeze({
+      enabled: true,
+      availability: '24/7',
+      intakeField: 'requestUrgency',
+      intakeValue: 'emergency',
+      requestedTimeWindow: 'As soon as possible',
+    }),
+  }),
+});
+
 function analysis(overrides = {}) {
   const { fields = {}, ...rest } = overrides;
   return {
     turn_status: 'complete',
     address_status: 'not_addressed',
     service_status: 'not_addressed',
+    request_timing: 'not_answered',
     project_note: '',
     notes_complete: false,
     contact_consent: 'not_answered',
@@ -91,6 +109,20 @@ function completeThroughSchedule(conversation) {
   });
 }
 
+function completeThroughAddress(conversation) {
+  analyzedTurn(conversation, 'Exterior painting.', {
+    service_status: 'complete',
+    fields: { service: 'Exterior Painting' },
+  });
+  analyzedTurn(conversation, 'Jordan Smith.', {
+    fields: { name: 'Jordan Smith' },
+  });
+  return analyzedTurn(conversation, '123 Main Street, Albany, New York.', {
+    address_status: 'complete',
+    fields: { address: '123 Main Street, Albany, New York' },
+  });
+}
+
 function completeToSummary(conversation) {
   completeThroughSchedule(conversation);
   analyzedTurn(conversation, 'No.', { notes_complete: true });
@@ -101,6 +133,21 @@ function completeToSummary(conversation) {
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
     preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
+    notes: 'None',
+  });
+}
+
+function completeEmergencyToSummary(conversation) {
+  completeThroughAddress(conversation);
+  analyzedTurn(conversation, 'As soon as possible.');
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  const consent = analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
+  assert.equal(consent.type, 'prepare');
+  conversation.enterSummary({
+    name: 'Jordan Smith',
+    service: 'Exterior Painting',
+    address: '123 Main Street, Albany, New York',
+    preferredDayAndTimeWindow: 'As soon as possible',
     notes: 'None',
   });
 }
@@ -151,6 +198,68 @@ test('one authoritative state advances through the required field order exactly 
     notes: true,
     consent: true,
   });
+});
+
+test('the strict caller-turn schema exposes the explicit timing choice', () => {
+  const property = CALLER_TURN_ANALYSIS_TOOL.parameters.properties.request_timing;
+  assert.deepEqual(property.enum, ['not_answered', 'asap', 'scheduled']);
+  assert.match(property.description, /never infer asap from the type or severity/i);
+  assert.equal(CALLER_TURN_ANALYSIS_TOOL.parameters.required.includes('request_timing'), true);
+});
+
+test('an emergency-enabled business asks the exact timing choice and ASAP skips scheduling', () => {
+  const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
+  const timingQuestion = completeThroughAddress(conversation);
+
+  assert.equal(
+    timingQuestion.text,
+    'Got it. Do you need help as soon as possible, or would you prefer to schedule a time?',
+  );
+  assert.equal(conversation.snapshot().pendingField, 'timing');
+
+  const action = analyzedTurn(conversation, 'I need help as soon as possible.');
+  assert.match(action.text, /additional notes/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+  assert.equal(conversation.snapshot().values.requestTiming, 'asap');
+  assert.equal(conversation.snapshot().values.requestUrgency, 'emergency');
+  assert.equal(conversation.snapshot().values.preferredDate, '');
+  assert.equal(conversation.snapshot().values.preferredTime, '');
+  assert.equal(conversation.intakeArguments().request_urgency, 'emergency');
+});
+
+test('an emergency-enabled business keeps the normal schedule branch available', () => {
+  const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
+  completeThroughAddress(conversation);
+
+  const scheduleQuestion = analyzedTurn(conversation, "I'd prefer to schedule a time.");
+  assert.equal(
+    scheduleQuestion.text,
+    'Got it. What day or date works best, and would you prefer morning or afternoon?',
+  );
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.equal(conversation.snapshot().values.requestTiming, 'scheduled');
+  assert.equal(conversation.snapshot().values.requestUrgency, '');
+
+  const notesQuestion = analyzedTurn(conversation, 'Tuesday afternoon.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  });
+  assert.match(notesQuestion.text, /additional notes/i);
+  assert.equal(conversation.snapshot().pendingField, 'notes');
+});
+
+test('the receptionist never infers urgency from an apparently severe project', () => {
+  const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
+  completeThroughAddress(conversation);
+
+  const action = analyzedTurn(conversation, 'The siding is badly damaged.', {
+    request_timing: 'asap',
+    project_note: 'The siding is badly damaged.',
+  });
+
+  assert.match(action.text, /as soon as possible.*schedule a time/i);
+  assert.equal(conversation.snapshot().pendingField, 'timing');
+  assert.equal(conversation.snapshot().values.requestUrgency, '');
+  assert.deepEqual(conversation.snapshot().notes, ['The siding is badly damaged.']);
 });
 
 test('a natural supplied-service request is accepted even when it ends as an availability question', () => {
@@ -2015,6 +2124,51 @@ test('correcting only the summary time window preserves the already confirmed da
   assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
 });
 
+test('an emergency summary can be corrected back to normal scheduling', () => {
+  const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
+  completeEmergencyToSummary(conversation);
+
+  const action = analyzedTurn(conversation, "No, I'd rather schedule a time.", {
+    summary_confirmation: 'no',
+    correction_field: 'timing',
+    request_timing: 'scheduled',
+  });
+
+  assert.equal(action.type, 'speak');
+  assert.match(action.text, /day or date.*morning or afternoon/i);
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+  assert.equal(conversation.snapshot().values.requestUrgency, '');
+});
+
+test('a scheduled summary can be explicitly corrected to emergency ASAP', () => {
+  const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
+  completeThroughAddress(conversation);
+  analyzedTurn(conversation, "I'd prefer to schedule a time.");
+  analyzedTurn(conversation, 'Tuesday afternoon.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  });
+  analyzedTurn(conversation, 'No.', { notes_complete: true });
+  analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
+  conversation.enterSummary({
+    name: 'Jordan Smith',
+    service: 'Exterior Painting',
+    address: '123 Main Street, Albany, New York',
+    preferredDayAndTimeWindow: 'Tuesday afternoon',
+    notes: 'None',
+  });
+
+  const action = analyzedTurn(conversation, 'No, make it an emergency.', {
+    summary_confirmation: 'no',
+    correction_field: 'timing',
+    request_timing: 'asap',
+  });
+
+  assert.equal(action.type, 'prepare');
+  assert.equal(conversation.snapshot().values.requestUrgency, 'emergency');
+  assert.equal(conversation.snapshot().values.preferredDate, '');
+  assert.equal(conversation.snapshot().values.preferredTime, '');
+});
+
 test('only a separate yes to the complete readback permits submission', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   completeToSummary(conversation);
@@ -2036,6 +2190,14 @@ test('summary speech omits empty notes and includes actual notes once', () => {
 
   const withNotes = buildSummarySpeech({ ...base, notes: 'The back wall has peeling paint.' });
   assert.equal((withNotes.match(/back wall has peeling paint/gi) || []).length, 1);
+
+  const emergency = buildSummarySpeech({
+    ...base,
+    preferredDayAndTimeWindow: 'As soon as possible',
+    notes: 'Water is entering the basement.',
+  });
+  assert.match(emergency, /marked as an emergency request for help as soon as possible/i);
+  assert.doesNotMatch(emergency, /preferred day and time window/i);
 
   const recovery = buildSummaryRecoverySpeech({
     ...base,
