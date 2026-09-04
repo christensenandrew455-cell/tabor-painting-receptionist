@@ -14,7 +14,7 @@ const DRAFT = Object.freeze({
   name: 'Jordan Smith',
   address: '123 Main Street, Albany, New York',
   preferred_date: 'August 11 2099',
-  preferred_time: 'Afternoon',
+  preferred_time: 'Evening',
   additional_notes: 'Uh, the rear siding is peeling, and, you know, the back gate is locked.',
 });
 
@@ -84,7 +84,7 @@ test('summary input keeps structured fields separate from summarizable project e
   assert.equal(input.current_project_notes, DRAFT.additional_notes);
   assert.equal(input.structured_fields_read_separately.address, DRAFT.address);
   assert.equal(input.structured_fields_read_separately.preferred_day, 'August 11 2099');
-  assert.equal(input.structured_fields_read_separately.preferred_time_window, 'Afternoon');
+  assert.equal(input.structured_fields_read_separately.preferred_time_window, 'Evening');
 });
 
 test('the dedicated summarizer retries a temporary Responses API failure once', async () => {

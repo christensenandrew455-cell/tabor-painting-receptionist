@@ -372,7 +372,7 @@ test('an unavailable Google key does not falsely add an invalid-address warning'
   assert.equal(risk.factors.some((item) => item.code === 'address_unverified'), false);
 });
 
-test('the receptionist enriches the service-request payload before ARC delivery', async () => {
+test('the receptionist enriches the service-request payload before Ark delivery', async () => {
   const result = await addRiskAssessmentToServiceRequest({
     payload: {
       type: 'service_request',

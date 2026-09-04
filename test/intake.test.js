@@ -45,7 +45,7 @@ const VALID_DRAFT = Object.freeze({
   name: 'Jordan Smith',
   address: '123 Main Street, Albany, NY 12207',
   preferred_date: 'Tuesday',
-  preferred_time: 'afternoon',
+  preferred_time: 'evening',
   additional_notes: '',
   additional_notes_asked: true,
   consent_to_contact: true,
@@ -87,21 +87,22 @@ test('accepts a spoken day of the month and resolves its next occurrence', () =>
 });
 
 test('asks for a broad window when a clock time is ambiguous', () => {
-  assert.throws(() => normalizeRequestedTimeWindow('3:30'), /morning or afternoon/i);
-  assert.equal(normalizeRequestedTimeWindow('3:30 pm'), 'Afternoon');
-  assert.equal(normalizeRequestedTime('3:30 pm'), 'Afternoon');
+  assert.throws(() => normalizeRequestedTimeWindow('3:30'), /morning or evening/i);
+  assert.equal(normalizeRequestedTimeWindow('3:30 pm'), 'Evening');
+  assert.equal(normalizeRequestedTime('3:30 pm'), 'Evening');
 });
 
 test('normalizes broad preferences and volunteered exact times to time windows', () => {
-  assert.throws(() => normalizeRequestedTimeWindow('1'), /morning or afternoon/i);
-  assert.throws(() => normalizeRequestedTimeWindow('nine'), /morning or afternoon/i);
+  assert.throws(() => normalizeRequestedTimeWindow('1'), /morning or evening/i);
+  assert.throws(() => normalizeRequestedTimeWindow('nine'), /morning or evening/i);
   assert.equal(normalizeRequestedTimeWindow('nine am'), 'Morning');
   assert.equal(normalizeRequestedTimeWindow('10 a.m.'), 'Morning');
   assert.equal(normalizeRequestedTimeWindow('7 in the morning'), 'Morning');
-  assert.equal(normalizeRequestedTimeWindow('3 in the afternoon'), 'Afternoon');
-  assert.equal(normalizeRequestedTimeWindow('after lunch'), 'Afternoon');
-  assert.equal(normalizeRequestedTimeWindow('either morning or afternoon'), 'Flexible');
-  assert.throws(() => normalizeRequestedTimeWindow('in the evening'), /morning or afternoon/i);
+  assert.equal(normalizeRequestedTimeWindow('in the evening'), 'Evening');
+  assert.equal(normalizeRequestedTimeWindow('tonight'), 'Evening');
+  assert.equal(normalizeRequestedTimeWindow('3 in the afternoon'), 'Evening');
+  assert.equal(normalizeRequestedTimeWindow('after lunch'), 'Evening');
+  assert.equal(normalizeRequestedTimeWindow('either morning or evening'), 'Flexible');
 });
 
 test('a volunteered clock time becomes a preference rather than a promised slot', () => {
@@ -113,7 +114,7 @@ test('a volunteered clock time becomes a preference rather than a promised slot'
     now: () => NOW,
   });
   const prepared = manager.prepare({ ...VALID_DRAFT, preferred_time: '6 PM' });
-  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, afternoon');
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, evening');
 });
 
 test('normalizes conversational names and maps natural service wording without a trade rule', () => {
@@ -230,7 +231,7 @@ test('configured clock hours do not turn a caller preference into an exact appoi
   assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, morning');
 });
 
-test('prepares, confirms, and sends one normalized request to ARC', async () => {
+test('prepares, confirms, and sends one normalized request to Ark', async () => {
   const deliveries = [];
   const manager = createIntakeManager({
     context: CONTEXT,
@@ -260,7 +261,7 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   ]);
   assert.equal(
     prepared.summary.preferredDayAndTimeWindow,
-    'Tuesday, August 4, 2026, afternoon',
+    'Tuesday, August 4, 2026, evening',
   );
   assert.equal(prepared.summary.notes, 'The living room has vaulted ceilings.');
   assert.equal('consentToContact' in prepared.summary, false);
@@ -279,13 +280,13 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.requestType, 'service_request');
   assert.equal(deliveries[0].payload.service, 'Interior Painting');
   assert.equal(deliveries[0].payload.requestedDate, '2026-08-04');
-  assert.equal(deliveries[0].payload.requestedTimeWindow, 'Afternoon');
-  assert.equal(deliveries[0].payload.requestedTime, 'Afternoon');
+  assert.equal(deliveries[0].payload.requestedTimeWindow, 'Evening');
+  assert.equal(deliveries[0].payload.requestedTime, 'Evening');
   assert.equal(
     deliveries[0].payload.requestSummary,
     [
       '- Service: Interior Painting',
-      '- Preferred window: Tuesday, August 4, 2026 — Afternoon',
+      '- Preferred window: Tuesday, August 4, 2026 — Evening',
       '- Address: 123 Main Street, Albany, NY 12207',
       '- Notes: The living room has vaulted ceilings.',
     ].join('\n'),
@@ -298,8 +299,8 @@ test('prepares, confirms, and sends one normalized request to ARC', async () => 
   assert.equal(deliveries[0].payload.Job, 'Interior Painting');
   assert.equal(deliveries[0].payload.PreferredDay, '2026-08-04');
   assert.equal(deliveries[0].payload.PreferredDate, '2026-08-04');
-  assert.equal(deliveries[0].payload.PreferredTimeWindow, 'Afternoon');
-  assert.equal(deliveries[0].payload.PreferredTime, 'Afternoon');
+  assert.equal(deliveries[0].payload.PreferredTimeWindow, 'Evening');
+  assert.equal(deliveries[0].payload.PreferredTime, 'Evening');
   assert.equal(deliveries[0].payload.Notes, 'The living room has vaulted ceilings.');
   assert.equal(deliveries[0].payload.RequestSummary, deliveries[0].payload.requestSummary);
   assert.match(deliveries[0].options.idempotencyKey, /^[a-f0-9]{64}$/);
@@ -370,10 +371,10 @@ test('an emergency-enabled business still sends scheduled requests without urgen
   assert.equal('requestUrgency' in deliveries[0], false);
   assert.equal('RequestUrgency' in deliveries[0], false);
   assert.equal(deliveries[0].requestedDate, '2026-08-04');
-  assert.equal(deliveries[0].requestedTimeWindow, 'Afternoon');
+  assert.equal(deliveries[0].requestedTimeWindow, 'Evening');
 });
 
-test('rejects an emergency marker when ARC did not enable emergency routing', () => {
+test('rejects an emergency marker when Ark did not enable emergency routing', () => {
   const manager = createIntakeManager({
     context: CONTEXT,
     callControlId: 'call-disabled-emergency',

@@ -10,7 +10,7 @@ import {
 } from '../demo-runtime.js';
 import { createIntakeManager, matchService } from '../intake.js';
 
-test('recognizes the dedicated ARC demo number in common Telnyx formats', () => {
+test('recognizes the dedicated Ark demo number in common Telnyx formats', () => {
   assert.equal(DEFAULT_DEMO_PHONE_NUMBER, '+17742316164');
   assert.equal(isDemoPhoneNumber('+1 (774) 231-6164'), true);
   assert.equal(isDemoPhoneNumber('tel:7742316164'), true);
@@ -55,12 +55,12 @@ test('keeps the neutral demo completely separate from dynamic account fill-ins',
   assert.equal(account.profile.businessName, 'Unrelated Dynamic Business');
 });
 
-test('loads the demo locally without requesting an ARC account', async () => {
+test('loads the demo locally without requesting an Ark account', async () => {
   let accountLoads = 0;
   const demo = await loadRuntimeForCalledPhone('+17742316164', {
     loadAccountRuntime: async () => {
       accountLoads += 1;
-      throw new Error('No ARC account is connected to that phone number.');
+      throw new Error('No Ark account is connected to that phone number.');
     },
   });
 
@@ -107,7 +107,7 @@ test('demo accepts any service with a Monday-through-Friday time-window preferen
     () => manager.prepare({
       ...request,
       preferred_date: 'Sunday',
-      preferred_time: 'afternoon',
+      preferred_time: 'evening',
     }),
     /outside the business's service-request days/i,
   );
@@ -115,15 +115,15 @@ test('demo accepts any service with a Monday-through-Friday time-window preferen
   const prepared = manager.prepare({
     ...request,
     preferred_date: 'Tuesday',
-    preferred_time: 'afternoon',
+    preferred_time: 'evening',
   });
 
   assert.equal(prepared.ok, true);
   assert.equal(prepared.summary.service, 'AC repair');
-  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, afternoon');
+  assert.equal(prepared.summary.preferredDayAndTimeWindow, 'Tuesday, August 4, 2026, evening');
 });
 
-test('loads every non-demo number through the unchanged ARC account path', async () => {
+test('loads every non-demo number through the unchanged Ark account path', async () => {
   const accountRuntime = {
     clientId: 'regular-account',
     profile: { businessName: 'Regular Business' },

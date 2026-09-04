@@ -125,10 +125,10 @@ async function fetchArcRuntime(runtimeForward) {
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`ARC runtime returned invalid JSON (${response.status}).`);
+    throw new Error(`Ark runtime returned invalid JSON (${response.status}).`);
   }
   if (!response.ok || data.ok === false) {
-    throw new Error(data.error || `ARC runtime request failed: ${response.status}`);
+    throw new Error(data.error || `Ark runtime request failed: ${response.status}`);
   }
   return data.runtime && typeof data.runtime === 'object'
     ? { ...data.runtime, ok: data.ok }
@@ -149,7 +149,7 @@ function arcIntakeConnection(runtime = {}) {
 async function sendArcData(runtime, payload, { idempotencyKey = '' } = {}) {
   if (isDemoRuntime(runtime)) return { ok: true, demo: true };
   const connection = arcIntakeConnection(runtime);
-  if (!connection.url) throw new Error('No ARC intake endpoint is configured.');
+  if (!connection.url) throw new Error('No Ark intake endpoint is configured.');
 
   const response = await fetch(connection.url, {
     method: 'POST',
@@ -166,11 +166,11 @@ async function sendArcData(runtime, payload, { idempotencyKey = '' } = {}) {
     try {
       data = JSON.parse(text);
     } catch {
-      throw new Error(`ARC intake returned invalid JSON (${response.status}).`);
+      throw new Error(`Ark intake returned invalid JSON (${response.status}).`);
     }
   }
   if (!response.ok || data.ok === false || data.success === false) {
-    throw new Error(data.error || `ARC intake request failed: ${response.status}`);
+    throw new Error(data.error || `Ark intake request failed: ${response.status}`);
   }
   return data;
 }

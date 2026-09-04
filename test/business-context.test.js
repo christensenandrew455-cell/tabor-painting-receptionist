@@ -82,7 +82,7 @@ test('builds business context while removing connection secrets', () => {
   assert.equal('voice' in context, false);
 });
 
-test('normalizes textual service-request day ranges from ARC', () => {
+test('normalizes textual service-request day ranges from Ark', () => {
   const context = createBusinessContext({
     profile: {
       serviceRequestDays: 'Monday through Friday',
@@ -98,7 +98,7 @@ test('normalizes textual service-request day ranges from ARC', () => {
   ]);
 });
 
-test('keeps ARC structured service-area states and counties for risk checks', () => {
+test('keeps Ark structured service-area states and counties for risk checks', () => {
   const context = createBusinessContext({
     profile: {
       businessName: 'County Plumbing',
@@ -154,7 +154,7 @@ test('accepts legacy estimate scheduling fields without exposing their old names
   assert.doesNotMatch(context.knowledgeJson, /estimateDays|earliestEstimateStart/);
 });
 
-test('accepts ARC profile data supplied as a JSON string', () => {
+test('accepts Ark profile data supplied as a JSON string', () => {
   const context = createBusinessContext({
     clientId: 'client-456',
     profile: JSON.stringify({
@@ -189,7 +189,7 @@ test('caps website knowledge included in the model prompt', () => {
   }
 });
 
-test('accepts only the explicit ARC emergency-routing contract and otherwise fails closed', () => {
+test('accepts only the explicit Ark emergency-routing contract and otherwise fails closed', () => {
   const enabled = createBusinessContext({
     profile: {
       businessName: 'Emergency Plumbing',
