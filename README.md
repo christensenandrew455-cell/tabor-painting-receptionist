@@ -1,40 +1,41 @@
-# ARC AI Receptionist
+# Ark AI Receptionist
 
-This Railway service connects Telnyx calls to an OpenAI Realtime receptionist. The receptionist receives current business information from ARC, answers callers from that website data, and can send one caller-confirmed service request back to ARC.
+This Railway service connects Telnyx calls to an OpenAI Realtime receptionist. The receptionist receives current business information from Ark, answers callers from that website data, and can send one caller-confirmed service request back to Ark.
 
 ## Conversation behavior
 
-The receptionist follows one server-owned intake sequence. Emergency timing is inserted only when ARC explicitly enables it for that business:
+The receptionist follows one server-owned intake sequence. Emergency timing is inserted only when Ark explicitly enables it for that business:
 
 1. Service
 2. Caller name
 3. Full project address
 4. Optional emergency timing choice: help as soon as possible or normal scheduling
-5. Preferred service-request day and morning/afternoon window for scheduled requests
-6. Additional notes
-7. Standalone consent to be contacted
-8. Final readback and separate caller confirmation
-9. Submission result, goodbye, and hangup
+5. Morning or evening preference for scheduled requests
+6. Preferred service-request day or date
+7. Additional notes
+8. Standalone consent to be contacted
+9. Final readback and separate caller confirmation
+10. Submission result, goodbye, and hangup
 
 One conversation controller owns all completed fields and the current step. The language model interprets the caller's natural speech, but it cannot reorder the flow, reopen a completed field, prepare a summary, submit a request, or end the call. If the caller volunteers several details together, all grounded details are retained and the receptionist asks only for the next missing field.
 
-General language understanding is used for names, addresses, explicit timing choices, days, time windows, corrections, unfinished thoughts, and matching requested work to the business's supplied services. Business, trade, price, duration, method, and policy answers must have an exact supporting fact in ARC-provided business information. The receptionist may explain ARC-supplied service-request days and hours, but it never claims that a specific appointment is available. If emergency service is enabled, the server asks, “Do you need help as soon as possible, or would you prefer to schedule a time?” Only an explicit ASAP choice gets the emergency marker; the receptionist never infers urgency from the work or its apparent severity and never promises dispatch or arrival. Scheduled requests retain the normal preferred-day and morning/afternoon flow. If emergency service is disabled, the timing choice is completely skipped.
+General language understanding is used for names, addresses, explicit timing choices, days, time windows, corrections, unfinished thoughts, and matching requested work to the business's supplied services. Business, trade, price, duration, method, and policy answers must have an exact supporting fact in Ark-provided business information. The receptionist may explain Ark-supplied service-request days and hours, but it never claims that a specific appointment is available. If emergency service is enabled, the server asks, “Do you need help as soon as possible, or would you prefer to schedule a time?” Only an explicit ASAP choice gets the emergency marker; the receptionist never infers urgency from the work or its apparent severity and never promises dispatch or arrival. Scheduled requests ask for the morning-or-evening window first and the preferred day second. If emergency service is disabled, the timing choice is completely skipped.
 
 Notes and business questions are separate meanings. Useful scope, location, quantity, condition, material, and color details given while answering the service question are retained as concise, owner-facing project notes even if the language model omits its optional note extraction. Fillers, false starts, repeated clauses, and standalone hesitations are excluded. Unsupported business questions are reduced to one direct question before being saved. A project detail ending in a conversational phrase such as “you know what I mean?” remains a note. Schedule answers and schedule corrections never become notes. After a note is acknowledged, later turns do not repeat or paraphrase it. Empty notes are omitted from the final readback.
 
-Once the project information is complete, one dedicated final-summary job reviews the complete caller evidence and verified request state with `gpt-5.6-luna`. Strict structured output returns only a concise service label and zero to two owner-facing note sentences. On regular numbers, the configured service name is locked and cannot be rewritten; on the demo number, Luna produces the concise work label. Name, address, emergency marker, preferred day, and time window remain server-owned fields and are never regenerated by the summary model. The same final wording is used in both the spoken readback and the saved summary, so the caller does not approve one version while ARC receives another. The summary job begins while the contact-consent question is being spoken to hide its latency. If Luna is unavailable, the existing Realtime model performs one dedicated whole-request summary before the server uses its deterministic fallback.
+Once the project information is complete, one dedicated final-summary job reviews the complete caller evidence and verified request state with `gpt-5.6-luna`. Strict structured output returns only a concise service label and zero to two owner-facing note sentences. On regular numbers, the configured service name is locked and cannot be rewritten; on the demo number, Luna produces the concise work label. Name, address, emergency marker, preferred day, and time window remain server-owned fields and are never regenerated by the summary model. The same final wording is used in both the spoken readback and the saved summary, so the caller does not approve one version while Ark receives another. The summary job begins while the contact-consent question is being spoken to hide its latency. If Luna is unavailable, the existing Realtime model performs one dedicated whole-request summary before the server uses its deterministic fallback.
 
-The server normalizes relative dates such as `Tuesday` and ordinal days such as `the 10th` in the business timezone and rejects requests outside ARC-supplied service-request days. It stores only `Morning`, `Afternoon`, or `Flexible` as the caller's preference. A volunteered exact time is reduced to its broad window; a clock time without a clear window triggers a morning-or-afternoon question, never an AM-or-PM clarification.
+The server normalizes relative dates such as `Tuesday` and ordinal days such as `the 10th` in the business timezone and rejects requests outside Ark-supplied service-request days. It stores only `Morning`, `Evening`, or `Flexible` as the caller's preference. A volunteered exact time is reduced to its broad window; a clock time without a clear window triggers a morning-or-evening question, never an AM-or-PM clarification.
 
-After notes and standalone contact consent are complete, the server prepares the final readback. Contact consent cannot double as summary confirmation. The caller must separately confirm the complete readback before submission. The receptionist then says it is submitting, performs one idempotent ARC write, reports success or failure, says goodbye, waits for the audio playback mark, and hangs up. There is no post-submission question mode.
+After notes and standalone contact consent are complete, the server prepares the final readback. Contact consent cannot double as summary confirmation. The caller must separately confirm the complete readback before submission. The receptionist then says it is submitting, performs one idempotent Ark write, reports success or failure, says goodbye, waits for the audio playback mark, and hangs up. There is no post-submission question mode.
 
 ### Dedicated demo number
 
-Calls to **(774) 231-6164** are identified locally before any ARC-account lookup. Every other called number continues through the normal ARC-account runtime path. The demo follows the same intake order and final readback as a normal receptionist, but it accepts any substantive type of requested work instead of matching against a business service catalog. A non-service answer cannot complete the service step.
+Calls to **(774) 231-6164** are identified locally before any Ark-account lookup. Every other called number continues through the normal Ark-account runtime path. The demo follows the same intake order and final readback as a normal receptionist, but it accepts any substantive type of requested work instead of matching against a business service catalog. A non-service answer cannot complete the service step.
 
-The demo accepts preferred service-request days Monday through Friday in the `America/New_York` timezone and records a morning or afternoon window. Every separate business-information question receives the fixed response, “I'm sorry, I don't know that, but you can submit a service request,” after which the still-pending intake question resumes. Question-shaped requests for actual work, such as “Can you mow my lawn?”, are accepted as services.
+The demo records a morning or evening preference first, then accepts preferred service-request days Monday through Friday in the `America/New_York` timezone. Every separate business-information question receives the fixed response, “I'm sorry, I don't know that, but you can submit a service request,” after which the still-pending intake question resumes. Question-shaped requests for actual work, such as “Can you mow my lawn?”, are accepted as services.
 
-The greeting explains that the caller can pretend to be one of their own clients and that the provided information is not saved. Demo calls do not write to ARC, run the lead-risk/delivery path, invoke the configured delivery callback, retain caller/receptionist transcripts in this service, or claim that a request was submitted. Once the caller confirms the final readback, the demo says, “Thank you for calling the demo number. Have a good day,” and hangs up after playback completes.
+The greeting explains that the caller can pretend to be one of their own clients and that the provided information is not saved. Demo calls do not write to Ark, run the lead-risk/delivery path, invoke the configured delivery callback, retain caller/receptionist transcripts in this service, or claim that a request was submitted. Once the caller confirms the final readback, the demo says, “Thank you for calling the demo number. Have a good day,” and hangs up after playback completes.
 
 ## Turn taking and recovery
 
@@ -65,13 +66,13 @@ For each substantive caller turn, Railway logs `[Call latency]` with speech-stop
 
 ```mermaid
 flowchart TD
-    A[Telnyx incoming call] --> B[Load website data from ARC]
+    A[Telnyx incoming call] --> B[Load website data from Ark]
     B --> C[Open PCMU media stream]
     C --> D[Collect configured intake steps]
     D --> E[Create and normalize final wording]
     E --> F{Caller confirms?}
     F -- Correction --> D
-    F -- Yes --> G[Announce and send once to ARC]
+    F -- Yes --> G[Announce and send once to Ark]
     G --> H[Report result]
     H --> I[Goodbye and hang up]
 ```
@@ -114,15 +115,15 @@ PORT
 For the current ARK OCM integration, set `RECEPTIONIST_CONFIG_URL` to
 `https://ark-websites-ocm.vercel.app/api/receptionist/runtime`. Leave
 `ARC_INTAKE_URL` unset: the runtime response supplies the correct private URL for the
-business matched to the called Telnyx number. ARC-provided settings take precedence
+business matched to the called Telnyx number. Ark-provided settings take precedence
 over the optional intake URL and business timezone fallback. Voice is controlled only
 by `OPENAI_VOICE` on Railway and otherwise defaults to `marin`.
 
-## ARC runtime request
+## Ark runtime request
 
 For every `call.initiated` webhook, this service forwards the exact original Telnyx
 JSON body and its `telnyx-signature-ed25519` and `telnyx-timestamp` headers to the
-configured ARC runtime endpoint. ARK verifies that signature before returning any
+configured Ark runtime endpoint. Ark verifies that signature before returning any
 business information. A simplified incoming Telnyx body looks like:
 
 ```json
@@ -138,7 +139,7 @@ business information. A simplified incoming Telnyx body looks like:
 }
 ```
 
-The ARC response can place public business information in `profile`, `business`, `businessInfo`, `website`, `knowledge`, `faq`, or top-level public business fields. A typical response is:
+The Ark response can place public business information in `profile`, `business`, `businessInfo`, `website`, `knowledge`, `faq`, or top-level public business fields. A typical response is:
 
 ```json
 {
@@ -182,13 +183,13 @@ The ARC response can place public business information in `profile`, `business`,
 }
 ```
 
-Service-request weekdays and start times are optional. `serviceRequestRouting.mode` is authoritative: `scheduled-only` keeps the original flow and must not expose an emergency choice, while `asap-or-scheduled` inserts the timing question. An ASAP choice submits `requestUrgency: "emergency"` and `requestedTimeWindow: "As soon as possible"`; a scheduled choice continues to the preferred day and broad time window. `emergency.availability` is either `24/7` or `regular-service-hours`, and neither value authorizes the receptionist to promise dispatch or arrival. The older `estimateDays`, `estimateWeekdays`, `earliestEstimateStart`, and `latestEstimateStart` runtime fields remain accepted as compatibility aliases, but all new ARC data and caller-facing language should use the service-request names. Owner-supplied Title/Info items are available for grounded business-question answers. Legacy business-hours fields, tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
+Service-request weekdays and start times are optional. `serviceRequestRouting.mode` is authoritative: `scheduled-only` keeps the original flow and must not expose an emergency choice, while `asap-or-scheduled` inserts the timing question. An ASAP choice submits `requestUrgency: "emergency"` and `requestedTimeWindow: "As soon as possible"`; a scheduled choice continues to the morning-or-evening preference first and the preferred day second. `emergency.availability` is either `24/7` or `regular-service-hours`, and neither value authorizes the receptionist to promise dispatch or arrival. The older `estimateDays`, `estimateWeekdays`, `earliestEstimateStart`, and `latestEstimateStart` runtime fields remain accepted as compatibility aliases, but all new Ark data and caller-facing language should use the service-request names. Owner-supplied Title/Info items are available for grounded business-question answers. Legacy business-hours fields, tokens, secrets, credentials, connection URLs, and legacy receptionist-name/voice controls are removed before website data is placed in the AI prompt.
 
-Service areas have two supported modes: `states` means one or more whole states with no county list; `counties` means exactly one state plus one or more counties in that state. The risk check uses the structured arrays when ARC supplies them and keeps the flat `serviceAreas` field as a compatibility fallback.
+Service areas have two supported modes: `states` means one or more whole states with no county list; `counties` means exactly one state plus one or more counties in that state. The risk check uses the structured arrays when Ark supplies them and keeps the flat `serviceAreas` field as a compatibility fallback.
 
 ## Receptionist-side risk assessment
 
-The receptionist performs the checks after the caller confirms the final readback and before delivery to ARC. The spoken sequence is: announce that the service request is being sent, run the Telnyx and Google checks, calculate the score, deliver the enriched request to ARC, and only then report that the request was sent. ARC does not need to recalculate the score. Telnyx requests carrier plus caller-name data, and Google Address Validation checks the completed service address.
+The receptionist performs the checks after the caller confirms the final readback and before delivery to Ark. The spoken sequence is: announce that the service request is being sent, run the Telnyx and Google checks, calculate the score, deliver the enriched request to Ark, and only then report that the request was sent. Ark does not need to recalculate the score. Telnyx requests carrier plus caller-name data, and Google Address Validation checks the completed service address.
 
 If `GOOGLE_MAPS_API_KEY` has not been added yet, the address check is marked `not_configured` and contributes no points. An API outage is marked `error` and also does not falsely label the address invalid. Only a completed Google validation result that cannot verify an actual premise adds the four-point address warning. A Telnyx lookup failure or invalid caller number does add four points, as specified.
 
@@ -213,7 +214,7 @@ If `GOOGLE_MAPS_API_KEY` has not been added yet, the address check is marked `no
 
 The resistance counter increases when a caller refuses a required intake field or asks why required information is needed. One confused or annoyed response therefore remains zero-point behavior. Risk details are intentionally not spoken to the caller.
 
-## ARC service-request payload
+## Ark service-request payload
 
 After consent, readback, and confirmation, the intake endpoint receives one request with an `Idempotency-Key` header and this JSON shape:
 
@@ -229,8 +230,8 @@ After consent, readback, and confirmation, the intake endpoint receives one requ
   "name": "Jordan Smith",
   "address": "123 Main Street, Albany, NY 12207",
   "requestedDate": "2026-08-11",
-  "requestedTimeWindow": "Afternoon",
-  "requestedTime": "Afternoon",
+  "requestedTimeWindow": "Evening",
+  "requestedTime": "Evening",
   "additionalNotes": "The living room has vaulted ceilings.",
   "consentToContact": true,
   "summaryConfirmed": true,
@@ -290,15 +291,15 @@ After consent, readback, and confirmation, the intake endpoint receives one requ
   "Job": "Interior Painting",
   "PreferredDay": "2026-08-11",
   "PreferredDate": "2026-08-11",
-  "PreferredTimeWindow": "Afternoon",
-  "PreferredTime": "Afternoon",
+  "PreferredTimeWindow": "Evening",
+  "PreferredTime": "Evening",
   "Notes": "The living room has vaulted ceilings."
 }
 ```
 
 For an explicitly selected ASAP request, `requestedDate`, `PreferredDay`, and `PreferredDate` are empty; both `requestUrgency` and `RequestUrgency` are `"emergency"`; and all requested/preferred time-window aliases are `"As soon as possible"`. Scheduled payloads omit both urgency keys.
 
-ARC should return JSON with a successful HTTP status. `{ "ok": false }` or `{ "success": false }` is treated as a failed save, and the receptionist will not claim the request was sent.
+Ark should return JSON with a successful HTTP status. `{ "ok": false }` or `{ "success": false }` is treated as a failed save, and the receptionist will not claim the request was sent.
 
 ## Endpoints
 
@@ -318,4 +319,4 @@ npm run check
 npm test
 ```
 
-Live call testing additionally requires valid Telnyx, OpenAI, Railway, and ARC credentials. Never commit those values or caller data.
+Live call testing additionally requires valid Telnyx, OpenAI, Railway, and Ark credentials. Never commit those values or caller data.

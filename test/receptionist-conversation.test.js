@@ -104,8 +104,11 @@ function completeThroughSchedule(conversation) {
     address_status: 'complete',
     fields: { address: '123 Main Street, Albany, New York' },
   });
-  return analyzedTurn(conversation, 'Tuesday afternoon.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  analyzedTurn(conversation, 'Evening.', {
+    fields: { preferred_time: 'evening' },
+  });
+  return analyzedTurn(conversation, 'Tuesday.', {
+    fields: { preferred_date: 'Tuesday' },
   });
 }
 
@@ -132,7 +135,7 @@ function completeToSummary(conversation) {
     name: 'Jordan Smith',
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
-    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, evening',
     notes: 'None',
   });
 }
@@ -174,12 +177,18 @@ test('one authoritative state advances through the required field order exactly 
   });
   assert.equal(
     action.text,
-    'Got it. What day or date works best, and would you prefer morning or afternoon?',
+    'Got it. Would morning or evening work better?',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'Tuesday afternoon.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  action = analyzedTurn(conversation, 'Evening.', {
+    fields: { preferred_time: 'evening' },
+  });
+  assert.equal(action.text, 'What day or date works best?');
+  assert.equal(conversation.snapshot().pendingField, 'schedule');
+
+  action = analyzedTurn(conversation, 'Tuesday.', {
+    fields: { preferred_date: 'Tuesday' },
   });
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
@@ -234,14 +243,19 @@ test('an emergency-enabled business keeps the normal schedule branch available',
   const scheduleQuestion = analyzedTurn(conversation, "I'd prefer to schedule a time.");
   assert.equal(
     scheduleQuestion.text,
-    'Got it. What day or date works best, and would you prefer morning or afternoon?',
+    'Got it. Would morning or evening work better?',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(conversation.snapshot().values.requestTiming, 'scheduled');
   assert.equal(conversation.snapshot().values.requestUrgency, '');
 
-  const notesQuestion = analyzedTurn(conversation, 'Tuesday afternoon.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  const dayQuestion = analyzedTurn(conversation, 'Evening.', {
+    fields: { preferred_time: 'evening' },
+  });
+  assert.equal(dayQuestion.text, 'What day or date works best?');
+
+  const notesQuestion = analyzedTurn(conversation, 'Tuesday.', {
+    fields: { preferred_date: 'Tuesday' },
   });
   assert.match(notesQuestion.text, /additional notes/i);
   assert.equal(conversation.snapshot().pendingField, 'notes');
@@ -449,7 +463,7 @@ test('a clearly spoken full address advances even when the analyzer omits it', (
 
   assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
 });
 
 test('a city and state alone stay pending until a numbered street address is supplied', () => {
@@ -483,7 +497,7 @@ test('a city and state alone stay pending until a numbered street address is sup
     '197 Lancaster Road, Berlin, Massachusetts',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
 });
 
 test('a grounded full address outranks a false unintelligible label', () => {
@@ -506,7 +520,7 @@ test('a grounded full address outranks a false unintelligible label', () => {
     },
   );
 
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.doesNotMatch(action.text, /didn't catch/i);
   assert.equal(
     conversation.snapshot().values.address,
@@ -540,7 +554,7 @@ test('the logged spoken-number address is accepted once without another address 
     '197 Lancaster Road, Berlin, Massachusetts',
   );
   assert.equal(conversation.snapshot().pendingField, 'schedule');
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.doesNotMatch(action.text, /street address|where the service is needed|what state/i);
 });
 
@@ -642,7 +656,7 @@ test('service scope and later notes stay summarized through readback and deliver
     name: 'Jordan Smith',
     service: 'Mulching',
     address: '123 Main Street, Albany, New York',
-    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, evening',
     notes: conversation.intakeArguments().additional_notes,
   });
   assert.match(readback, /Five mulch pits need to be done/);
@@ -721,7 +735,7 @@ test('the supplied call transcript no longer skips fields, repeats the address, 
     '197 Lancaster Road, Berlin, Massachusetts.',
     { address_status: 'not_addressed' },
   );
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.equal(conversation.snapshot().values.address, '197 Lancaster Road, Berlin, Massachusetts');
 
   action = analyzedTurn(conversation, 'Tuesday at 2 PM.', {
@@ -921,7 +935,7 @@ test('valid intake answers outrank a false business-question label and extra det
     business_question_type: 'other',
     fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
   });
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(
     conversation.snapshot().values.address,
@@ -1043,7 +1057,7 @@ test('a spoken schedule correction updates the locked preference and never becom
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /I don't know that/i);
   assert.equal(conversation.snapshot().values.preferredDate, '12');
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
   assert.deepEqual(conversation.snapshot().notes, []);
 
   action = analyzedTurn(conversation, 'Não.');
@@ -1071,7 +1085,7 @@ test('an ordinal day-of-month answer completes the date instead of becoming a no
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(
     action.text,
-    'Would morning or afternoon work better for the service request?',
+    'Would morning or evening work better?',
   );
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -1121,7 +1135,7 @@ test('service-request-window questions use app constraints without promising ava
   assert.match(action.text, /9:00 AM to 4:00 PM/i);
   assert.match(action.text, /business owner will follow up to confirm the exact date and time/i);
   assert.doesNotMatch(action.text, /available/i);
-  assert.match(action.text, /preferred day.*morning or afternoon/i);
+  assert.match(action.text, /morning or evening.*preferred day/i);
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.deepEqual(conversation.snapshot().notes, []);
 });
@@ -1159,7 +1173,7 @@ test('field reason questions get a short explanation and repeat only the pending
     fields: { address: '123 Main Street, Albany, New York' },
   });
   action = analyzedTurn(conversation, 'Why do you need the date and time?');
-  assert.match(action.text, /preferred day and time window.*day or date.*morning or afternoon/i);
+  assert.match(action.text, /preferred time window and day.*morning or evening/i);
 
   analyzedTurn(conversation, 'Tuesday at 2 PM.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '2 PM' },
@@ -1179,7 +1193,7 @@ test('AI identity questions are answered directly without changing intake state'
   const action = analyzedTurn(conversation, 'Are you a bot?');
   assert.equal(
     action.text,
-    "I'm an AI receptionist working for Tabor Painting, managed by ARC Client Center. What kind of work are you looking to have done?",
+    "I'm an AI receptionist working for Tabor Painting, managed by Ark Client Center. What kind of work are you looking to have done?",
   );
   assert.equal(conversation.snapshot().pendingField, 'service');
   assert.deepEqual(conversation.snapshot().notes, []);
@@ -1217,7 +1231,7 @@ test('partial addresses stay pending and later fragments combine without invente
     address_status: 'complete',
     fields: { address: '123 Main Street, Albany, New York' },
   });
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.equal(conversation.snapshot().values.address, '123 Main Street, Albany, New York');
 });
 
@@ -1246,7 +1260,7 @@ test('a supplied town is retained and only the missing state is requested', () =
     address_status: 'partial',
     address_parts: { street: '', locality: 'Earlon', state: 'Massachusetts' },
   });
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -1280,7 +1294,7 @@ test('the logged address sequence ignores a bad fragment and accepts the later c
   action = analyzedTurn(conversation, 'Berlin, Massachusetts.', {
     turn_status: 'background_speech',
   });
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -1321,7 +1335,7 @@ test('the supplied split-address call waits for locality, avoids schedule repeti
     address_status: 'complete',
     fields: { address: '197 Lancaster Road, Berlin, Massachusetts' },
   });
-  assert.match(action.text, /date/i);
+  assert.match(action.text, /morning or evening/i);
   assert.equal(
     conversation.snapshot().values.address,
     '197 Lancaster Road, Berlin, Massachusetts',
@@ -1380,7 +1394,7 @@ test('a literal caller name advances even when analysis incorrectly calls it uni
   assert.equal(conversation.snapshot().pendingField, 'address');
 });
 
-test('a bare hour asks for a morning-or-afternoon window and a window reply completes it', () => {
+test('a bare hour asks for a morning-or-evening window and a window reply completes it', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1397,12 +1411,12 @@ test('a bare hour asks for a morning-or-afternoon window and a window reply comp
   let action = analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
   });
-  assert.equal(action.text, 'Would morning or afternoon work better?');
+  assert.equal(action.text, 'Would morning or evening work better?');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'Afternoon.');
+  action = analyzedTurn(conversation, 'Evening.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1423,11 +1437,11 @@ test('a natural daypart-only clarification completes a previously bare hour', ()
   let action = analyzedTurn(conversation, 'Tuesday at 1.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '1' },
   });
-  assert.equal(action.text, 'Would morning or afternoon work better?');
+  assert.equal(action.text, 'Would morning or evening work better?');
 
-  action = analyzedTurn(conversation, 'In the afternoon.');
+  action = analyzedTurn(conversation, 'In the evening.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
 });
 
 test('a noisy ASR window reply completes the preference without asking again', () => {
@@ -1447,7 +1461,7 @@ test('a noisy ASR window reply completes the preference without asking again', (
   let action = analyzedTurn(conversation, 'Tuesday at 10.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '10' },
   });
-  assert.equal(action.text, 'Would morning or afternoon work better?');
+  assert.equal(action.text, 'Would morning or evening work better?');
 
   action = analyzedTurn(conversation, 'You morning.');
   assert.match(action.text, /additional notes/i);
@@ -1456,7 +1470,7 @@ test('a noisy ASR window reply completes the preference without asking again', (
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
-test('Tuesday at 3 in the afternoon advances when the analyzer drops the time', () => {
+test('Tuesday at 3 in the evening advances when the analyzer drops the time', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1470,13 +1484,13 @@ test('Tuesday at 3 in the afternoon advances when the analyzer drops the time', 
     fields: { address: '197 Lincoln Road, Berlin, Massachusetts' },
   });
 
-  const action = analyzedTurn(conversation, 'Tuesday at 3 in the afternoon.', {
+  const action = analyzedTurn(conversation, 'Tuesday at 3 in the evening.', {
     fields: { preferred_date: 'Tuesday', preferred_time: '' },
   });
 
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1509,7 +1523,7 @@ test('an explicit AM or morning phrase wins when analysis drops the time of day'
   }
 });
 
-test('a bare time-only reply asks for morning or afternoon after saving the date', () => {
+test('a bare time-only reply asks for morning or evening after saving the date', () => {
   const conversation = createReceptionistConversation({ context: CONTEXT });
   analyzedTurn(conversation, 'Exterior painting.', {
     service_status: 'complete',
@@ -1528,16 +1542,16 @@ test('a bare time-only reply asks for morning or afternoon after saving the date
   });
   assert.equal(
     action.text,
-    'Would morning or afternoon work better for the service request?',
+    'Would morning or evening work better?',
   );
 
   action = analyzedTurn(conversation, '3.');
-  assert.equal(action.text, 'Would morning or afternoon work better?');
+  assert.equal(action.text, 'Would morning or evening work better?');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
 
-  action = analyzedTurn(conversation, 'Afternoon.');
+  action = analyzedTurn(conversation, 'Evening.');
   assert.match(action.text, /additional notes/i);
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1562,7 +1576,7 @@ test('a clearly spoken exact time wins over a false unintelligible analysis', ()
 
   assert.match(action.text, /additional notes/i);
   assert.doesNotMatch(action.text, /didn't catch|what time would work best/i);
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
   assert.equal(conversation.snapshot().pendingField, 'notes');
 });
 
@@ -1610,12 +1624,12 @@ test('a broad preference is recorded without treating configured hours as an exa
   let action = analyzedTurn(conversation, 'Next Monday at 6.', {
     fields: { preferred_date: 'Next Monday', preferred_time: '6' },
   });
-  assert.equal(action.text, 'Would morning or afternoon work better?');
+  assert.equal(action.text, 'Would morning or evening work better?');
 
-  action = analyzedTurn(conversation, 'Afternoon.');
+  action = analyzedTurn(conversation, 'Evening.');
   assert.match(action.text, /additional notes/i);
   assert.equal(conversation.snapshot().values.preferredDate, 'Next Monday');
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
 });
 
 test('an unavailable day stays pending with a useful replacement question', () => {
@@ -2121,7 +2135,7 @@ test('correcting only the summary time window preserves the already confirmed da
   });
   assert.equal(action.type, 'prepare');
   assert.equal(conversation.snapshot().values.preferredDate, 'Tuesday');
-  assert.equal(conversation.snapshot().values.preferredTime, 'Afternoon');
+  assert.equal(conversation.snapshot().values.preferredTime, 'Evening');
 });
 
 test('an emergency summary can be corrected back to normal scheduling', () => {
@@ -2135,7 +2149,7 @@ test('an emergency summary can be corrected back to normal scheduling', () => {
   });
 
   assert.equal(action.type, 'speak');
-  assert.match(action.text, /day or date.*morning or afternoon/i);
+  assert.equal(action.text, 'Would morning or evening work better?');
   assert.equal(conversation.snapshot().pendingField, 'schedule');
   assert.equal(conversation.snapshot().values.requestUrgency, '');
 });
@@ -2144,8 +2158,8 @@ test('a scheduled summary can be explicitly corrected to emergency ASAP', () => 
   const conversation = createReceptionistConversation({ context: EMERGENCY_CONTEXT });
   completeThroughAddress(conversation);
   analyzedTurn(conversation, "I'd prefer to schedule a time.");
-  analyzedTurn(conversation, 'Tuesday afternoon.', {
-    fields: { preferred_date: 'Tuesday', preferred_time: 'afternoon' },
+  analyzedTurn(conversation, 'Tuesday evening.', {
+    fields: { preferred_date: 'Tuesday', preferred_time: 'evening' },
   });
   analyzedTurn(conversation, 'No.', { notes_complete: true });
   analyzedTurn(conversation, 'Yes.', { contact_consent: 'yes' });
@@ -2153,7 +2167,7 @@ test('a scheduled summary can be explicitly corrected to emergency ASAP', () => 
     name: 'Jordan Smith',
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
-    preferredDayAndTimeWindow: 'Tuesday afternoon',
+    preferredDayAndTimeWindow: 'Tuesday evening',
     notes: 'None',
   });
 
@@ -2182,7 +2196,7 @@ test('summary speech omits empty notes and includes actual notes once', () => {
     name: 'Jordan Smith',
     service: 'Exterior Painting',
     address: '123 Main Street, Albany, New York',
-    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, afternoon',
+    preferredDayAndTimeWindow: 'Tuesday, August 11, 2099, evening',
   };
   const empty = buildSummarySpeech({ ...base, notes: 'None' });
   assert.doesNotMatch(empty, /notes/i);

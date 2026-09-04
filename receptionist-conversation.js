@@ -16,6 +16,7 @@ import {
   MORE_NOTES_PROMPT,
   NAME_QUESTION,
   PROJECT_ADDRESS_QUESTION,
+  SCHEDULE_DAY_QUESTION,
   SCHEDULE_QUESTION,
   SERVICE_QUESTION,
   UNCLEAR_CALLER_RESPONSE,
@@ -105,7 +106,7 @@ export const CALLER_TURN_ANALYSIS_TOOL = Object.freeze({
           },
           preferred_time: {
             type: 'string',
-            description: 'Caller\'s preferred time-window words, normally morning or afternoon. Preserve the caller\'s words. If they volunteered an exact time, copy it literally so the server can convert it to a broad window. Never add or ask for AM or PM. Empty when absent.',
+            description: 'Caller\'s preferred time-window words, normally morning or evening. Preserve the caller\'s words. If they volunteered an exact time, copy it literally so the server can convert it to a broad window. Never add or ask for AM or PM. Empty when absent.',
           },
         },
         required: ['service', 'name', 'address', 'preferred_date', 'preferred_time'],
@@ -512,7 +513,7 @@ function normalizedTimePhrase(value) {
 }
 
 function hasExplicitTimeWindow(value) {
-  return /\b(?:am|pm|morning|afternoon|noon|either|flexible|any ?time)\b/i.test(
+  return /\b(?:am|pm|morning|afternoon|evening|night|noon|midnight|tonight|either|flexible|any ?time)\b/i.test(
     normalizedTimePhrase(value),
   );
 }
@@ -598,7 +599,7 @@ function requestedTimeCandidate(value, { dateCandidate = '', allowBare = false }
 function timeWindowOnlyCandidate(value) {
   const text = normalizedTimePhrase(value);
   const match = text.match(
-    /^(?:(?:it is|it's|that is|that's|make it|i mean|i meant|okay|ok|yes|yeah|yep|yup|you|the|uh|um)\s+)*(?:(?:in|during)\s+(?:the\s+)?)?(morning|afternoon|either|flexible|any ?time)$/i,
+    /^(?:(?:it is|it's|that is|that's|make it|i mean|i meant|okay|ok|yes|yeah|yep|yup|you|the|uh|um)\s+)*(?:(?:in|during)\s+(?:the\s+)?)?(morning|afternoon|evening|night|either|flexible|any ?time)$/i,
   );
   if (!match) return '';
   return match[1];
@@ -619,7 +620,7 @@ function isScheduleOnlyProjectNote(note, dateCandidate) {
   const withoutDate = normalized(note).replace(normalized(dateCandidate), ' ').trim();
   if (!withoutDate) return true;
   const remainder = withoutDate
-    .replace(/\b(?:a|at|around|about|on|for|the|date|day|time|window|morning|afternoon|flexible|estimate|appointment|preferred|preference|works?|work|can|could|do|does|did|is|are|was|would|will|please|put|request|i|i'd|i'll|i'm|me|my|we|you|like|maybe|probably|want|wanted|thinking|hoping|good|fine|okay|ok|sounds|make|it|that)\b/g, ' ')
+    .replace(/\b(?:a|at|around|about|on|for|the|date|day|time|window|morning|afternoon|evening|night|flexible|estimate|appointment|preferred|preference|works?|work|can|could|do|does|did|is|are|was|would|will|please|put|request|i|i'd|i'll|i'm|me|my|we|you|like|maybe|probably|want|wanted|thinking|hoping|good|fine|okay|ok|sounds|make|it|that)\b/g, ' ')
     .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -713,7 +714,7 @@ function serviceRequestWindowSpeech(context = {}) {
   const timeSpeech = earliest && latest
     ? ` from ${earliest} to ${latest}`
     : (earliest ? ` starting at ${earliest}` : (latest ? ` through ${latest}` : ''));
-  return `The business accepts service requests${daySpeech}${timeSpeech}. I can record your preferred day and whether morning or afternoon works better. If the request is accepted, the business owner will follow up to confirm the exact date and time.`;
+  return `The business accepts service requests${daySpeech}${timeSpeech}. I can record whether morning or evening works better, then your preferred day. If the request is accepted, the business owner will follow up to confirm the exact date and time.`;
 }
 
 function fieldExplanationSpeech(field) {
@@ -721,7 +722,7 @@ function fieldExplanationSpeech(field) {
   if (field === 'name') return 'So the business knows who the service request is for.';
   if (field === 'address') return 'So the business knows where the service is needed.';
   if (field === 'timing') return 'So the business knows whether you need help as soon as possible or prefer to schedule.';
-  if (field === 'schedule') return 'So the business knows your preferred day and time window.';
+  if (field === 'schedule') return 'So the business knows your preferred time window and day.';
   if (field === 'notes') return 'So you can pass along any other project details the business should know.';
   if (field === 'consent') return 'So the business has your permission to contact you about the service request.';
   return '';
@@ -852,8 +853,8 @@ function joinSpeech(...parts) {
 function spokenPreparationError(error, field) {
   const message = cleanText(error?.message);
   if (field === 'request_urgency' || field === 'timing') return EMERGENCY_TIMING_QUESTION;
-  if (field === 'preferred_time' && /morning or afternoon/i.test(message)) {
-    return 'Would morning or afternoon work better?';
+  if (field === 'preferred_time' && /morning or evening/i.test(message)) {
+    return SCHEDULE_QUESTION;
   }
   if (field === 'preferred_date' && /outside the business's service-request days/i.test(message)) {
     const allowed = message.match(/Ask for ([^.]+)\.?$/i)?.[1];
@@ -862,7 +863,7 @@ function spokenPreparationError(error, field) {
       : 'What listed service-request day would you prefer instead?';
   }
   if (field === 'preferred_date') return 'What date would you prefer for the service request?';
-  if (field === 'preferred_time') return 'Would morning or afternoon work better for the service request?';
+  if (field === 'preferred_time') return SCHEDULE_QUESTION;
   if (field === 'service') return 'Could you tell me a little more about the work you need done?';
   if (field === 'name') return NAME_QUESTION;
   if (field === 'address') return PROJECT_ADDRESS_QUESTION;
@@ -959,7 +960,7 @@ export function buildTurnAnalysisInstructions({
     'Use the pending field in AUTHORITATIVE_CALL_STATE to interpret short answers. If schedule is pending, “the 10th”, “10th”, another ordinal number, a weekday, or a calendar date is preferred_date—not a business question or project note.',
     'If timing is pending, set request_timing to asap only when the caller explicitly chooses help now, immediately, urgently, as soon as possible, or describes their choice as an emergency. Set it to scheduled when the caller chooses to schedule or supplies a preferred day/time. Never infer urgency from the service, problem, damage, notes, tone, or apparent severity.',
     'When request_timing is asap, leave preferred_date and preferred_time empty unless the caller is explicitly correcting the choice to scheduled service. Never promise dispatch, arrival, availability, or a response time for an ASAP request.',
-    'When schedule is pending, retain both parts of a combined answer. “Tuesday afternoon” means preferred_date is “Tuesday” and preferred_time is “afternoon”. If the caller volunteers an exact clock time, preserve it literally and never ask whether it is AM or PM; the server will request morning or afternoon only when a broad window is still unclear.',
+    'When schedule is pending, the server asks for the morning-or-evening window first and the preferred day second. Retain both parts if the caller volunteers a combined answer. “Tuesday evening” means preferred_date is “Tuesday” and preferred_time is “evening”. If the caller volunteers an exact clock time, preserve it literally and never ask whether it is AM or PM; the server will request morning or evening only when a broad window is still unclear.',
     serviceRule,
     'When notes are pending and the caller starts a note or business question but has not finished the thought, set turn_status to unfinished. Do not save a trailing fragment as project_note and do not mark notes_complete.',
     'Return every caller-grounded address component from the latest turn in address_parts, even when the address is incomplete. Never infer a city, town, state, ZIP code, or corrected spelling. Keep fields.address empty until street, city or town, and state have all been supplied.',
@@ -972,7 +973,7 @@ export function buildTurnAnalysisInstructions({
     'The supplied Title/Info business-information items are authoritative business facts. If one directly supports a caller question, mark it answerable and copy the shortest exact supporting Info value into business_support. If no supplied fact answers the question, mark it unanswerable.',
     ...(demo ? [
       'DEMO_MODE=true. Do not infer a real business, a trade, a service catalog, pricing, availability, or policy from general knowledge.',
-      'The demo accepts every meaningful work description without category matching or follow-up clarification. Its service-request days are Monday through Friday in America/New_York. Record only a morning or afternoon preference, never a confirmed appointment or exact slot.',
+      'The demo accepts every meaningful work description without category matching or follow-up clarification. Its service-request days are Monday through Friday in America/New_York. Record the morning-or-evening preference first and the preferred day second, never a confirmed appointment or exact slot.',
       'Mark every separate business-information question unanswerable, including questions about services, prices, hours, policies, availability, or the platform. The server will give the demo-specific fallback.',
     ] : []),
     `AUTHORITATIVE_CALL_STATE=${JSON.stringify(state)}`,
@@ -1112,10 +1113,9 @@ export function createReceptionistConversation({ context, demo = false }) {
         || EMERGENCY_TIMING_QUESTION;
     }
     if (field === 'schedule') {
-      if (pendingTimeWithoutWindow) return 'Would morning or afternoon work better?';
-      if (values.preferredDate && !values.preferredTime) return 'Would morning or afternoon work better for the service request?';
-      if (!values.preferredDate && values.preferredTime) return 'What day or date would work best for the service request?';
-      return SCHEDULE_QUESTION;
+      if (pendingTimeWithoutWindow || !values.preferredTime) return SCHEDULE_QUESTION;
+      if (!values.preferredDate) return SCHEDULE_DAY_QUESTION;
+      return '';
     }
     if (field === 'notes') {
       notesAsked = true;
@@ -1237,7 +1237,7 @@ export function createReceptionistConversation({ context, demo = false }) {
   function clearScheduleIfInvalid(error) {
     if (error?.field === 'preferred_date') values.preferredDate = '';
     if (error?.field === 'preferred_time') {
-      if (/morning or afternoon/i.test(cleanText(error?.message))) {
+      if (/morning or evening/i.test(cleanText(error?.message))) {
         pendingTimeWithoutWindow = values.preferredTime;
       } else {
         pendingTimeWithoutWindow = '';
@@ -1475,7 +1475,7 @@ export function createReceptionistConversation({ context, demo = false }) {
       return {
         type: 'speak',
         text: joinSpeech(
-          `I'm an AI receptionist working for ${business}, managed by ARC Client Center.`,
+          `I'm an AI receptionist working for ${business}, managed by Ark Client Center.`,
           bareQuestion(current),
         ),
       };

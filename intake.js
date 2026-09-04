@@ -195,29 +195,26 @@ export function normalizeRequestedTimeWindow(value) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!input) {
-    fail('Ask whether the caller prefers morning or afternoon.', 'preferred_time');
+    fail('Ask whether the caller prefers morning or evening.', 'preferred_time');
   }
 
   if (/\b(?:any ?time|either|no preference|whenever|flexible)\b/.test(input)
-    || /\bmorning\s+or\s+afternoon\b/.test(input)) {
+    || /\bmorning\s+or\s+(?:afternoon|evening)\b/.test(input)) {
     return 'Flexible';
-  }
-  if (/\b(?:evening|night|midnight|tonight)\b/.test(input)) {
-    fail('Ask whether morning or afternoon would work instead.', 'preferred_time');
   }
 
   const morning = /\b(?:morning|am|before lunch|first thing)\b/.test(input);
-  const afternoon = /\b(?:afternoon|pm|noon|after lunch)\b/.test(input);
-  if (morning && afternoon) {
-    fail('That time window was unclear. Ask whether morning or afternoon works better.', 'preferred_time');
+  const evening = /\b(?:afternoon|evening|night|midnight|tonight|pm|noon|after lunch)\b/.test(input);
+  if (morning && evening) {
+    fail('That time window was unclear. Ask whether morning or evening works better.', 'preferred_time');
   }
   if (morning) return 'Morning';
-  if (afternoon) return 'Afternoon';
+  if (evening) return 'Evening';
 
   if (/\b(?:\d{1,2}(?::[0-5]\d)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s+o'?clock)?\b/.test(input)) {
-    fail('Ask whether that should be recorded as morning or afternoon.', 'preferred_time');
+    fail('Ask whether that should be recorded as morning or evening.', 'preferred_time');
   }
-  fail('That time window was unclear. Ask whether morning or afternoon works better.', 'preferred_time');
+  fail('That time window was unclear. Ask whether morning or evening works better.', 'preferred_time');
 }
 
 export function normalizeRequestedTime(value) {
