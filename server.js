@@ -103,7 +103,9 @@ async function telnyxCommand(id, action, payload = {}) {
         Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      // Telnyx deduplicates command_id within each call_control_id, including
+      // redelivered webhooks after this process restarts.
+      body: JSON.stringify({ command_id: `ark-${action}-v1`, ...payload }),
       signal: AbortSignal.timeout(10_000),
     },
   );
@@ -128,7 +130,10 @@ async function fetchArcRuntime(runtimeForward) {
     throw new Error(`ARC runtime returned invalid JSON (${response.status}).`);
   }
   if (!response.ok || data.ok === false) {
-    throw new Error(data.error || `ARC runtime request failed: ${response.status}`);
+    const error = new Error(data.error || `ARC runtime request failed: ${response.status}`);
+    error.code = data.code;
+    error.retryAfterSeconds = data.retryAfterSeconds;
+    throw error;
   }
   return data.runtime && typeof data.runtime === 'object'
     ? { ...data.runtime, ok: data.ok }
@@ -227,6 +232,7 @@ async function beginCall(body, id, runtimeForward = {}) {
     hangupRequested: false,
     endReason: '',
     connected: false,
+    answered: false,
     connectedAt: null,
     leadSaved: false,
     openAiUsage: null,
@@ -237,11 +243,13 @@ async function beginCall(body, id, runtimeForward = {}) {
   try {
     call.runtime = await loadRuntimeForCalledPhone(call.calledPhone, {
       loadAccountRuntime: () => fetchArcRuntime({ event: body, ...runtimeForward }),
+      demoPhoneNumber: clean(process.env.DEMO_PHONE_NUMBER) || undefined,
     });
     if (call.ended || calls.get(id) !== call) return;
 
     call.context = createBusinessContext(call.runtime);
     await telnyxCommand(id, 'answer');
+    call.answered = true;
     if (call.ended || calls.get(id) !== call) return;
     await telnyxCommand(id, 'streaming_start', {
       stream_url: `${MEDIA_STREAM_URL}?callControlId=${encodeURIComponent(id)}`,
@@ -258,9 +266,23 @@ async function beginCall(body, id, runtimeForward = {}) {
     }, MAX_CALL_DURATION_SECONDS * 1_000);
     call.costLimitTimer.unref?.();
   } catch (error) {
-    console.error('[Call startup failed]', error.message);
+    if (['CALLER_COOLDOWN', 'CALL_ALREADY_HANDLED', 'CALLER_ID_REQUIRED'].includes(error.code)) {
+      console.log('[Call rejected before answering]', JSON.stringify({ code: error.code, retryAfterSeconds: error.retryAfterSeconds || 0 }));
+    } else {
+      console.error('[Call startup failed]', error.message);
+    }
     if (calls.get(id) === call) calls.delete(id);
-    try { await telnyxCommand(id, 'hangup'); } catch {}
+    if (!call.answered) {
+      try {
+        await telnyxCommand(id, 'reject', { cause: 'CALL_REJECTED' });
+        return;
+      } catch (rejectError) {
+        console.error('[Call rejection failed]', rejectError.message);
+      }
+    }
+    try { await telnyxCommand(id, 'hangup'); } catch (hangupError) {
+      console.error('[Call startup hangup failed]', hangupError.message);
+    }
   }
 }
 
@@ -489,3 +511,5 @@ wss.on('connection', (telnyx, request) => {
 server.listen(PORT, () => {
   console.log(`AI receptionist listening on port ${PORT}`);
 });
+
+export { server };
