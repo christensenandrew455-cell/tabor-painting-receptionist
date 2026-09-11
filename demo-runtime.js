@@ -64,14 +64,16 @@ export async function loadRuntimeForCalledPhone(calledPhone, {
   loadAccountRuntime,
   demoPhoneNumber,
 } = {}) {
-  const demoRuntime = runtimeForCalledPhone(
-    {},
-    calledPhone,
-    { demoPhoneNumber },
-  );
-  if (isDemoRuntime(demoRuntime)) return demoRuntime;
   if (typeof loadAccountRuntime !== 'function') {
-    throw new TypeError('loadAccountRuntime is required for non-demo calls.');
+    throw new TypeError('loadAccountRuntime is required for every call.');
   }
-  return loadAccountRuntime();
+  // Even the demo must pass the signed, durable admission gate before answering.
+  const runtime = await loadAccountRuntime();
+  if (runtime?.ok === false || runtime?.callAdmission?.allowed !== true) {
+    throw new Error('ARC did not authorize this call. Deploy the call-admission runtime first.');
+  }
+  if (isDemoPhoneNumber(calledPhone, demoPhoneNumber) && runtime.demo !== true) {
+    throw new Error('ARC did not recognize the configured demo number.');
+  }
+  return runtimeForCalledPhone(runtime, calledPhone, { demoPhoneNumber });
 }

@@ -55,16 +55,16 @@ test('keeps the neutral demo completely separate from dynamic account fill-ins',
   assert.equal(account.profile.businessName, 'Unrelated Dynamic Business');
 });
 
-test('loads the demo locally without requesting an ARC account', async () => {
+test('checks demo admission before loading its local neutral profile', async () => {
   let accountLoads = 0;
   const demo = await loadRuntimeForCalledPhone('+17742316164', {
     loadAccountRuntime: async () => {
       accountLoads += 1;
-      throw new Error('No ARC account is connected to that phone number.');
+      return { ok: true, demo: true, callAdmission: { allowed: true } };
     },
   });
 
-  assert.equal(accountLoads, 0);
+  assert.equal(accountLoads, 1);
   assert.equal(isDemoRuntime(demo), true);
   assert.equal(demo.calledPhone, '+17742316164');
   assert.equal(demo.profile.businessName, 'AI Receptionist Demo');
@@ -125,6 +125,7 @@ test('demo accepts any service with a Monday-through-Friday time-window preferen
 
 test('loads every non-demo number through the unchanged ARC account path', async () => {
   const accountRuntime = {
+    callAdmission: { allowed: true },
     clientId: 'regular-account',
     profile: { businessName: 'Regular Business' },
   };
@@ -139,4 +140,14 @@ test('loads every non-demo number through the unchanged ARC account path', async
   assert.equal(accountLoads, 1);
   assert.equal(loaded, accountRuntime);
   assert.equal(isDemoRuntime(loaded), false);
+});
+
+test('neither number can bypass missing or rejected admission', async () => {
+  for (const phone of ['+17742316164', '+15555550123']) {
+    for (const runtime of [{}, { ok: false }, { callAdmission: { allowed: false } }]) {
+      await assert.rejects(loadRuntimeForCalledPhone(phone, { loadAccountRuntime: async () => runtime }), /did not authorize/);
+    }
+    await assert.rejects(loadRuntimeForCalledPhone(phone), /required for every call/);
+    await assert.rejects(loadRuntimeForCalledPhone(phone, { loadAccountRuntime: async () => { throw new Error('cooldown'); } }), /cooldown/);
+  }
 });

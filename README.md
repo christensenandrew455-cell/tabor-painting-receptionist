@@ -30,11 +30,21 @@ After notes and standalone contact consent are complete, the server prepares the
 
 ### Dedicated demo number
 
-Calls to **(774) 231-6164** are identified locally before any ARC-account lookup. Every other called number continues through the normal ARC-account runtime path. The demo follows the same intake order and final readback as a normal receptionist, but it accepts any substantive type of requested work instead of matching against a business service catalog. A non-service answer cannot complete the service step.
+Calls to **(774) 231-6164**, also displayed by the `arc_websites` marketing site, use a neutral local demo profile after passing the same signed Client Center admission check as other numbers. Client Center recognizes this dedicated demo without requiring a customer account and queues the generic Admin call event. Every other called number continues through the normal account runtime path. The demo follows the same intake order and final readback as a normal receptionist, but it accepts any substantive type of requested work instead of matching against a business service catalog. A non-service answer cannot complete the service step.
 
 The demo accepts preferred service-request days Monday through Friday in the `America/New_York` timezone and records a morning or afternoon window. Every separate business-information question receives the fixed response, “I'm sorry, I don't know that, but you can submit a service request,” after which the still-pending intake question resumes. Question-shaped requests for actual work, such as “Can you mow my lawn?”, are accepted as services.
 
-The greeting explains that the caller can pretend to be one of their own clients and that the provided information is not saved. Demo calls do not write to ARC, run the lead-risk/delivery path, invoke the configured delivery callback, retain caller/receptionist transcripts in this service, or claim that a request was submitted. Once the caller confirms the final readback, the demo says, “Thank you for calling the demo number. Have a good day,” and hangs up after playback completes.
+The greeting explains that the caller can pretend to be one of their own clients and that the provided information is not saved. Demo calls do not save intake details to ARC, run the lead-risk/delivery path, invoke the configured delivery callback, retain caller/receptionist transcripts in this service, or claim that a request was submitted. A generic timestamped call event and a keyed caller hash for abuse prevention are separate from intake. Once the caller confirms the final readback, the demo says, “Thank you for calling the demo number. Have a good day,” and hangs up after playback completes.
+
+### Repeat-call cooldown
+
+Both demo and regular incoming calls must receive `callAdmission.allowed: true` from Client Center before any Telnyx answer or media streaming command. The gate permits one admitted call per caller across both numbers every 15 minutes, measured from admission. Blocked retries do not extend the deadline. Caller IDs that cannot be normalized are rejected. The state is stored in Firestore by Client Center and survives restarts and multiple voice-server instances.
+
+Rejected calls receive Telnyx's [reject command](https://developers.telnyx.com/api-reference/call-commands/reject-a-call) with `CALL_REJECTED`; no greeting or AI session starts. If rejection fails, the existing hangup command is attempted. A runtime outage or missing admission response also prevents answering. Commands use stable IDs so Telnyx can deduplicate retries within the same call. This prevents AI processing for rejected calls; carrier billing must still be checked against Telnyx records.
+
+**Deployment order:** deploy the matching `ark-websites-ocm` runtime/admission change first, then this Railway service. Rolling out this service against the old runtime will reject calls because the old response has no admission decision. Roll back Railway first when rolling back both. No new Railway secret is required. The existing `RECEPTIONIST_CONFIG_URL` must point at the updated Client Center runtime. `DEMO_PHONE_NUMBER` defaults to `+17742316164` and must match Client Center's demo setting.
+
+Client Center commits each admitted call's generic Admin event before returning, then sends it through the existing signed Admin webhook. Failed deliveries stay queued for scheduled retry. The Admin app's existing call notification/counter path is reused; no APK update is required for this change. Historical demo calls skipped by the old bypass are not backfilled.
 
 ## Turn taking and recovery
 
